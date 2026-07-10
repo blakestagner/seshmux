@@ -1,0 +1,120 @@
+@use '../styles/typography' as *;
+
+// Ported from mockup.html .transcript/.planoff-inner (~855-870) and
+// .plan-col/.plan-col-head/.plan-meta/.plan-angle/.plan-steps/.plan-pick.
+// Columns compose the Card primitive; this module only adds plan-off layout.
+
+.transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: 40px 0 60px;
+}
+
+.inner {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.header {
+  padding-bottom: 14px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.title {
+  @include t-heading;
+  margin-bottom: 6px;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  @include t-sub;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: stretch;
+}
+
+// Card is display:block; each column needs full column height + the pick
+// button pinned to the bottom (mockup .plan-pick { margin-top: auto }), so
+// stretch happens here rather than touching the Card primitive.
+.col {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.pick {
+  margin-top: auto;
+}
+
+.colHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+// .plan-meta port: mono, faint, matches t-meta exactly.
+.planMeta {
+  @include t-meta;
+}
+
+.angle {
+  @include t-row; // mockup .plan-angle is 12px (t-row), text-dim
+  color: var(--text-dim);
+  font-style: italic;
+  margin-bottom: 10px;
+}
+
+// mockup .plan-steps is 12.5px (between t-row 12px and t-body 13px) — no
+// exact mixin exists; t-body is the closest named role and lint:styles
+// forbids a raw font-size override here, so we take t-body as-is.
+.steps {
+  @include t-body;
+  margin: 0 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.planLine {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.taskForm {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 24px;
+}
+
+.running {
+  @include t-body;
+  color: var(--text-dim);
+  padding: 24px 0;
+}
+
+.steps :global(code) {
+  @include t-mono-data;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 0 4px;
+}
+
+.note {
+  @include t-sub;
+  margin-top: 16px;
+}

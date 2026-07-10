@@ -1,0 +1,11 @@
+node_modules/
+.next/
+next-env.d.ts
+CLAUDE.local.md
+.seshmux/
+*.log
+.DS_Store
+*.tgz
+tsconfig.tsbuildinfo
+.playwright-mcp/
+docs/local/

@@ -1,0 +1,106 @@
+@use '../styles/typography' as *;
+
+// TopNav — redesign (__af_html.txt lines 16-42): 56px solid panel, fixed 266px
+// left (logo) + centered search + 266px right (view toggle · live count · icons).
+
+.nav {
+  height: 56px;
+  flex: 0 0 56px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 18px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+
+// Equal-flex left/right rails keep the search centered without the design's
+// fixed 266px (our live counter + two icon buttons overflow 266 and cramp).
+.logo {
+  @include t-logo;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 0;
+  min-width: 0;
+  user-select: none;
+}
+
+.mark {
+  @include t-logo-mark;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+// Center search — grows to fill, capped at 440px, self-centered.
+.searchWrap {
+  position: relative;
+  flex: 0 1 440px;
+  margin: 0 auto;
+}
+
+.searchWrap :global(input) {
+  border-radius: 9px;
+  padding-left: 40px; // clears the 24px magnifier glyph
+}
+
+.searchIcon {
+  @include t-search-glyph;
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-faint);
+  pointer-events: none;
+  z-index: 1;
+}
+
+// Search placeholder: a step brighter + 12px (t-row) vs the primitive's
+// faint default — scoped to the top-nav search only.
+.searchWrap :global(input)::placeholder {
+  @include t-row;
+  color: var(--text-dim);
+}
+
+// Right rail — view toggle, live count, icon buttons, right-aligned.
+.right {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+}
+
+.liveBadge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+
+.badgeText {
+  @include t-mono-data; // design live counter: mono 12px, --text-dim (markup L33)
+}
+
+// middot separator between "N live" and "N waiting" (design L35: opacity .45).
+.dot {
+  opacity: 0.45;
+  margin: 0 1px;
+}
+
+.waiting {
+  color: var(--text-faint);
+}

@@ -1,0 +1,41 @@
+// IconButton — covers .gear / .pin / .proj-add / .t-close semantics from
+// mockup. revealOnHover = opacity 0 until parent :hover (pin/proj-add);
+// active = pinned/current state (accent color).
+
+.iconBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  line-height: 1;
+  opacity: 1;
+  transition: opacity 0.12s;
+}
+
+.iconBtn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+// boxed — design's bordered square icon button (top-bar gear L37, rail filter
+// L56): 1px border, radius 8, muted color, sizing via inline width/height.
+.boxed {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0;
+}
+
+// ponytail: reveal-on-hover just starts at opacity 0 with a transition.
+// The feature wrapper (e.g. Rail's .proj-head:hover) is responsible for
+// setting opacity:1 on this element when its own hover state is active —
+// that's consumer composition, not primitive concern.
+.reveal {
+  opacity: 0;
+}
+
+.active {
+  opacity: 1;
+  color: var(--accent);
+}

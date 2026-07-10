@@ -1,0 +1,157 @@
+// Shared session-start machinery — the ONE place a PTY is spawned for an agent
+// session. Both POST /api/sessions/start (routes/term.ts) and the agent-bridge
+// routes (routes/bridge.ts, via its injected StartSession seam) call this, so
+// argv-from-provider, tmux-tier selection, first-prompt injection, and monitor
+// tracking live in a single code path.
+//
+// argv comes ONLY from provider.commands (hard rule 3). No agent binary names here.
+
+import path from 'node:path';
+import { dial } from './daemon-client';
+import { getProviders } from './lib/providers/types';
+import type { ProviderId } from './lib/providers/types';
+import { detectEnv } from './lib/detect';
+
+export type SessionMode = 'new' | 'continue' | 'plan';
+
+export interface StartSessionInput {
+  projectPath: string;
+  provider: ProviderId;
+  mode?: SessionMode;
+  resumeId?: string;
+  // Bridge/plan-off seed: written to the PTY after a post-spawn settle so the
+  // agent TUI receives it as its first input (agreed seam with lead-data).
+  firstPrompt?: string;
+  // Bridge pairing metadata (lead-data passes an OBJECT; we flatten into tabMeta).
+  linkSrc?: { sessionId: string; kind: 'handoff' | 'review' };
+}
+
+export interface TabMeta {
+  ptyId: string;
+  provider: ProviderId;
+  projectPath: string;
+  mode: string;
+  tmux: boolean;
+  linked?: boolean;
+  linkedKind?: 'handoff' | 'review';
+  linkSrc?: string;
+}
+
+export interface StartSessionResult {
+  ptyId: string;
+  tabMeta: TabMeta;
+}
+
+// Optional hook so the events hub can attach its monitor to a freshly spawned
+// PTY. Injected by the server at wire time (avoids a hub↔session-start cycle).
+let onSpawned: ((ptyId: string) => void) | null = null;
+export function setSpawnListener(fn: (ptyId: string) => void): void {
+  onSpawned = fn;
+}
+
+// Time to let a TUI settle before writing firstPrompt to its input box.
+const FIRST_PROMPT_SETTLE_MS = 1200;
+
+const tmuxCounters = new Map<string, number>();
+// BARE name — the daemon adds the `seshmux-` prefix (Task 12 convention).
+// MUST dedupe against the daemon's live tmux names, not just the in-memory
+// counter: the counter resets on every server restart, and the daemon spawns
+// with `tmux new-session -A`, so a reused name silently ATTACHES to the old
+// session instead of creating a new one (a "codex" spawn lands inside an
+// existing claude session).
+function nextTmuxName(projectPath: string, taken: Set<string>): string {
+  const repo =
+    path
+      .basename(projectPath || 'repo')
+      .replace(/[^a-zA-Z0-9_-]/g, '-')
+      .replace(/^[-.]+/, '') || 'repo';
+  let n = (tmuxCounters.get(repo) ?? 0) + 1;
+  while (taken.has(`${repo}-${n}`)) n++;
+  tmuxCounters.set(repo, n);
+  return `${repo}-${n}`;
+}
+
+function argvFor(
+  provider: { id: ProviderId; commands: import('./lib/providers/types').ProviderCommands },
+  mode: SessionMode,
+  cwd: string,
+  resumeId?: string,
+): string[] {
+  if (resumeId) return provider.commands.resume(cwd, resumeId);
+  if (mode === 'continue') return provider.commands.continue(cwd);
+  if (mode === 'plan') {
+    if (!provider.commands.plan) throw new Error(`provider ${provider.id} has no plan mode`);
+    return provider.commands.plan(cwd);
+  }
+  return provider.commands.fresh(cwd);
+}
+
+/**
+ * Spawn an agent session PTY. Throws on unknown provider / no-plan-mode
+ * (callers map to 400). Caller is responsible for validating projectPath
+ * (routes/term.ts validateStart) — bridge callers pass server-derived paths.
+ */
+export async function startSession(input: StartSessionInput): Promise<StartSessionResult> {
+  const { projectPath, provider: providerId, mode = 'new', resumeId, firstPrompt, linkSrc } = input;
+
+  const providers = await getProviders();
+  const provider = providers.find((p) => p.id === providerId);
+  if (!provider) throw new Error(`unknown provider: ${providerId}`);
+
+  const args = argvFor(provider, mode, projectPath, resumeId);
+
+  // Auto tmux tier when tmux is present (tier-2 persistence).
+  const env = await detectEnv().catch(() => null);
+
+  const conn = await dial();
+  try {
+    let tmuxName: string | undefined;
+    if (env?.tmux.found) {
+      // Live tmux names (sans prefix) so the new name can't collide-attach.
+      const taken = new Set<string>();
+      try {
+        const { ptys } = await conn.list();
+        for (const p of ptys) if (p.tmuxName) taken.add(p.tmuxName.replace(/^seshmux-/, ''));
+      } catch {
+        /* daemon list unavailable — counter alone, same as before */
+      }
+      tmuxName = nextTmuxName(projectPath, taken);
+    }
+    const { ptyId } = await conn.spawn({ cwd: projectPath, args, tmuxName });
+
+    if (firstPrompt) {
+      // Write after a settle so the TUI's input box is ready. A separate short-
+      // lived connection issues the write; the daemon owns delivery thereafter.
+      setTimeout(() => {
+        void (async () => {
+          try {
+            const w = await dial();
+            await w.write(ptyId, firstPrompt.endsWith('\n') ? firstPrompt : firstPrompt + '\n');
+            w.close();
+          } catch {
+            /* best-effort seed; the session is still usable */
+          }
+        })();
+      }, FIRST_PROMPT_SETTLE_MS);
+    }
+
+    // Let the events hub attach its monitor to this PTY (needs-input/status).
+    if (onSpawned) onSpawned(ptyId);
+
+    const tabMeta: TabMeta = {
+      ptyId,
+      provider: providerId,
+      projectPath,
+      mode: resumeId ? 'resume' : mode,
+      tmux: !!tmuxName,
+    };
+    if (linkSrc) {
+      tabMeta.linked = true;
+      tabMeta.linkedKind = linkSrc.kind;
+      tabMeta.linkSrc = linkSrc.sessionId;
+    }
+    return { ptyId, tabMeta };
+  } finally {
+    conn.close();
+  }
+}

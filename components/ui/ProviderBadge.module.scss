@@ -1,0 +1,23 @@
+@use '../../styles/typography' as *;
+
+// ProviderBadge — identity colors ONLY (--claude/--codex). Never used for status.
+
+.badge {
+  @include t-mono-micro;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.claude {
+  color: var(--claude);
+  background: color-mix(in srgb, var(--claude) 12%, transparent);
+}
+
+.codex {
+  color: var(--codex);
+  background: color-mix(in srgb, var(--codex) 12%, transparent);
+}

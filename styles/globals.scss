@@ -1,0 +1,49 @@
+@use 'tokens';
+
+// Reset + base body + scrollbars. No text styling lives here (see hard rule 1).
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+// Ported from mockup.html `button { ... }` reset (~124). Without this, native
+// UA button chrome (esp. under `color-scheme: dark`) bleeds through as grey
+// pills — background/border/cursor only, not text styling (hard rule 1 is
+// about font-size/weight/letter-spacing/text-transform, not color/cursor).
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-bright);
+  border-radius: 999px;
+}

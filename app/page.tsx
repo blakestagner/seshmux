@@ -1,0 +1,636 @@
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+import { AppStateProvider, useAppState, activePair, shouldMarkUnviewed, findTabToBindSession, type Tab } from '../lib/client/store';
+import { getProjects, getConfig, getEnv, getLive, notify, resolveApproval, putConfig, type SearchHit, type LiveSession } from '../lib/client/api';
+import { openEventsSocket } from '../lib/client/ws';
+import type { EventMessage } from '../lib/client/ws';
+import TopNav from '../components/TopNav';
+import CustomizationsModal from '../components/CustomizationsModal';
+import ProjectVisibilityModal from '../components/ProjectVisibilityModal';
+import Rail from '../components/Rail';
+import Tabs from '../components/Tabs';
+import Transcript from '../components/Transcript';
+import Settings from '../components/Settings';
+import Scratchpad from '../components/Scratchpad';
+import Planoff from '../components/Planoff';
+import Toast from '../components/Toast';
+import ApprovalToast from '../components/ApprovalToast';
+import TerminalPane from '../components/TerminalPane';
+import SubagentViewer from '../components/SubagentViewer';
+import GridView from '../components/GridView';
+import AgentsView from '../components/AgentsView';
+import EmptyComposer from '../components/EmptyComposer';
+import type { ProviderId } from '../lib/client/types';
+import Card from '../components/ui/Card';
+import Button from '../components/ui/Button';
+import { clampSize, readPersistedSize, clampSplit } from '../lib/client/drag-resize';
+import { useDragResize } from '../lib/client/use-drag-resize';
+import styles from './page.module.scss';
+
+// Rail drag-resize bounds. MIN matches Rail.module.scss's fixed 288px (the
+// pre-resize width) so the rail never gets smaller than it always was.
+const RAIL_MIN = 288;
+const RAIL_MAX = 560;
+const RAIL_DEFAULT = 288;
+
+// Term↔viewer split bounds (Task 2). Ratio (left fraction) persisted instead of
+// px since the split's container width isn't known outside a resize.
+const TERM_MIN = 360;
+const VIEWER_MIN = 300;
+const DEFAULT_RATIO = 0.5;
+
+// Mirrors server/lib/detect.ts AgentEnv/detectEnv return shape (hard rule 3:
+// client never imports server/ code, so this is an independent local mirror,
+// same pattern as lib/client/types.ts mirroring server Project/SessionMeta).
+type AgentEnv = { found: boolean; path?: string; version?: string; store: { found: boolean; projects: number; bytes: number } };
+type EnvResponse = { claude: AgentEnv; codex: AgentEnv; tmux: { found: boolean }; rg: { found: boolean } };
+
+function SetupGate({ onRescan }: { onRescan: () => void }) {
+  return (
+    <div className={styles.setupWrap}>
+      <Card title="Set up seshmux">
+        <div className={styles.setupBody}>
+          <p className={styles.setupIntro}>
+            No agent CLI was found on your PATH. Install Claude Code or Codex CLI, then rescan.
+          </p>
+          <div className={styles.installBlock}>{'npm install -g @anthropic-ai/claude-code'}</div>
+          <div className={styles.installBlock}>{'npm install -g @openai/codex'}</div>
+          <div className={styles.setupActions}>
+            <Button variant="primary" onClick={onRescan}>
+              Rescan
+            </Button>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function AppShell() {
+  const { state, dispatch } = useAppState();
+  const [jumpTo, setJumpTo] = useState<{ projectId: string; sessionId: string } | null>(null);
+  const [toast, setToast] = useState<{ ptyId: string; repo: string } | null>(null);
+  const [custOpen, setCustOpen] = useState<{ projectId?: string; projectName?: string } | null>(null);
+  const [projVisOpen, setProjVisOpen] = useState(false);
+  const [approval, setApproval] = useState<Extract<EventMessage, { event: 'approval' }> | null>(null);
+  // Subagent viewer: which term tab has its viewer open (synthetic right-pane, NOT a Tab —
+  // keeps tab semantics/rollup untouched, mirrors how `pair` is derived locally). Plus a
+  // per-session ping counter bumped on each {event:'subagents'} so the chip + open viewer
+  // refetch live.
+  const [openViewerFor, setOpenViewerFor] = useState<string | null>(null);
+  const [subagentPings, setSubagentPings] = useState<Record<string, number>>({});
+  const activeTab = state.tabs.find((t) => t.id === state.activeTab);
+
+  // Mirrors Rail's handleTogglePin: optimistic dispatch + persist. Lives here
+  // (not in the modal) so the modal stays store-agnostic per Task 6/7.
+  function handleToggleHidden(id: string) {
+    dispatch({ type: 'toggleHidden', id });
+    const hidden = state.config.hidden.includes(id)
+      ? state.config.hidden.filter((x) => x !== id)
+      : [...state.config.hidden, id];
+    putConfig({ ...state.config, hidden });
+  }
+  // Tabs view only: when the active tab is one half of a bridge pair, render
+  // both members side by side (source LEFT, linked RIGHT). Null → single pane.
+  const pair = activePair(state.tabs, state.activeTab);
+
+  // Providers offered in the empty-pane composer: every provider seen across
+  // projects (claude always present; codex only when its store was detected).
+  const availableProviders: ProviderId[] = (() => {
+    const seen = new Set<ProviderId>(state.projects.map((p) => p.provider));
+    const list = (['claude', 'codex'] as ProviderId[]).filter((p) => seen.has(p));
+    return list.length ? list : ['claude'];
+  })();
+
+  // Refs so the long-lived events-ws callback reads current tabs/config without
+  // re-subscribing on every state change (which would drop replayed status).
+  const tabsRef = useRef(state.tabs);
+  tabsRef.current = state.tabs;
+  const notifyOnRef = useRef(true);
+  notifyOnRef.current = state.config.settings?.macNotifications !== false;
+  const notifyOnDoneRef = useRef(true);
+  notifyOnDoneRef.current = state.config.settings?.notifyOnDone !== false;
+  const activeTabRef = useRef(state.activeTab);
+  activeTabRef.current = state.activeTab;
+  // Spec 3: raw NIStatus per ptyId, tracked outside the reducer (the reducer
+  // only ever sees the already-collapsed Tab['status'], which can't tell
+  // working apart from idle) so a working→idle/waiting transition can be
+  // detected here and turned into markUnviewed + the notify-on-done trigger.
+  const prevNIRef = useRef<Record<string, 'working' | 'waiting' | 'idle'>>({});
+
+  // Remember the view across reloads (UI preference → localStorage, same
+  // posture as dismissed-ptys). Restored via dispatch AFTER mount (not in
+  // initialState — reading localStorage during hydration would mismatch SSR),
+  // which also fires TerminalPane's view-switch size reassert, so a reload
+  // into grid view re-sizes every pane correctly.
+  //
+  // ONE effect owns read AND write: with a separate persist-effect, React
+  // StrictMode's double-invoked mount ran the persist FIRST and clobbered the
+  // saved value with the default before the restore read it (the "grid view
+  // doesn't stick" bug). Here the restore run returns WITHOUT persisting; the
+  // post-dispatch re-run persists the restored value.
+  const viewLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!viewLoadedRef.current) {
+      viewLoadedRef.current = true;
+      const saved = localStorage.getItem('seshmux-view');
+      if ((saved === 'grid' || saved === 'tabs' || saved === 'agents') && saved !== state.view) {
+        dispatch({ type: 'setView', view: saved });
+        return;
+      }
+    }
+    localStorage.setItem('seshmux-view', state.view);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.view]);
+
+  // Rail width: same SSR-safe read+write-in-one-effect pattern as the view
+  // effect above (avoids the StrictMode double-mount clobber).
+  const [railWidth, setRailWidth] = useState(RAIL_DEFAULT);
+  const railLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!railLoadedRef.current) {
+      railLoadedRef.current = true;
+      const saved = readPersistedSize(localStorage.getItem('seshmux-rail-width'), RAIL_MIN, RAIL_MAX, RAIL_DEFAULT);
+      if (saved !== railWidth) {
+        setRailWidth(saved);
+        return;
+      }
+    }
+    localStorage.setItem('seshmux-rail-width', String(railWidth));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [railWidth]);
+
+  // Drag start snapshots the pre-drag width; onDrag is a pure function of
+  // that snapshot + delta (never of the latest railWidth, which would drift
+  // under rAF-throttled updates).
+  const railDragStartRef = useRef(RAIL_DEFAULT);
+  const railDrag = useDragResize({
+    onDragStart: () => {
+      railDragStartRef.current = railWidth;
+    },
+    onDrag: (deltaX) => {
+      setRailWidth(clampSize(railDragStartRef.current + deltaX, RAIL_MIN, RAIL_MAX));
+    },
+  });
+
+  // Term↔viewer split ratio (Task 2): same SSR-safe read+write-in-one-effect
+  // pattern as railWidth above. Stored as a RATIO (not px) since container
+  // width is only known at drag time; clamp inline (not readPersistedSize,
+  // which clamps px) to a sane band so a corrupt/extreme value can't hide a pane.
+  const [viewerRatio, setViewerRatio] = useState(DEFAULT_RATIO);
+  const viewerRatioLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!viewerRatioLoadedRef.current) {
+      viewerRatioLoadedRef.current = true;
+      const raw = localStorage.getItem('seshmux-viewer-split');
+      const n = raw == null ? NaN : Number(raw);
+      const saved = Number.isFinite(n) ? clampSize(n, 0.15, 0.85) : DEFAULT_RATIO;
+      if (saved !== viewerRatio) {
+        setViewerRatio(saved);
+        return;
+      }
+    }
+    localStorage.setItem('seshmux-viewer-split', String(viewerRatio));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewerRatio]);
+
+  // Measured container width, refreshed at drag start (not on every render —
+  // avoids a measure-render loop; see page.tsx Task 2 notes).
+  const viewerSplitRef = useRef<HTMLDivElement | null>(null);
+  const viewerContainerWidthRef = useRef(0);
+  const viewerDragStartRatioRef = useRef(DEFAULT_RATIO);
+  const viewerDrag = useDragResize({
+    onDragStart: () => {
+      viewerDragStartRatioRef.current = viewerRatio;
+      viewerContainerWidthRef.current = viewerSplitRef.current?.getBoundingClientRect().width ?? 0;
+    },
+    onDrag: (deltaX) => {
+      const w = viewerContainerWidthRef.current;
+      if (!w) return;
+      const startLeftPx = viewerDragStartRatioRef.current * w;
+      const nextLeftPx = clampSplit(startLeftPx + deltaX, w, TERM_MIN, VIEWER_MIN);
+      setViewerRatio(clampSize(nextLeftPx / w, 0.15, 0.85));
+    },
+  });
+
+  // Remember the ACTIVE TAB across reloads the same way. Tab ids are stable
+  // for live PTYs ('term-<ptyId>'), so the saved id survives a reload as long
+  // as the session is still alive; restore happens after rehydrate re-opens
+  // the term tabs (see the rehydrate effect below).
+  const activeLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!activeLoadedRef.current) return; // rehydrate owns the restore
+    if (state.activeTab) localStorage.setItem('seshmux-active-tab', state.activeTab);
+  }, [state.activeTab]);
+
+  useEffect(() => {
+    getConfig().then((config) => dispatch({ type: 'setConfig', config }));
+
+    // Tab rehydrate on load (acceptance item 3): the daemon holds live PTYs
+    // across a page reload, so reopen a term tab per live PTY — openTerm is
+    // ptyId-keyed, so TerminalPane's attach + scrollback replay just works.
+    // Needs projects FIRST: the tab's projectId must be a real provider project
+    // id (matched by cwd), not the raw path — bridge/session lookups key on it.
+    // Tabs the user explicitly closed stay closed across reloads (the PTY is
+    // still alive + in the rail; dismissal is a UI preference, localStorage).
+    Promise.all([getProjects(), getLive().catch(() => ({ live: [] as LiveSession[] }))])
+      .then(([projects, { live }]) => {
+        dispatch({ type: 'setProjects', projects });
+        let dismissed: string[] = [];
+        try {
+          dismissed = JSON.parse(localStorage.getItem('seshmux-dismissed-ptys') || '[]');
+        } catch {
+          /* corrupt entry → treat as none */
+        }
+        for (const s of live) {
+          if (dismissed.includes(s.ptyId)) continue;
+          const proj = projects.find((p) => p.path === s.cwd);
+          const label = proj?.name ?? s.cwd.split('/').filter(Boolean).pop() ?? 'session';
+          dispatch({
+            type: 'openTerm',
+            ptyId: s.ptyId,
+            projectId: proj?.id ?? s.cwd,
+            label,
+            provider: proj?.provider,
+            sessionId: s.sessionId,
+          });
+        }
+        // Restore the pre-reload active tab (openTerm activated the LAST
+        // rehydrated tab otherwise). Only if its PTY is still alive; then
+        // enable persistence so this restore can't be clobbered (StrictMode
+        // runs this whole effect twice — the ref survives both runs).
+        const savedActive = localStorage.getItem('seshmux-active-tab');
+        if (savedActive && live.some((s) => 'term-' + s.ptyId === savedActive && !dismissed.includes(s.ptyId))) {
+          dispatch({ type: 'activateTab', id: savedActive });
+        }
+        activeLoadedRef.current = true;
+      })
+      .catch(() => {}); // no daemon / no live sessions → nothing to rehydrate
+
+    // Live events: needs-input status → tab dots, ctx → statusbar meter. On every
+    // (re)connect the server replays status for ALL live PTYs, so dots self-heal
+    // after a server restart with no page reload.
+    const WS_STATUS: Record<'working' | 'waiting' | 'idle', 'live' | 'waiting' | 'done'> = {
+      working: 'live',
+      waiting: 'waiting',
+      idle: 'live',
+    };
+    const client = openEventsSocket((e) => {
+      switch (e.event) {
+        case 'status': {
+          dispatch({ type: 'setTermStatus', ptyId: e.ptyId, status: WS_STATUS[e.status], ni: e.status, ts: Date.now() });
+
+          const tab = tabsRef.current.find((t) => t.kind === 'term' && t.ptyId === e.ptyId);
+          const repo = tab?.label ?? 'A session';
+          const prevNI = prevNIRef.current[e.ptyId];
+          const isActiveTab = !!tab && tab.id === activeTabRef.current;
+          // Spec 3: working → idle/waiting while not the focused tab = done-
+          // unviewed. Client-side derived state only; no wire/NIStatus change.
+          if (shouldMarkUnviewed(prevNI, e.status, isActiveTab, document.hidden)) {
+            dispatch({ type: 'markUnviewed', ptyId: e.ptyId });
+            if (e.status === 'idle' && document.hidden && notifyOnRef.current && notifyOnDoneRef.current) {
+              notify(`${repo} finished`, 'The session finished and is waiting for you.').catch(() => {});
+            }
+          }
+          prevNIRef.current[e.ptyId] = e.status;
+
+          if (e.status === 'waiting') {
+            setToast({ ptyId: e.ptyId, repo });
+            // OS-level surface only when the tab is backgrounded; the server
+            // decides delivery (darwin + config), so call unconditionally.
+            if (document.hidden && notifyOnRef.current) {
+              notify(`${repo} needs input`, 'A session is waiting for your input.').catch(() => {});
+            }
+          } else {
+            // clear the toast once the session it referenced is no longer waiting
+            setToast((cur) => (cur && cur.ptyId === e.ptyId ? null : cur));
+          }
+          break;
+        }
+        case 'ctx':
+          dispatch({ type: 'setTermCtx', sessionId: e.sessionId, ctx: e.ctx });
+          break;
+        case 'approval':
+          // MCP bridge cross-agent call awaiting approval — show the toast.
+          setApproval(e);
+          break;
+        case 'subagents':
+          // A session's subagent tree changed — bump its ping so the chip + any open
+          // viewer refetch (ping-only; transcripts fetch on detail-open, not streamed).
+          setSubagentPings((prev) => ({
+            ...prev,
+            [e.sessionId]: (prev[e.sessionId] ?? 0) + 1,
+          }));
+          break;
+        // session-new/touch: also consumed by the rail. BUG A part 1 — bind the
+        // matching unbound live term tab (fresh spawn has no sessionId until the
+        // agent writes jsonl) so the subagent chip gate (canShowSubagents) is
+        // satisfied without waiting for a reload. tabsRef (not state.tabs) so
+        // this effect doesn't need to re-subscribe the socket on every tab change.
+        case 'session-new':
+        case 'session-touch': {
+          const tabId = findTabToBindSession(tabsRef.current, e.projectId);
+          if (tabId) dispatch({ type: 'setTabSession', tabId, sessionId: e.sessionId });
+          break;
+        }
+        // server-restarting is consumed by the Updates banner in its own component.
+        default:
+          break;
+      }
+    });
+
+    // A background BROWSER tab can mark the currently-active seshmux tab
+    // unviewed (activateTab-clear alone can't catch that — the tab was never
+    // re-activated, the browser just regained focus). Clear on return.
+    function handleVisible() {
+      if (document.hidden) return;
+      const activeId = activeTabRef.current;
+      if (activeId) dispatch({ type: 'activateTab', id: activeId });
+    }
+    document.addEventListener('visibilitychange', handleVisible);
+
+    return () => {
+      client.close();
+      document.removeEventListener('visibilitychange', handleVisible);
+    };
+  }, [dispatch]);
+
+  function jumpToWaiting() {
+    if (!toast) return;
+    const tab = state.tabs.find((t) => t.kind === 'term' && t.ptyId === toast.ptyId);
+    if (tab) dispatch({ type: 'activateTab', id: tab.id });
+    setToast(null);
+  }
+
+  function resolveApprovalToast(approved: boolean) {
+    if (!approval) return;
+    resolveApproval(approval.requestId, approved).catch(() => {}); // 404 = already expired
+    setApproval(null);
+  }
+
+  // Plain function (NOT a nested component) so key={tab.id} reconciliation is
+  // preserved — a nested component type would remount both panes every render.
+  // Every reference is parameterized on `tab`, never the closed-over activeTab,
+  // so it renders correctly for either side of a split.
+  function renderPane(tab: Tab) {
+    // A rail session marked "live" (recent jsonl) that seshmux did NOT
+    // spawn has no daemon PTY, so it opens as a term tab with no ptyId.
+    // Fall back to the read-only transcript instead of a blank pane.
+    if (
+      (tab.kind === 'transcript' || (tab.kind === 'term' && !tab.ptyId)) &&
+      tab.sessionId &&
+      tab.projectId
+    ) {
+      return (
+        <Transcript
+          key={tab.id}
+          projectId={tab.projectId}
+          sessionId={tab.sessionId}
+          title={tab.label}
+          provider={tab.provider}
+        />
+      );
+    }
+    if (tab.kind === 'term' && tab.ptyId) {
+      // The chip opens the viewer only for a session-bearing claude term tab. Codex has
+      // no subagents capability (route returns []), so its chip never appears anyway.
+      const canViewSubagents = !!tab.projectId && !!tab.sessionId && tab.provider !== 'codex';
+      return (
+        <TerminalPane
+          key={tab.id}
+          ptyId={tab.ptyId}
+          projectId={tab.projectId}
+          sessionId={tab.sessionId}
+          provider={tab.provider}
+          branch={tab.branch}
+          ctx={tab.ctx}
+          onOpenSubagents={canViewSubagents ? () => setOpenViewerFor(tab.id) : undefined}
+          subagentPing={tab.sessionId ? subagentPings[tab.sessionId] : undefined}
+        />
+      );
+    }
+    if (tab.kind === 'scratchpad' && tab.projectId) {
+      return <Scratchpad key={tab.id} projectId={tab.projectId} path={tab.label} />;
+    }
+    if (tab.kind === 'planoff' && tab.projectId) {
+      return (
+        <Planoff
+          key={tab.id}
+          projectId={tab.projectId}
+          repo={tab.label}
+          onExecute={(provider, ptyId) =>
+            dispatch({
+              type: 'openTerm',
+              ptyId,
+              projectId: tab.projectId!,
+              label: tab.label,
+              provider,
+            })
+          }
+        />
+      );
+    }
+    return (
+      <div key={tab.id} className={styles.paneEmpty}>
+        <div className={styles.mainPlaceholder}>{tab.label}</div>
+      </div>
+    );
+  }
+
+  function handlePickHit(hit: SearchHit) {
+    setJumpTo({ projectId: hit.project, sessionId: hit.sessionId });
+    dispatch({
+      type: 'openSession',
+      sessionId: hit.sessionId,
+      projectId: hit.project,
+      label: hit.title || 'untitled',
+      kind: 'transcript',
+      provider: hit.provider,
+    });
+  }
+
+  return (
+    <div className={styles.shell}>
+      <TopNav onPickHit={handlePickHit} onOpenCustomizations={() => setCustOpen({})} />
+      <div className={styles.app}>
+        {/* Settings is a full-page overlay: hide the rail so it reads as its own
+            page. Sibling of <main>, so gate it here. */}
+        {state.settingsOpen ? null : (
+          <>
+            <Rail
+              width={railWidth}
+              jumpTo={jumpTo}
+              onJumped={() => setJumpTo(null)}
+              onOpenCustomizations={setCustOpen}
+              onOpenProjectVisibility={() => setProjVisOpen(true)}
+            />
+            <div
+              className={styles.railHandle}
+              onPointerDown={railDrag.onPointerDown}
+              onDoubleClick={() => setRailWidth(RAIL_DEFAULT)}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize sidebar"
+            />
+          </>
+        )}
+        <main className={styles.main}>
+          {/* Settings short-circuits BEFORE the grid/tabs branches — the grid
+              branch used to win, so opening settings from grid rendered nothing.
+              Full-page: no tab bar either. */}
+          {state.settingsOpen ? (
+            <div className={styles.pane}>
+              <Settings />
+            </div>
+          ) : (
+            <>
+          {/* Tab strip hides in grid view — every tile carries its own header
+              and the tabs⇄grid toggle lives in TopNav, so it's redundant there. */}
+          {state.tabs.length > 0 && state.view === 'tabs' ? <Tabs /> : null}
+          {/* Grid mode replaces the single-pane view over the same term-tab set. */}
+          {state.view === 'grid' ? (
+            <div className={styles.pane}>
+              <GridView />
+            </div>
+          ) : state.view === 'agents' ? (
+            <div className={styles.pane}>
+              <AgentsView />
+            </div>
+          ) : pair ? (
+            // Linked-pair split: source LEFT, linked RIGHT, 50/50. Both panes
+            // render simultaneously (keyed by tab id) so flipping active between
+            // the two members of the SAME pair never remounts either side.
+            <div className={styles.split}>
+              <div className={styles.splitSide}>{renderPane(pair.source)}</div>
+              <div className={`${styles.splitSide} ${styles.splitSideRight}`}>
+                {renderPane(pair.linked)}
+              </div>
+            </div>
+          ) : activeTab && activeTab.kind === 'term' ? (
+            // Term tabs ALWAYS render inside the split host so the terminal's tree
+            // position (and its live xterm/PTY) never remounts when the subagent viewer
+            // opens/closes — only the conditional right pane mounts/unmounts. The
+            // accent divider appears only WITH the viewer (viewerSplit modifier).
+            (() => {
+              const viewerOpen =
+                openViewerFor === activeTab.id && !!activeTab.sessionId && !!activeTab.projectId;
+              // Percentage flex-basis (not px) since container width is unknown at
+              // render; min-width enforces TERM_MIN/VIEWER_MIN without measuring.
+              // clampSize guards against a stored extreme hiding a pane on reload.
+              const leftPct = clampSize(viewerRatio, 0.15, 0.85) * 100;
+              return (
+                <div
+                  ref={viewerSplitRef}
+                  className={`${styles.split} ${viewerOpen ? '' : styles.splitSolo}`}
+                >
+                  <div
+                    className={styles.splitSide}
+                    style={viewerOpen ? { flex: `0 0 ${leftPct}%`, minWidth: `${TERM_MIN}px` } : undefined}
+                  >
+                    {renderPane(activeTab)}
+                  </div>
+                  {viewerOpen ? (
+                    <>
+                      <div
+                        className={styles.splitHandle}
+                        onPointerDown={viewerDrag.onPointerDown}
+                        onDoubleClick={() => setViewerRatio(DEFAULT_RATIO)}
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label="Resize terminal / subagent split"
+                      />
+                      <div
+                        className={`${styles.splitSide} ${styles.splitSideRight}`}
+                        style={{ flex: '1 1 0', minWidth: `${VIEWER_MIN}px` }}
+                      >
+                        <SubagentViewer
+                          projectId={activeTab.projectId!}
+                          sessionId={activeTab.sessionId!}
+                          refreshKey={subagentPings[activeTab.sessionId!]}
+                          onClose={() => setOpenViewerFor(null)}
+                        />
+                      </div>
+                    </>
+                  ) : null}
+                </div>
+              );
+            })()
+          ) : activeTab ? (
+            <div className={styles.pane}>{renderPane(activeTab)}</div>
+          ) : (
+            <div className={styles.paneEmpty}>
+              <EmptyComposer projects={state.projects} providers={availableProviders} />
+            </div>
+          )}
+            </>
+          )}
+        </main>
+      </div>
+      <Toast
+        open={!!toast}
+        repo={toast?.repo ?? ''}
+        reason="permission prompt"
+        onJump={jumpToWaiting}
+        onClose={() => setToast(null)}
+      />
+      {approval ? (
+        <ApprovalToast
+          open
+          tool={approval.tool}
+          question={approval.question}
+          cwd={approval.cwd}
+          hop={approval.hop}
+          expiresAt={approval.expiresAt}
+          onResolve={resolveApprovalToast}
+          onExpire={() => setApproval(null)}
+        />
+      ) : null}
+      <CustomizationsModal
+        open={!!custOpen}
+        projectId={custOpen?.projectId}
+        projectName={custOpen?.projectName}
+        projects={state.projects}
+        hidden={state.config.hidden}
+        onToggleHidden={handleToggleHidden}
+        onClose={() => setCustOpen(null)}
+      />
+      <ProjectVisibilityModal
+        open={projVisOpen}
+        onClose={() => setProjVisOpen(false)}
+        projects={state.projects}
+        hidden={state.config.hidden}
+        onToggleHidden={handleToggleHidden}
+      />
+    </div>
+  );
+}
+
+export default function Page() {
+  const [env, setEnv] = useState<EnvResponse | null>(null);
+  const [checking, setChecking] = useState(true);
+
+  function rescan() {
+    setChecking(true);
+    (getEnv() as Promise<EnvResponse>).then((e) => {
+      setEnv(e);
+      setChecking(false);
+    });
+  }
+
+  useEffect(() => {
+    rescan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (checking) return null;
+
+  const noAgentFound = env ? !env.claude.found && !env.codex.found : false;
+  if (noAgentFound) return <SetupGate onRescan={rescan} />;
+
+  return (
+    <AppStateProvider>
+      <AppShell />
+    </AppStateProvider>
+  );
+}

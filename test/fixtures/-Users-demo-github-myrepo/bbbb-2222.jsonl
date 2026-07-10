@@ -1,0 +1,3 @@
+{"type":"mode","mode":"default","sessionId":"bbbb-2222"}
+{"parentUuid":null,"type":"user","message":{"role":"user","content":"add dark mode toggle"},"uuid":"v1","timestamp":"2026-07-02T09:00:00.000Z","cwd":"/Users/demo/github/myrepo","sessionId":"bbbb-2222","gitBranch":"feat/dark-mode"}
+{"parentUuid":"v1","type":"assistant","message":{"role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"Sure."}],"usage":{"input_tokens":10,"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"output_tokens":5}},"uuid":"b1","timestamp":"2026-07-02T09:00:03.000Z","cwd":"/Users/demo/github/myrepo","sessionId":"bbbb-2222","gitBranch":"feat/dark-mode"}

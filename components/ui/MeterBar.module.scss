@@ -1,0 +1,44 @@
+// MeterBar — owns height/border-radius/fill-color only. Consumer sets width
+// via its container (never hardcode a fixed pixel width here).
+
+// Design meters (markup L165/182/252): raised track, accent fill, radius 99.
+// ctx tone (status bar + grid header) = 5px; accent tone (usage bars) = 7px.
+.track {
+  display: inline-block;
+  width: 100%;
+  border-radius: 99px;
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+
+.track.ctx {
+  height: 5px;
+}
+
+.track.accent {
+  height: 7px;
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+// Fill colors — compound with .fill so the .accent/.ctx TONE class on the
+// track (height selectors above) can't paint the track itself.
+.fill.live {
+  background: var(--live);
+}
+
+.fill.warm {
+  background: var(--waiting);
+}
+
+.fill.hot {
+  background: var(--hot);
+}
+
+.fill.accent {
+  background: var(--accent);
+}

@@ -1,0 +1,79 @@
+@use '../styles/typography' as *;
+
+// Approval toast (Task 16.7) — same bottom-right slide-up card as Toast, but an
+// accent border (it's an action to take, not a waiting-alert) and a stacked
+// body (tool + countdown, question, cwd) with Allow/Deny actions.
+
+.toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 420px;
+  background: var(--bg-raised);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  box-shadow: var(--shadow-dropdown), var(--shadow);
+  z-index: 400;
+  transform: translateY(120px);
+  opacity: 0;
+  transition: transform 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.2), opacity 0.3s;
+  pointer-events: none;
+}
+
+.show {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+// Fallback for a non-agent tool (wait_for_status/read_terminal) — no
+// ProviderBadge glyph/color to borrow, so plain text at the same weight.
+.toolName {
+  @include t-mono-micro;
+  color: var(--text);
+}
+
+.count {
+  @include t-meta;
+}
+
+.question {
+  @include t-row;
+  white-space: normal;
+}
+
+.cwd {
+  @include t-meta;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+// Deny-styled default Button reads fine as-is; Allow uses the accent primary.
+.allow {
+  display: inline-flex;
+}

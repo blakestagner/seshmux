@@ -1,0 +1,180 @@
+@use '../styles/typography' as *;
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+}
+
+.modal {
+  width: 780px;
+  max-width: calc(100vw - 40px);
+  height: 600px;
+  max-height: calc(100vh - 40px);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-modal), var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.title {
+  @include t-heading;
+}
+
+.scopeLabel {
+  @include t-meta;
+  margin-left: auto;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.nav {
+  width: 180px;
+  flex: 0 0 180px;
+  border-right: 1px solid var(--border);
+  padding: 10px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.navItem {
+  @include t-item-title;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-dim);
+
+  &:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
+}
+
+.navItemActive {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.overviewGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left;
+
+  &:hover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+}
+
+.cardIcon {
+  @include t-mono-data;
+  color: var(--accent);
+}
+
+.cardTitle {
+  @include t-item-title;
+}
+
+.cardCount {
+  @include t-stat;
+}
+
+.cardGlyphs {
+  @include t-mono-micro;
+  color: var(--text-faint);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+}
+
+.empty {
+  @include t-sub;
+  padding: 20px 0;
+}
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.detailTitle {
+  @include t-heading;
+}
+
+.detailPath {
+  @include t-mono-micro;
+  color: var(--text-faint);
+  word-break: break-all;
+}
+
+.badge {
+  @include t-chip;
+  color: var(--hot);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  margin-left: 8px;
+}
+
+.markdown {
+  @include t-body;
+  width: 100%;
+}
+
+.pre {
+  @include t-mono-data;
+  width: 100%;
+  overflow-x: auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
