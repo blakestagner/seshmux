@@ -7,12 +7,14 @@ import type { Project, ProviderId, SessionMeta } from '../store/scan';
 import type { SearchHit, SearchOpts } from '../store/search';
 import type { UsageSummary } from '../store/usage';
 import type { CustomizationScanners } from './customizations';
+import type { TeamInfo } from '../store/teams-store';
 
 export type { Ctx, Msg } from '../store/transcript';
 export type { Project, ProviderId, SessionMeta } from '../store/scan';
 export type { SearchHit, SearchOpts } from '../store/search';
 export type { UsageSummary } from '../store/usage';
 export type { CustomizationItem, CustomizationScanners, CustomizationScope } from './customizations';
+export type { TeamInfo, TeamMemberInfo } from '../store/teams-store';
 
 export interface DetectResult {
   found: boolean;
@@ -86,6 +88,14 @@ export interface SubagentSupport {
   detail(projectId: string, sessionId: string, agentId: string): Promise<SubagentDetail | null>;
 }
 
+// Teams v1 (native `claude-swarm` teammates). Optional/feature-tested: only providers
+// that have a documented team-roster file layout implement this — codex omits it, so
+// call sites must guard with `provider.teams?`.
+export interface TeamSupport {
+  teamRoster(teamName: string): Promise<TeamInfo | null>;
+  teamByLeadSession(leadSessionId: string): Promise<TeamInfo | null>; // for auto-name resolution
+}
+
 export interface AgentProvider {
   id: ProviderId;
   detect(): Promise<DetectResult>;
@@ -100,6 +110,7 @@ export interface AgentProvider {
   statusHooks?: StatusHookSupport;
   customizations?: CustomizationScanners;
   subagents?: SubagentSupport;
+  teams?: TeamSupport;
 }
 
 // Lazily built registry: claude is always present; codex is included only when its store

@@ -9,6 +9,7 @@ import { searchStore, type SearchHit, type SearchOpts } from '../store/search';
 import { aggregateUsage, type UsageSummary } from '../store/usage';
 import { parseTranscript as parse, readCtx as tailCtx } from '../store/transcript';
 import { listSubagentNodes, parseSubagentDetail } from '../store/subagents';
+import { teamRoster, teamByLeadSession } from '../store/teams-store';
 import { loadNeedsInputPatterns } from './manifest';
 import {
   hooksAvailable,
@@ -36,6 +37,7 @@ import type {
   SessionMeta,
   StatusHookSupport,
   SubagentSupport,
+  TeamSupport,
 } from './types';
 
 const CLAUDE_BIN = 'claude';
@@ -191,6 +193,16 @@ export class ClaudeProvider implements AgentProvider {
       if (!node) return null;
       return parseSubagentDetail(node.jsonlPath ?? '', node);
     },
+  };
+
+  // Teams v1 (native `claude-swarm` teammates). Team-file layout knowledge stays in
+  // store/teams-store.ts (provider-agnostic, mirrors scan.ts); only this provider
+  // supplies the `.claude/teams` + `.claude/projects` paths (hard rule 3). Codex has
+  // no team-roster file layout, so it omits `teams` entirely.
+  teams: TeamSupport = {
+    teamRoster: (teamName) => teamRoster(join(this.homeDir, '.claude', 'teams'), this.root, teamName),
+    teamByLeadSession: (leadSessionId) =>
+      teamByLeadSession(join(this.homeDir, '.claude', 'teams'), this.root, leadSessionId),
   };
 }
 

@@ -41,6 +41,10 @@ export interface SessionMeta {
   startedAt: number | null;
   durationMs: number | null;
   live: boolean;
+  // Teams v1 (additive): present only on teammate sessions, which stamp both fields in
+  // their jsonl head. The lead session stamps neither, so these stay undefined for it.
+  teamName?: string;
+  agentName?: string;
 }
 
 export interface ListOpts {
@@ -82,6 +86,10 @@ interface HeadInfo {
   // path ("/"→"-"), so a repo whose folder contains a hyphen can't be recovered
   // by decode alone — use this true cwd for the project path when present.
   cwd: string | null;
+  // Teams v1: teamName + agentName, present only when this jsonl is a teammate
+  // session (the lead session never stamps them).
+  teamName: string | null;
+  agentName: string | null;
 }
 
 // Cache parsed head info keyed by (file, mtime) so repeated listings are cheap.
@@ -110,6 +118,8 @@ async function readHead(filePath: string, mtime: number): Promise<HeadInfo> {
   let branch: string | null = null;
   let startedAt: number | null = null;
   let cwd: string | null = null;
+  let teamName: string | null = null;
+  let agentName: string | null = null;
   let lineCount = 0;
 
   const rl = createInterface({
@@ -130,6 +140,10 @@ async function readHead(filePath: string, mtime: number): Promise<HeadInfo> {
 
       if (typeof obj.gitBranch === 'string') branch = obj.gitBranch;
       if (cwd === null && typeof obj.cwd === 'string' && obj.cwd) cwd = obj.cwd;
+      // Team membership (Teams v1 discovery): teammate sessions stamp teamName +
+      // agentName; the lead session stamps neither.
+      if (teamName === null && typeof obj.teamName === 'string') teamName = obj.teamName;
+      if (agentName === null && typeof obj.agentName === 'string') agentName = obj.agentName;
 
       if (obj.type === 'user' && obj.message?.role === 'user') {
         const text = firstUserText(obj.message.content);
@@ -147,7 +161,7 @@ async function readHead(filePath: string, mtime: number): Promise<HeadInfo> {
     rl.close();
   }
 
-  const info: HeadInfo = { title, branch, startedAt, cwd };
+  const info: HeadInfo = { title, branch, startedAt, cwd, teamName, agentName };
   headCache.set(cacheKey, info);
   return info;
 }
@@ -295,7 +309,9 @@ export async function scanProjects(root: string, provider: ProviderId): Promise<
 // Read every session file in one project dir into SessionMeta[] (no sort/filter —
 // callers combine multiple dirs first). Shared by listSessions' own dir and its
 // workspace-dir folding below.
-async function readDirSessions(dirPath: string, projectId: string, provider: ProviderId): Promise<SessionMeta[]> {
+// Exported for teams-store.ts: resolving a teammate's session id needs the same
+// head-cache reads this function already does — no separate re-parse of the jsonl.
+export async function readDirSessions(dirPath: string, projectId: string, provider: ProviderId): Promise<SessionMeta[]> {
   let files: string[];
   try {
     files = (await readdir(dirPath)).filter((f) => f.endsWith('.jsonl'));
@@ -324,6 +340,8 @@ async function readDirSessions(dirPath: string, projectId: string, provider: Pro
       startedAt: head.startedAt,
       durationMs: head.startedAt !== null ? mtime - head.startedAt : null,
       live: now - mtime < LIVE_WINDOW_MS,
+      teamName: head.teamName ?? undefined,
+      agentName: head.agentName ?? undefined,
     });
   }
   return metas;
