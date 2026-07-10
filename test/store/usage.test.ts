@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, copyFileSync, utimesSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, copyFileSync, utimesSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { aggregateUsage } from '../../server/lib/store/usage';
@@ -53,7 +53,10 @@ describe('aggregateUsage', () => {
     expect(result.sessions).toBe(2);
     expect(result.totalTokens).toBe(EXPECTED_TOTAL_TOKENS);
     expect(result.cacheReads).toBe(EXPECTED_CACHE_READS);
-    expect(result.estCostUsd).toBeGreaterThan(0);
+    // Fixtures are all model "claude-opus-4-8" -> opus family rate ($5 in / $6.25 cache
+    // write / $0.50 cache read / $25 out per million). Hand-computed from the three
+    // aaaa-1111 lines + the one bbbb-2222 line (see breakdown above).
+    expect(result.estCostUsd).toBeCloseTo(0.14931875, 8);
     expect(result.byProject).toEqual([{ name: 'myrepo', pct: 100 }]);
     expect(result.byProvider).toEqual([{ provider: 'claude', pct: 100 }]);
   });
@@ -78,5 +81,100 @@ describe('aggregateUsage', () => {
       byProject: [],
       byProvider: [],
     });
+  });
+});
+
+// Builds an isolated root with a single project dir containing one jsonl file with one
+// assistant usage line for the given model, so estCostUsd for that run reflects exactly
+// that model's per-bucket rate. input/cacheCreate/cacheRead/output chosen as 1,000,000
+// each so the resulting cost equals rate.input + rate.cacheWrite + rate.cacheRead +
+// rate.output directly (in USD), easy to hand-check.
+function makeUsageRoot(model: string) {
+  const root = mkdtempSync(join(tmpdir(), 'seshmux-usage-family-'));
+  const projDir = join(root, '-Users-demo-github-priced');
+  mkdirSync(projDir);
+  const line = JSON.stringify({
+    parentUuid: null,
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      model,
+      content: [{ type: 'text', text: 'ok' }],
+      usage: {
+        input_tokens: 1_000_000,
+        cache_creation_input_tokens: 1_000_000,
+        cache_read_input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+      },
+    },
+    uuid: 'p1',
+    timestamp: '2026-07-05T00:00:00.000Z',
+    cwd: '/Users/demo/github/priced',
+    sessionId: 'pppp-0001',
+    gitBranch: 'main',
+  });
+  const filePath = join(projDir, 'pppp-0001.jsonl');
+  writeFileSync(filePath, line + '\n');
+  const now = new Date();
+  utimesSync(filePath, now, now);
+  return root;
+}
+
+describe('aggregateUsage cost — family pricing', () => {
+  it('prices claude-opus-4-8 at the current $5/$25 opus rate, not legacy $15/$75', async () => {
+    const root = makeUsageRoot('claude-opus-4-8');
+    try {
+      const result = await aggregateUsage(30, root, 'claude');
+      // opus: input 5 + cacheWrite 6.25 + cacheRead 0.5 + output 25 = 36.75
+      expect(result.estCostUsd).toBeCloseTo(36.75, 6);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves claude-opus-4-7 (not an exact-match key) to the opus family rate', async () => {
+    const root = makeUsageRoot('claude-opus-4-7');
+    try {
+      const result = await aggregateUsage(30, root, 'claude');
+      expect(result.estCostUsd).toBeCloseTo(36.75, 6);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves a date-suffixed haiku id to the haiku family rate, not the opus fallback', async () => {
+    const root = makeUsageRoot('claude-haiku-4-5-20251001');
+    try {
+      const result = await aggregateUsage(30, root, 'claude');
+      // haiku: input 1 + cacheWrite 1.25 + cacheRead 0.1 + output 5 = 7.35
+      expect(result.estCostUsd).toBeCloseTo(7.35, 6);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves claude-fable-5 to the fable family rate ($10/$50)', async () => {
+    const root = makeUsageRoot('claude-fable-5');
+    try {
+      const result = await aggregateUsage(30, root, 'claude');
+      // fable: input 10 + cacheWrite 12.5 + cacheRead 1 + output 50 = 73.5
+      expect(result.estCostUsd).toBeCloseTo(73.5, 6);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('prices cache_read and cache_creation in distinct buckets (0.1x vs 1.25x input), not both at input rate', async () => {
+    const root = makeUsageRoot('claude-sonnet-4-6');
+    try {
+      const result = await aggregateUsage(30, root, 'claude');
+      // sonnet: input 3 + cacheWrite 3.75 + cacheRead 0.3 + output 15 = 22.05.
+      // If cacheCreate were (wrongly) priced at the input rate instead of cacheWrite,
+      // this would be input 3 + 3(mispriced) + 0.3 + 15 = 21.3 — a different number.
+      expect(result.estCostUsd).toBeCloseTo(22.05, 6);
+      expect(result.estCostUsd).not.toBeCloseTo(21.3, 6);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

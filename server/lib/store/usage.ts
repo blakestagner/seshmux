@@ -27,19 +27,37 @@ const ZERO_SUMMARY: UsageSummary = {
   byProvider: [],
 };
 
-// Static per-model pricing table, USD per million tokens. Approximate ("est.") published
-// rates as of this writing — input covers input_tokens + cache_creation_input_tokens,
-// cacheRead covers cache_read_input_tokens (billed far cheaper than fresh input), output
-// covers output_tokens. Unknown models fall back to the opus rate.
-const PRICING_PER_MILLION: Record<string, { input: number; cacheRead: number; output: number }> = {
-  'claude-opus-4-8': { input: 15, cacheRead: 1.5, output: 75 },
-  'claude-sonnet-5': { input: 3, cacheRead: 0.3, output: 15 },
-  'claude-haiku-4-5': { input: 0.8, cacheRead: 0.08, output: 4 },
-};
-const DEFAULT_PRICING = PRICING_PER_MILLION['claude-opus-4-8'];
+// Family pricing table, USD per million tokens, current published rates. Matched by
+// substring (case-insensitive) against the model string so date-suffixed ids
+// (claude-haiku-4-5-20251001) and bare aliases ("opus"/"sonnet"/"haiku") resolve to the
+// right family without an ever-growing exact-match list. cacheRead = input * 0.1;
+// cacheWrite = input * 1.25 (5-minute ephemeral cache rate).
+// ponytail: cache-write priced at the 5-min-ephemeral 1.25x rate; 1h TTL would be 2x —
+// acceptable approximation since usage.ts can't tell which TTL a session used.
+interface Rate {
+  input: number;
+  cacheWrite: number;
+  cacheRead: number;
+  output: number;
+}
+function rate(input: number, output: number): Rate {
+  return { input, cacheWrite: input * 1.25, cacheRead: input * 0.1, output };
+}
+const FAMILY_PRICING = {
+  opus: rate(5, 25),
+  sonnet: rate(3, 15),
+  haiku: rate(1, 5),
+  fable: rate(10, 50),
+} as const;
+const DEFAULT_PRICING = FAMILY_PRICING.sonnet; // mid-tier default for unknown/synthetic models
 
-function pricingFor(model: string) {
-  return PRICING_PER_MILLION[model] ?? DEFAULT_PRICING;
+function pricingFor(model: string): Rate {
+  const m = model.toLowerCase();
+  if (m.includes('opus')) return FAMILY_PRICING.opus;
+  if (m.includes('sonnet')) return FAMILY_PRICING.sonnet;
+  if (m.includes('haiku')) return FAMILY_PRICING.haiku;
+  if (m.includes('fable') || m.includes('mythos')) return FAMILY_PRICING.fable;
+  return DEFAULT_PRICING;
 }
 
 // Definition (documented per task spec):
@@ -90,11 +108,12 @@ async function readFileUsage(filePath: string, mtime: number): Promise<FileUsage
       cacheReads += cacheRead;
 
       const model = typeof obj.message.model === 'string' ? obj.message.model : '';
-      const rate = pricingFor(model);
+      const r = pricingFor(model);
       costUsd +=
-        ((input + cacheCreate) / 1_000_000) * rate.input +
-        (cacheRead / 1_000_000) * rate.cacheRead +
-        (output / 1_000_000) * rate.output;
+        (input / 1_000_000) * r.input +
+        (cacheCreate / 1_000_000) * r.cacheWrite +
+        (cacheRead / 1_000_000) * r.cacheRead +
+        (output / 1_000_000) * r.output;
     }
   } finally {
     rl.close();
