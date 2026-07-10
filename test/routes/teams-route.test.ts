@@ -85,6 +85,43 @@ describe('POST /api/teams/start', () => {
     expect(templates.some((t) => t.name === 'Recon')).toBe(true);
   });
 
+  it('400s when template is valid but the inline to save is not (never persist junk)', async () => {
+    const { f, calls } = makeApp();
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/teams/start',
+      headers: { origin },
+      payload: {
+        projectId: 'proj',
+        template: { name: 'Recon', members: [{ name: 'scout', role: 'map' }] },
+        inline: {},
+        task: 'audit auth',
+        saveTemplate: true,
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(calls).toHaveLength(0);
+    expect(await teamsLib.listTemplates()).toEqual([]);
+  });
+
+  it('400s on a malformed member shape (missing role / empty name / bad model)', async () => {
+    const { f, calls } = makeApp();
+    for (const members of [
+      [{ name: 'scout' }], // no role
+      [{ name: '', role: 'map' }], // empty name
+      [{ name: 'scout', role: 'map', model: 'gpt-5' }], // unknown model
+    ]) {
+      const res = await f.inject({
+        method: 'POST',
+        url: '/api/teams/start',
+        headers: { origin },
+        payload: { projectId: 'proj', inline: { name: 'Recon', members }, task: 'audit auth' },
+      });
+      expect(res.statusCode).toBe(400);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
   it('rejects a codex projectId (teams are claude-only)', async () => {
     const { f, calls } = makeApp({ resolveProjectProvider: async () => 'codex' });
     const res = await f.inject({

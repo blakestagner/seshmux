@@ -42,10 +42,27 @@ async function isDir(path: string): Promise<boolean> {
   }
 }
 
+const MODELS = ['opus', 'sonnet', 'haiku'];
+
 function isTeamDef(v: unknown): v is TeamDef {
   if (!v || typeof v !== 'object') return false;
   const t = v as Partial<TeamDef>;
-  return typeof t.name === 'string' && !!t.name && Array.isArray(t.members) && t.members.length > 0;
+  return (
+    typeof t.name === 'string' &&
+    !!t.name &&
+    Array.isArray(t.members) &&
+    t.members.length > 0 &&
+    t.members.every(
+      (m) =>
+        !!m &&
+        typeof m === 'object' &&
+        typeof m.name === 'string' &&
+        !!m.name.trim() &&
+        typeof m.role === 'string' &&
+        !!m.role.trim() &&
+        (m.model === undefined || MODELS.includes(m.model)),
+    )
+  );
 }
 
 export default async function teamRoutes(f: FastifyInstance, deps: TeamRouteDeps = {}) {
@@ -135,6 +152,12 @@ export default async function teamRoutes(f: FastifyInstance, deps: TeamRouteDeps
     if (!isTeamDef(def)) {
       reply.code(400);
       return { error: 'template or inline (with name + non-empty members[]) is required' };
+    }
+    // saveTemplate persists `inline` specifically — validate it even when a
+    // valid `template` was what passed the check above.
+    if (saveTemplate && inline && !isTeamDef(inline)) {
+      reply.code(400);
+      return { error: 'inline is invalid; cannot save as template' };
     }
 
     const projectProvider = await resolveProjectProvider(projectId);
