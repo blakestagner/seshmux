@@ -20,5 +20,9 @@ export default defineConfig({
   test: {
     globalSetup: './test/global-tmux-isolation.ts',
     env: { TMUX_TMPDIR: tmuxDir },
+    // Agent worktrees carry a full copy of test/ — without this exclude a
+    // bare `npm test` runs both copies concurrently against the shared real
+    // ~/.config/seshmux and they clobber each other.
+    exclude: ['**/node_modules/**', '.claude/worktrees/**'],
   },
 });
