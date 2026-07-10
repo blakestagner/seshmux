@@ -147,6 +147,9 @@ export async function startServer({ port = 4700, dev = false } = {}) {
   await (await import('./lib/workspaces')).reconcile().catch(() => {});
   await f.register((await import('./routes/workspaces')).default);
 
+  // Teams v1 (Task 3): template CRUD + team start via the SHARED startSession.
+  await f.register((await import('./routes/teams')).default);
+
   // Agent bridge (Task 16.5+): handoff / review / plan-off. Its spawn seam binds
   // to the SHARED startSession (opts shape already matches — bridge passes the
   // linkSrc OBJECT, startSession flattens it into tabMeta).

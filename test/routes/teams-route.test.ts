@@ -1,0 +1,146 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import Fastify from 'fastify';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import teamRoutes, { type TeamRouteDeps } from '../../server/routes/teams';
+import * as teamsLib from '../../server/lib/teams';
+
+const origin = 'http://127.0.0.1:4700';
+let repo: string;
+let configDir: string;
+let prevConfigDir: string | undefined;
+
+function makeApp(over: Partial<TeamRouteDeps> = {}) {
+  const calls: any[] = [];
+  const deps: TeamRouteDeps = {
+    resolveRepo: () => repo,
+    resolveProjectProvider: async () => 'claude',
+    startSession: async (i) => {
+      calls.push(i);
+      return {
+        ptyId: 'p1',
+        tabMeta: { ptyId: 'p1', provider: 'claude', projectPath: i.projectPath, mode: 'new', tmux: true },
+      };
+    },
+    ...over,
+  };
+  const f = Fastify();
+  f.register(teamRoutes, deps);
+  return { f, calls };
+}
+
+beforeEach(() => {
+  repo = mkdtempSync(join(tmpdir(), 'teamsroute-repo-'));
+  configDir = mkdtempSync(join(tmpdir(), 'teamsroute-config-'));
+  prevConfigDir = process.env.SESHMUX_CONFIG_DIR;
+  process.env.SESHMUX_CONFIG_DIR = configDir;
+});
+
+afterEach(() => {
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(configDir, { recursive: true, force: true });
+  if (prevConfigDir === undefined) delete process.env.SESHMUX_CONFIG_DIR;
+  else process.env.SESHMUX_CONFIG_DIR = prevConfigDir;
+});
+
+describe('POST /api/teams/start', () => {
+  it('composes the prompt and spawns via the SHARED startSession', async () => {
+    const { f, calls } = makeApp();
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/teams/start',
+      headers: { origin },
+      payload: {
+        projectId: 'proj',
+        inline: { name: 'Recon', members: [{ name: 'scout', role: 'map', model: 'sonnet' }] },
+        task: 'audit auth',
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].provider).toBe('claude');
+    expect(calls[0].projectPath).toBe(repo);
+    expect(calls[0].firstPrompt).toContain('Recon');
+    expect(calls[0].firstPrompt).toContain('scout');
+    expect(calls[0].firstPrompt).toContain('audit auth');
+    expect(res.json().tabMeta.ptyId).toBe('p1');
+  });
+
+  it('saveTemplate:true persists the inline team as a template', async () => {
+    const { f } = makeApp();
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/teams/start',
+      headers: { origin },
+      payload: {
+        projectId: 'proj',
+        inline: { name: 'Recon', members: [{ name: 'scout', role: 'map' }] },
+        task: 'audit auth',
+        saveTemplate: true,
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const templates = await teamsLib.listTemplates();
+    expect(templates.some((t) => t.name === 'Recon')).toBe(true);
+  });
+
+  it('rejects a codex projectId (teams are claude-only)', async () => {
+    const { f, calls } = makeApp({ resolveProjectProvider: async () => 'codex' });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/teams/start',
+      headers: { origin },
+      payload: {
+        projectId: 'proj',
+        inline: { name: 'Recon', members: [{ name: 'scout', role: 'map' }] },
+        task: 'audit auth',
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('templates CRUD', () => {
+  it('GET/POST/DELETE round-trips templates', async () => {
+    const { f } = makeApp();
+
+    const empty = await f.inject({ method: 'GET', url: '/api/teams', headers: { origin } });
+    expect(empty.json()).toEqual([]);
+
+    const created = await f.inject({
+      method: 'POST',
+      url: '/api/teams',
+      headers: { origin },
+      payload: { name: 'Recon', members: [{ name: 'scout', role: 'map' }] },
+    });
+    expect(created.statusCode).toBe(200);
+
+    const listed = await f.inject({ method: 'GET', url: '/api/teams', headers: { origin } });
+    expect(listed.json()).toHaveLength(1);
+    expect(listed.json()[0].name).toBe('Recon');
+
+    const deleted = await f.inject({ method: 'DELETE', url: '/api/teams?name=Recon', headers: { origin } });
+    expect(deleted.statusCode).toBe(200);
+
+    const listedAfter = await f.inject({ method: 'GET', url: '/api/teams', headers: { origin } });
+    expect(listedAfter.json()).toEqual([]);
+  });
+});
+
+describe('GET /api/teams/members', () => {
+  it('404s when the roster cannot be resolved', async () => {
+    const { f } = makeApp({ teamRoster: async () => null });
+    const res = await f.inject({ method: 'GET', url: '/api/teams/members?teamName=nope', headers: { origin } });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('resolves by leadSession when teamName is absent', async () => {
+    const info = { teamName: 'Recon', leadSessionId: 'lead-1', createdAt: 1, members: [] };
+    const { f } = makeApp({ teamByLeadSession: async (id) => (id === 'lead-1' ? info : null) });
+    const res = await f.inject({ method: 'GET', url: '/api/teams/members?leadSession=lead-1', headers: { origin } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().teamName).toBe('Recon');
+  });
+});
