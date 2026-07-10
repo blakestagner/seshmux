@@ -148,7 +148,12 @@ export async function startServer({ port = 4700, dev = false } = {}) {
   await f.register((await import('./routes/workspaces')).default);
 
   // Teams v1 (Task 3): template CRUD + team start via the SHARED startSession.
-  await f.register((await import('./routes/teams')).default);
+  // onTeamWatch (Task 4): first /api/teams/members request for a team arms the
+  // hub's lazy config.json watch → live {event:'team'} pushes for the roster panel.
+  await f.register((await import('./routes/teams')).default, {
+    onTeamWatch: (teamName: string, leadSessionId: string, configPath: string) =>
+      hub.watchTeam(teamName, leadSessionId, configPath),
+  });
 
   // Agent bridge (Task 16.5+): handoff / review / plan-off. Its spawn seam binds
   // to the SHARED startSession (opts shape already matches — bridge passes the

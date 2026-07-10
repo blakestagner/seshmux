@@ -203,6 +203,7 @@ export class ClaudeProvider implements AgentProvider {
     teamRoster: (teamName) => teamRoster(join(this.homeDir, '.claude', 'teams'), this.root, teamName),
     teamByLeadSession: (leadSessionId) =>
       teamByLeadSession(join(this.homeDir, '.claude', 'teams'), this.root, leadSessionId),
+    configPath: (teamName) => join(this.homeDir, '.claude', 'teams', teamName, 'config.json'),
   };
 }
 

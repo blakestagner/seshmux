@@ -31,6 +31,13 @@ export interface TeamRouteDeps {
   deleteTemplate?: typeof teamsLib.deleteTemplate;
   teamRoster?: (teamName: string) => Promise<TeamInfo | null>;
   teamByLeadSession?: (leadSessionId: string) => Promise<TeamInfo | null>;
+  // Resolve a team's config.json absolute path via the claude provider (hard
+  // rule 3 — the route is the one place already going through the provider;
+  // the hub never constructs the path itself). Injectable for tests.
+  teamConfigPath?: (teamName: string) => Promise<string | null>;
+  // Task 4: arm the events-hub's lazy config.json watch on first roster
+  // request. Optional — omitted in tests that don't care about live push.
+  onTeamWatch?: (teamName: string, leadSessionId: string, configPath: string) => void;
 }
 
 async function isDir(path: string): Promise<boolean> {
@@ -93,6 +100,11 @@ export default async function teamRoutes(f: FastifyInstance, deps: TeamRouteDeps
     const claude = providers.find((p) => p.id === 'claude');
     return claude?.teams ? claude.teams.teamByLeadSession(leadSessionId) : null;
   };
+  const defaultTeamConfigPath = async (teamName: string): Promise<string | null> => {
+    const providers = await getProviders();
+    const claude = providers.find((p) => p.id === 'claude');
+    return claude?.teams ? claude.teams.configPath(teamName) : null;
+  };
 
   const resolveRepo = deps.resolveRepo ?? defaultResolveRepo;
   const resolveProjectProvider = deps.resolveProjectProvider ?? defaultResolveProjectProvider;
@@ -102,6 +114,7 @@ export default async function teamRoutes(f: FastifyInstance, deps: TeamRouteDeps
   const doDelete = deps.deleteTemplate ?? teamsLib.deleteTemplate;
   const doTeamRoster = deps.teamRoster ?? defaultTeamRoster;
   const doTeamByLeadSession = deps.teamByLeadSession ?? defaultTeamByLeadSession;
+  const doTeamConfigPath = deps.teamConfigPath ?? defaultTeamConfigPath;
 
   // GET /api/teams -> saved templates.
   f.get('/api/teams', async () => doList());
@@ -195,6 +208,12 @@ export default async function teamRoutes(f: FastifyInstance, deps: TeamRouteDeps
       if (!info) {
         reply.code(404);
         return { error: 'team not found' };
+      }
+      // Task 4: arm the live-roster watch on first request for this team —
+      // idempotent on the hub side, so every subsequent /members poll is a no-op here.
+      if (deps.onTeamWatch) {
+        const configPath = await doTeamConfigPath(info.teamName);
+        if (configPath) deps.onTeamWatch(info.teamName, info.leadSessionId, configPath);
       }
       return info;
     },

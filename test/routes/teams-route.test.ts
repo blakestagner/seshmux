@@ -180,4 +180,25 @@ describe('GET /api/teams/members', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().teamName).toBe('Recon');
   });
+
+  it('arms the events-hub team watch (Task 4) with the resolved config path, once per request', async () => {
+    const info = { teamName: 'Recon', leadSessionId: 'lead-1', createdAt: 1, members: [] };
+    const armed: any[] = [];
+    const { f } = makeApp({
+      teamRoster: async (name) => (name === 'Recon' ? info : null),
+      teamConfigPath: async (name) => `/fake/teams/${name}/config.json`,
+      onTeamWatch: (teamName, leadSessionId, configPath) => armed.push({ teamName, leadSessionId, configPath }),
+    });
+    const res = await f.inject({ method: 'GET', url: '/api/teams/members?teamName=Recon', headers: { origin } });
+    expect(res.statusCode).toBe(200);
+    expect(armed).toEqual([{ teamName: 'Recon', leadSessionId: 'lead-1', configPath: '/fake/teams/Recon/config.json' }]);
+  });
+
+  it('does not call onTeamWatch when the roster 404s', async () => {
+    const armed: any[] = [];
+    const { f } = makeApp({ teamRoster: async () => null, onTeamWatch: (...a) => armed.push(a) });
+    const res = await f.inject({ method: 'GET', url: '/api/teams/members?teamName=nope', headers: { origin } });
+    expect(res.statusCode).toBe(404);
+    expect(armed).toHaveLength(0);
+  });
 });

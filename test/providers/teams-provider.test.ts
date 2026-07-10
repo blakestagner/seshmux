@@ -123,6 +123,12 @@ describe('ClaudeProvider.teams', () => {
     expect(t!.teamName).toBe('session-fix');
   });
 
+  it('configPath resolves the absolute config.json path for events-hub to watch (Task 4)', () => {
+    expect(claude.teams!.configPath('session-fix')).toBe(
+      path.join(home, '.claude', 'teams', 'session-fix', 'config.json'),
+    );
+  });
+
   it('readHead captures teamName + agentName from a teammate jsonl head', async () => {
     const metas = await claude.listSessions(projDir);
     const m = metas.find((x) => x.id === SCOUT_SESSION_ID)!;

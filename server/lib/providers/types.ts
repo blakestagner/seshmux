@@ -94,6 +94,10 @@ export interface SubagentSupport {
 export interface TeamSupport {
   teamRoster(teamName: string): Promise<TeamInfo | null>;
   teamByLeadSession(leadSessionId: string): Promise<TeamInfo | null>; // for auto-name resolution
+  // Absolute path to a team's config.json (Task 4: events-hub lazy-watches this
+  // for live roster pushes). Hard rule 3: the path literal stays here, not in
+  // the hub — callers only ever get a resolved absolute path.
+  configPath(teamName: string): string;
 }
 
 export interface AgentProvider {
