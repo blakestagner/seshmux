@@ -51,14 +51,40 @@ const FAMILY_PRICING = {
 } as const;
 const DEFAULT_PRICING = FAMILY_PRICING.sonnet; // mid-tier default for unknown/synthetic models
 
+// OpenAI (Codex) rates, USD per million tokens. cacheRead = input * 0.1 (published discount);
+// OpenAI has no cache-write charge, so cacheWrite here is unused for gpt models — set to
+// input as a harmless placeholder bucket (codex rollouts never report cache-creation tokens).
+function gptRate(input: number, output: number): Rate {
+  return { input, cacheWrite: input, cacheRead: input * 0.1, output };
+}
+const GPT_PRICING = {
+  '5.5': gptRate(5, 30),
+  '5.4': gptRate(2.5, 15),
+  '5.3-codex': gptRate(1.75, 14),
+  codex: gptRate(1.25, 10), // gpt-5.1-codex / gpt-5.1 family
+} as const;
+const GPT_DEFAULT = GPT_PRICING['5.4']; // ponytail: mid-tier default
+
 function pricingFor(model: string): Rate {
   const m = model.toLowerCase();
+  // gate gpt/codex checks on the string actually being an OpenAI model id, so "codex"
+  // never accidentally matches a claude model (none of opus/sonnet/haiku/fable contain it).
+  if (m.includes('gpt') || m.includes('codex')) {
+    if (m.includes('5.5')) return GPT_PRICING['5.5'];
+    if (m.includes('5.3-codex')) return GPT_PRICING['5.3-codex'];
+    if (m.includes('5.4')) return GPT_PRICING['5.4'];
+    if (m.includes('codex') || m.includes('5.1')) return GPT_PRICING.codex;
+    return GPT_DEFAULT;
+  }
   if (m.includes('opus')) return FAMILY_PRICING.opus;
   if (m.includes('sonnet')) return FAMILY_PRICING.sonnet;
   if (m.includes('haiku')) return FAMILY_PRICING.haiku;
   if (m.includes('fable') || m.includes('mythos')) return FAMILY_PRICING.fable;
   return DEFAULT_PRICING;
 }
+
+export { pricingFor };
+export type { Rate };
 
 // Definition (documented per task spec):
 //   totalTokens = sum(output_tokens) + sum(input_tokens + cache_creation_input_tokens)
