@@ -215,9 +215,22 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
       }
       sessionId = resolved;
     }
+    // Missing/non-string sessionId is a client error, and an unknown one surfaces as
+    // compose's 'session not found' throw — both are 404s, not 500s echoing internals
+    // (R4-1, sibling of 2c13d70's projectId guard).
+    if (typeof sessionId !== 'string' || !sessionId) {
+      reply.code(404);
+      return { error: 'session not found' };
+    }
     const source = await resolveProvider(projectId, sessionId);
     const target = OTHER[source];
-    const md = await compose(projectId, sessionId, repo);
+    let md: string;
+    try {
+      md = await compose(projectId, sessionId, repo);
+    } catch {
+      reply.code(404);
+      return { error: 'session not found' };
+    }
     await atomicWrite(join(repo, '.seshmux', filename), md);
     // Post a scratchpad entry so cross-review is visible in the shared handoff log from the
     // moment it's requested (the reviewing agent fills in its verdict below, per its prompt).

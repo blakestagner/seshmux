@@ -99,6 +99,22 @@ describe('POST /api/bridge/planoff', () => {
     expect(body.codex.plan).toBe('plan B');
   });
 
+  it('404s (not 500, no internals echoed) on a missing or unknown sessionId (R4-1)', async () => {
+    // Unknown session: prod compose throws 'session not found' — inject the same.
+    const { f } = makeApp({
+      composeBrief: async () => { throw new Error('session not found: demo/nope'); },
+    });
+    for (const payload of [{ projectId: 'demo' }, { projectId: 'demo', sessionId: 'nope' }]) {
+      const res = await f.inject({
+        method: 'POST', url: '/api/bridge/handoff', headers: { origin },
+        payload,
+      });
+      expect(res.statusCode).toBe(404);
+      expect(res.body).not.toContain('undefined'); // no internal error echo
+      expect(res.body).not.toContain('demo/nope'); // compose message not leaked
+    }
+  });
+
   it('404s (not 500) when projectId is entirely missing from the body', async () => {
     const { f } = makeApp();
     const res = await f.inject({
