@@ -188,78 +188,148 @@ interface ScannedEntry extends Project {
   isWorkspace: boolean;
 }
 
+// Result of one full root walk: the merged Project[] AND the per-dirent real
+// cwd map that listSessions' member-dir resolution needs, computed in the SAME
+// pass so listSessions never re-walks the root (PERF-1). `dirCwds` holds only
+// dirents with a non-null recorded cwd — the only ones member-dir matching or
+// realCwd resolution ever hits.
+interface RootScan {
+  projects: Project[];
+  dirCwds: { dirPath: string; cwd: string }[];
+}
+
+// Short-TTL memo of the store scan, keyed per (provider, root). One request used
+// to re-crawl ~3,600 files several times (GET /api/projects, per-project listing,
+// search enrichment, per-PTY live resolution); this collapses them to one walk
+// bounded by TTL, and the chokidar watcher invalidates on file change so
+// staleness is bounded by watcher-debounce, not just the TTL floor.
+// The PROMISE is cached (not the resolved value) so concurrent callers within
+// one tick — e.g. the /api/sessions/live Promise.all over N PTYs — share a
+// single in-flight walk (PERF-2).
+const SCAN_TTL_MS = 3000;
+interface ScanCacheEntry {
+  at: number;
+  scan: Promise<RootScan>;
+}
+const scanCache = new Map<string, ScanCacheEntry>();
+
+function scanKey(root: string, provider: ProviderId): string {
+  return `${provider}:${root}`;
+}
+
+async function scanRoot(root: string, provider: ProviderId): Promise<RootScan> {
+  const key = scanKey(root, provider);
+  const hit = scanCache.get(key);
+  if (hit && Date.now() - hit.at < SCAN_TTL_MS) return hit.scan;
+  const scan = computeRootScan(root, provider);
+  scanCache.set(key, { at: Date.now(), scan });
+  return scan;
+}
+
+// Drop cached scans so the next read re-walks disk. No arg = clear everything;
+// a provider id clears only that provider's roots (wired to the chokidar watcher
+// in events-hub — a session-new/touch on a provider bumps its scan). Safe to
+// call with any ProviderId; a provider with no cached root is a no-op.
+export function invalidateScanCache(provider?: ProviderId): void {
+  if (!provider) {
+    scanCache.clear();
+    return;
+  }
+  const prefix = `${provider}:`;
+  for (const key of scanCache.keys()) {
+    if (key.startsWith(prefix)) scanCache.delete(key);
+  }
+}
+
 export async function scanProjects(root: string, provider: ProviderId): Promise<Project[]> {
+  return (await scanRoot(root, provider)).projects;
+}
+
+async function computeRootScan(root: string, provider: ProviderId): Promise<RootScan> {
   let dirents;
   try {
     dirents = await readdir(root, { withFileTypes: true });
   } catch {
-    return [];
+    return { projects: [], dirCwds: [] };
   }
 
   const parentOf = await workspaceParentMap();
-  const projects: ScannedEntry[] = [];
-  for (const d of dirents) {
-    if (!d.isDirectory()) continue;
-    const dirPath = join(root, d.name);
-    let files: string[];
-    try {
-      files = (await readdir(dirPath)).filter((f) => f.endsWith('.jsonl'));
-    } catch {
-      continue;
-    }
-    if (files.length === 0) continue;
-    const decoded = decodeProjectDir(d.name);
-    // Stat each session file: updatedAt = newest mtime (catches resume appends
-    // that leave the dir mtime untouched), createdAt = oldest birthtime. Track
-    // the newest file so we can read its real cwd from the jsonl head.
-    let updatedAt = 0;
-    let createdAt = Number.MAX_SAFE_INTEGER;
-    let newestFile: { path: string; mtime: number } | null = null;
-    for (const f of files) {
-      try {
-        const fp = join(dirPath, f);
-        const st = await stat(fp);
-        updatedAt = Math.max(updatedAt, st.mtimeMs);
-        createdAt = Math.min(createdAt, st.birthtimeMs || st.mtimeMs);
-        if (!newestFile || st.mtimeMs > newestFile.mtime) newestFile = { path: fp, mtime: st.mtimeMs };
-      } catch {
-        /* skip unreadable file */
-      }
-    }
-    if (createdAt === Number.MAX_SAFE_INTEGER) createdAt = updatedAt;
-    // Prefer the real cwd from the jsonl over the lossy dash-decode (a repo folder
-    // with a hyphen decodes to a wrong, nonexistent path → resume 400s).
-    let path = decoded.path;
-    let name = decoded.name;
-    if (newestFile) {
-      const head = await readHead(newestFile.path, Math.floor(newestFile.mtime));
-      if (head.cwd) {
-        path = head.cwd;
-        name = head.cwd.split('/').filter(Boolean).pop() || decoded.name;
-      }
-    }
-    let missing = false;
-    try {
-      missing = !(await stat(path)).isDirectory();
-    } catch {
-      missing = true;
-    }
-    // parentPath set = this dirent's cwd is a known workspace worktree dir —
-    // folded into the parent project below, never listed on its own (no rail
-    // sprout of one project group per workspace).
-    const parentPath = parentOf.get(path);
-    projects.push({
-      id: d.name,
-      provider,
-      name,
-      path: parentPath ?? path,
-      sessionCount: files.length,
-      createdAt,
-      updatedAt,
-      missing: parentPath ? false : missing, // parent's own missing-ness checked in the merge pass
-      isWorkspace: !!parentPath,
-    });
-  }
+  const dirCwds: { dirPath: string; cwd: string }[] = [];
+
+  // Scan every project dir in parallel (PERF-5): each is independent readdir +
+  // stat-all + one head read.
+  const scanned = await Promise.all(
+    dirents
+      .filter((d) => d.isDirectory())
+      .map(async (d): Promise<ScannedEntry | null> => {
+        const dirPath = join(root, d.name);
+        let files: string[];
+        try {
+          files = (await readdir(dirPath)).filter((f) => f.endsWith('.jsonl'));
+        } catch {
+          return null;
+        }
+        if (files.length === 0) return null;
+        const decoded = decodeProjectDir(d.name);
+        // Stat each session file: updatedAt = newest mtime (catches resume appends
+        // that leave the dir mtime untouched), createdAt = oldest birthtime. Track
+        // the newest file so we can read its real cwd from the jsonl head.
+        const stats = await Promise.all(
+          files.map(async (f) => {
+            const fp = join(dirPath, f);
+            try {
+              return { fp, st: await stat(fp) };
+            } catch {
+              return null; // skip unreadable file
+            }
+          }),
+        );
+        let updatedAt = 0;
+        let createdAt = Number.MAX_SAFE_INTEGER;
+        let newestFile: { path: string; mtime: number } | null = null;
+        for (const s of stats) {
+          if (!s) continue;
+          updatedAt = Math.max(updatedAt, s.st.mtimeMs);
+          createdAt = Math.min(createdAt, s.st.birthtimeMs || s.st.mtimeMs);
+          if (!newestFile || s.st.mtimeMs > newestFile.mtime) newestFile = { path: s.fp, mtime: s.st.mtimeMs };
+        }
+        if (createdAt === Number.MAX_SAFE_INTEGER) createdAt = updatedAt;
+        // Prefer the real cwd from the jsonl over the lossy dash-decode (a repo folder
+        // with a hyphen decodes to a wrong, nonexistent path → resume 400s).
+        let path = decoded.path;
+        let name = decoded.name;
+        if (newestFile) {
+          const head = await readHead(newestFile.path, Math.floor(newestFile.mtime));
+          if (head.cwd) {
+            path = head.cwd;
+            name = head.cwd.split('/').filter(Boolean).pop() || decoded.name;
+            dirCwds.push({ dirPath, cwd: head.cwd });
+          }
+        }
+        let missing = false;
+        try {
+          missing = !(await stat(path)).isDirectory();
+        } catch {
+          missing = true;
+        }
+        // parentPath set = this dirent's cwd is a known workspace worktree dir —
+        // folded into the parent project below, never listed on its own (no rail
+        // sprout of one project group per workspace).
+        const parentPath = parentOf.get(path);
+        return {
+          id: d.name,
+          provider,
+          name,
+          path: parentPath ?? path,
+          sessionCount: files.length,
+          createdAt,
+          updatedAt,
+          missing: parentPath ? false : missing, // parent's own missing-ness checked in the merge pass
+          isWorkspace: !!parentPath,
+        };
+      }),
+  );
+  const projects = scanned.filter((p): p is ScannedEntry => p !== null);
 
   // Merge pass: fold every entry whose (possibly rewritten) path matches a
   // parent repo into ONE Project per path. The id/name winner is picked
@@ -289,22 +359,24 @@ export async function scanProjects(root: string, provider: ProviderId): Promise<
   // Every remaining group still flagged isWorkspace never saw its repo's own
   // dirent — synthesize a stable id/name from the repo path itself.
   const out = [...byPath.values()];
-  for (const p of out) {
-    if (p.isWorkspace) {
-      p.id = p.path.replace(/\//g, '-');
-      p.name = p.path.split('/').filter(Boolean).pop() || p.id;
-    }
-    // Re-stat `missing` post-merge: a workspace-only parent (brand new repo,
-    // no sessions yet outside the workspace) never got a real missing check.
-    try {
-      p.missing = !(await stat(p.path)).isDirectory();
-    } catch {
-      p.missing = true;
-    }
-  }
+  await Promise.all(
+    out.map(async (p) => {
+      if (p.isWorkspace) {
+        p.id = p.path.replace(/\//g, '-');
+        p.name = p.path.split('/').filter(Boolean).pop() || p.id;
+      }
+      // Re-stat `missing` post-merge: a workspace-only parent (brand new repo,
+      // no sessions yet outside the workspace) never got a real missing check.
+      try {
+        p.missing = !(await stat(p.path)).isDirectory();
+      } catch {
+        p.missing = true;
+      }
+    }),
+  );
   out.sort((a, b) => a.name.localeCompare(b.name));
   // Strip the scan-internal flag before returning — callers get Project[].
-  return out.map(({ isWorkspace: _isWorkspace, ...rest }) => rest);
+  return { projects: out.map(({ isWorkspace: _isWorkspace, ...rest }) => rest), dirCwds };
 }
 
 // Read every session file in one project dir into SessionMeta[] (no sort/filter —
@@ -348,75 +420,23 @@ export async function readDirSessions(dirPath: string, projectId: string, provid
   return metas;
 }
 
-// Real cwd this project dir was recorded under (prefers the jsonl-recorded
-// cwd over the lossy dash-decode — mirrors scanProjects; a hyphenated repo
-// name would otherwise resolve to the wrong parent path here too).
-async function realCwdOf(dirPath: string, fallback: string): Promise<string> {
-  let files: string[];
-  try {
-    files = (await readdir(dirPath)).filter((f) => f.endsWith('.jsonl'));
-  } catch {
-    return fallback;
-  }
-  let newestFile: { path: string; mtime: number } | null = null;
-  for (const f of files) {
-    const fp = join(dirPath, f);
-    try {
-      const st = await stat(fp);
-      if (!newestFile || st.mtimeMs > newestFile.mtime) newestFile = { path: fp, mtime: st.mtimeMs };
-    } catch {
-      /* skip */
-    }
-  }
-  if (!newestFile) return fallback;
-  const head = await readHead(newestFile.path, Math.floor(newestFile.mtime));
-  return head.cwd || fallback;
-}
-
-// Given a parent repo path, find every dirent under `root` that belongs to
-// its session group: the repo's OWN dirent (real cwd === parentPath) plus
-// every workspace worktree dirent (real cwd is one of parentPath's recorded
-// worktree dirs) — the other half of scanProjects' grouping (Spec 1
-// "Scanning seam"). Reads only dir names + one head each; cheap relative to
-// the per-session parse below. Returns [] when parentPath has no known
-// workspaces AND doesn't match any dirent's own cwd (plain, non-workspace
-// project — caller falls back to reading its own dirent directly).
-async function memberDirs(root: string, parentPath: string, parentOf: Map<string, string>): Promise<string[]> {
+// Given a parent repo path, find every dirent that belongs to its session
+// group: the repo's OWN dirent (real cwd === parentPath) plus every workspace
+// worktree dirent (real cwd is one of parentPath's recorded worktree dirs) —
+// the other half of scanProjects' grouping (Spec 1 "Scanning seam"). Pure over
+// the cached scan's dirCwds map (no disk walk — that already happened once in
+// computeRootScan). Returns [] when parentPath has no known workspaces AND
+// doesn't match any dirent's own cwd (plain, non-workspace project — caller
+// falls back to reading its own dirent directly).
+function memberDirs(
+  dirCwds: { dirPath: string; cwd: string }[],
+  parentPath: string,
+  parentOf: Map<string, string>,
+): string[] {
   const workspaceDirs = new Set([...parentOf.entries()].filter(([, p]) => p === parentPath).map(([dir]) => dir));
-
-  let dirents;
-  try {
-    dirents = await readdir(root, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const hits: string[] = [];
-  for (const d of dirents) {
-    if (!d.isDirectory()) continue;
-    const dirPath = join(root, d.name);
-    let files: string[];
-    try {
-      files = (await readdir(dirPath)).filter((f) => f.endsWith('.jsonl'));
-    } catch {
-      continue;
-    }
-    if (files.length === 0) continue;
-    // One head read is enough to learn this dirent's real cwd.
-    let newestFile: { path: string; mtime: number } | null = null;
-    for (const f of files) {
-      const fp = join(dirPath, f);
-      try {
-        const st = await stat(fp);
-        if (!newestFile || st.mtimeMs > newestFile.mtime) newestFile = { path: fp, mtime: st.mtimeMs };
-      } catch {
-        /* skip */
-      }
-    }
-    if (!newestFile) continue;
-    const head = await readHead(newestFile.path, Math.floor(newestFile.mtime));
-    if (head.cwd && (head.cwd === parentPath || workspaceDirs.has(head.cwd))) hits.push(dirPath);
-  }
-  return hits;
+  return dirCwds
+    .filter(({ cwd }) => cwd === parentPath || workspaceDirs.has(cwd))
+    .map(({ dirPath }) => dirPath);
 }
 
 export async function listSessions(projectId: string, opts: ListOpts): Promise<SessionMeta[]> {
@@ -425,28 +445,29 @@ export async function listSessions(projectId: string, opts: ListOpts): Promise<S
 
   // Resolve projectId to the parent repo's real path, handling all three id
   // forms a caller may pass:
-  //  1. A workspace worktree's OWN dirent id — realCwdOf(dirPath) resolves to
-  //     the worktree's cwd, which IS a key in parentOf; map UP to its parent
-  //     repo (a worktree scanned as its own entry before grouping applied).
-  //  2. The repo's own dirent id — realCwdOf(dirPath) resolves directly to
-  //     the repo path (not a worktree dir), used as-is.
+  //  1. A workspace worktree's OWN dirent id — its recorded cwd IS a key in
+  //     parentOf; map UP to its parent repo (a worktree scanned as its own
+  //     entry before grouping applied).
+  //  2. The repo's own dirent id — its recorded cwd resolves directly to the
+  //     repo path (not a worktree dir), used as-is.
   //  3. A synthesized parent id (scanProjects made one up because no repo
-  //     dirent exists — order 2's fix) — dirPath doesn't exist on disk, so
-  //     realCwdOf falls back to the lossy decode of projectId, which for a
-  //     synthesized id IS already the dash-encoding of the real repo path
-  //     (scanProjects and this synthesis use the same encoding), so the
-  //     lossy decode happens to be exact here — EXCEPT when the repo path
-  //     itself contains a hyphen, where decode would mangle it. Guard that
-  //     case by reverse-matching projectId against every known parent repo's
-  //     own dash-encoding first.
+  //     dirent exists — order 2's fix) — dirPath isn't in dirCwds, so we fall
+  //     back to the lossy decode of projectId, which for a synthesized id IS
+  //     already the dash-encoding of the real repo path (scanProjects and this
+  //     synthesis use the same encoding), so the lossy decode happens to be
+  //     exact here — EXCEPT when the repo path itself contains a hyphen, where
+  //     decode would mangle it. Guard that case by reverse-matching projectId
+  //     against every known parent repo's own dash-encoding first.
+  const { dirCwds } = await scanRoot(root, provider);
+  const cwdByDir = new Map(dirCwds.map(({ dirPath: d, cwd }) => [d, cwd]));
   const parentOf = await workspaceParentMap();
   const repoByEncodedId = new Map(
     [...new Set(parentOf.values())].map((repoPath) => [repoPath.replace(/\//g, '-'), repoPath]),
   );
-  const enteredCwd = await realCwdOf(dirPath, decodeProjectDir(projectId).path);
+  const enteredCwd = cwdByDir.get(dirPath) ?? decodeProjectDir(projectId).path;
   const parentPath = parentOf.get(enteredCwd) ?? repoByEncodedId.get(projectId) ?? enteredCwd;
 
-  const members = await memberDirs(root, parentPath, parentOf);
+  const members = memberDirs(dirCwds, parentPath, parentOf);
   const dirs = members.length ? members : [dirPath]; // no workspaces -> plain project, read its own dirent
 
   const metas: SessionMeta[] = [];

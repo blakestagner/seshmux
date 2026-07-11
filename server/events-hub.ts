@@ -26,6 +26,7 @@ import {
   type NIStatus,
 } from './lib/needs-input';
 import { startWatching, type WatchEvent, type Watcher } from './lib/store/watch';
+import { invalidateScanCache } from './lib/store/scan';
 import { getProviders } from './lib/providers/types';
 import { claudeStoreRoot, claudeSubagentWatchConfig } from './lib/providers/claude';
 import chokidar from 'chokidar';
@@ -342,7 +343,14 @@ export async function createEventsHub(): Promise<EventsHub> {
   let watcher: Watcher | null = null;
   try {
     watcher = startWatching({
-      emit: (ev: WatchEvent) => broadcast(ev),
+      emit: (ev: WatchEvent) => {
+        // A new/touched session file changes the store scan (new dir, bumped
+        // mtime → rail sort). Drop that provider's cached scan so the next read
+        // re-walks; staleness is now bounded by the watcher debounce, not the
+        // TTL floor. ctx-only events don't affect the scan.
+        if (ev.event === 'session-new' || ev.event === 'session-touch') invalidateScanCache(ev.provider);
+        broadcast(ev);
+      },
     });
   } catch {
     watcher = null; // stores absent — degrade quietly
