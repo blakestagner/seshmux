@@ -99,6 +99,15 @@ describe('POST /api/bridge/planoff', () => {
     expect(body.codex.plan).toBe('plan B');
   });
 
+  it('404s (not 500) when projectId is entirely missing from the body', async () => {
+    const { f } = makeApp();
+    const res = await f.inject({
+      method: 'POST', url: '/api/bridge/planoff', headers: { origin },
+      payload: { task: 'do a thing' },
+    });
+    expect(res.statusCode).toBe(404); // repoOrNull null-guards a missing projectId
+  });
+
   it('rejects a task starting with "-" (argument-injection guard)', async () => {
     const { f } = makeApp();
     const res = await f.inject({

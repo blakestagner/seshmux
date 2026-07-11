@@ -169,6 +169,9 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
   const peekTerminal = deps.peekTerminal ?? ((ptyId: string, lines?: number) => realPeekTerminal(ptyId, lines));
 
   async function repoOrNull(projectId: string): Promise<string | null> {
+    // A missing/non-string projectId (empty request body) must land on the routes'
+    // existing null → 404 branch, not throw inside resolveRepo → 500 (round-3 residual).
+    if (typeof projectId !== 'string' || !projectId) return null;
     const repo = await resolveRepo(projectId);
     return repo && (await isDir(repo)) ? repo : null;
   }
