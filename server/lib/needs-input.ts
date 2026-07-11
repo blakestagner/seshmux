@@ -49,20 +49,19 @@ export function initState(startTs = 0): NIState {
 // every row-advancing control into a newline BEFORE dropping the rest.
 export function stripAnsi(raw: string): string {
   return raw
-    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, (esc) =>
-      // Cursor-down (B), next/prev-line (E/F), absolute position (H/f), and vertical-position
-      // (d) all land the cursor on a different row — that's a row break. Every other CSI
-      // (colors, erase, horizontal moves) is chrome and vanishes.
-      /[BEFHfd]$/.test(esc) ? '\n' : '',
-    )
+    // Two straight passes, NOT one pass with a replacement callback: classify() runs on every
+    // PTY chunk of every live session, and a callback fires per escape (hundreds of SGR codes
+    // per repaint), which measured net-slower than the whole-frame matching it replaced (R6-4).
+    // Cursor-down (B), next/prev-line (E/F), absolute position (H/f) and vertical-position (d)
+    // land the cursor on a different row — a row break. Every other CSI is chrome.
+    .replace(/\x1b\[[0-9;?]*[ -/]*[BEFHfd]/g, '\n')
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC
     .replace(/\x1b[()][0-9A-B]/g, '') // charset select
     .replace(/[\r\x0b\x0c]/g, '\n') // CR / VT / FF also start a new row
-    .replace(/[\x00-\x08\x0e-\x1f\x7f]/g, '') // remaining control bytes (keeps \t, \n)
-    .replace(/[^\x20-\x7e\n\t]/g, '') // non-ascii (box-drawing, spinner glyphs) — KEEP newline + tab
+    .replace(/[^\x20-\x7e\n\t]/g, '') // control bytes + non-ascii (box-drawing, spinners) — KEEP \n, \t
     .replace(/[ \t]+/g, ' ') // collapse horizontal whitespace only
-    .replace(/ *\n */g, '\n') // trim spaces hugging newlines, keep the newline itself
-    .replace(/\n{2,}/g, '\n'); // a repositioning burst is still just one row break
+    .replace(/ ?\n[\s]*/g, '\n'); // trim space around a row break and collapse a repositioning burst
 }
 
 // Working signals — a live agent turn. Matched on the stripped LATEST frame.

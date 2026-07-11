@@ -558,16 +558,27 @@ export async function createEventsHub(): Promise<EventsHub> {
   //    we broadcast one final event and dispose right away instead of leaving
   //    a dead watcher around or treating ENOENT as an error to retry.
   const teamWatched = new Map<string, { close(): Promise<void> }>();
+  // The CURRENT lead session per team, read by the watcher's ping at emit time rather than
+  // captured in its closure. A team name can be reused by a NEW lead (the old lead died
+  // abruptly, so config.json was never unlinked and its watcher was never disposed); the
+  // has(teamName) early-return then reuses that watcher, and a closed-over leadSessionId
+  // would keep pinging the DEAD lead's id forever — the client keys its refresh by lead id,
+  // so the new team's roster would never live-update again (R6-3). Refreshing this map on
+  // every watchTeam call is what actually heals a reused team; an idle sweep only papered
+  // over it by forcing a re-arm.
+  const teamLead = new Map<string, string>();
   function watchTeam(teamName: string, leadSessionId: string, configPath: string) {
+    teamLead.set(teamName, leadSessionId);
     if (teamWatched.has(teamName)) return;
     try {
       const w = chokidar.watch(configPath, { ignoreInitial: true });
-      const ping = () => broadcast({ event: 'team', teamName, leadSessionId });
+      const ping = () => broadcast({ event: 'team', teamName, leadSessionId: teamLead.get(teamName) ?? leadSessionId });
       w.on('add', ping);
       w.on('change', ping);
       w.on('unlink', () => {
         ping(); // one final event: the roster panel refetches and sees the team is gone
         teamWatched.delete(teamName);
+        teamLead.delete(teamName);
         void w.close().catch(() => {});
       });
       teamWatched.set(teamName, w);

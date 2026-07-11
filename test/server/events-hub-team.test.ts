@@ -110,6 +110,34 @@ describe('events-hub — team config.json lazy watch (Task 4)', () => {
     await waitFor(() => seen.filter((e) => e.event === 'team').length === 2);
   });
 
+  it('a reused team name pings the NEW lead, not the dead one whose watcher survived (R6-3)', async () => {
+    const { createEventsHub } = await import('../../server/events-hub');
+    const hub = await createEventsHub();
+    hubs.push(hub);
+
+    dir = mkdtempSync(join(tmpdir(), 'seshmux-team-watch-'));
+    const configPath = join(dir, 'config.json');
+    writeFileSync(configPath, JSON.stringify({ members: [] }));
+
+    const { ws, seen } = fakeWs();
+    hub.addClient(ws);
+    hub.watchTeam('alpha', 'LEAD-A', configPath);
+    await new Promise((r) => setTimeout(r, 200));
+
+    // LEAD-A dies abruptly: config.json is NOT unlinked, so the watcher is never disposed.
+    // A new team reuses the name with a new lead; watchTeam early-returns on the live watcher.
+    hub.watchTeam('alpha', 'LEAD-B', configPath);
+    await new Promise((r) => setTimeout(r, 100));
+
+    seen.length = 0;
+    writeFileSync(configPath, JSON.stringify({ members: [{ name: 'scout' }] }));
+    await waitFor(() => seen.some((e) => e.event === 'team'));
+
+    // The client keys its roster refresh by leadSessionId — a stale id means the new team's
+    // panel never updates again.
+    expect(seen.find((e) => e.event === 'team')!.leadSessionId).toBe('LEAD-B');
+  });
+
   it('sweepIdleWatchers does NOT evict a team watcher — nothing would re-arm it (R5-5)', async () => {
     const { createEventsHub } = await import('../../server/events-hub');
     const hub = await createEventsHub();
