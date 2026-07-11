@@ -1,0 +1,56 @@
+@use '../styles/typography' as *;
+
+// Team modal (Task 5) — shell/header/× come from ui/Modal; this file is only
+// the body layout (predefined cards / inline form) + spacing/state.
+
+.path {
+  @include t-meta;
+  margin-bottom: 12px;
+}
+
+.modeSeg {
+  margin-bottom: 14px;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.empty {
+  @include t-sub;
+  padding: 8px 0;
+}
+
+.label {
+  @include t-sub;
+  margin-top: 8px;
+}
+
+.taskWrap {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.memberRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.saveRow {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.foot {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}

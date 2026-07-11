@@ -38,7 +38,16 @@ export default async function envRoutes(f: FastifyInstance, deps: EnvRouteDeps =
       getProviders(),
     ]);
     const commands: Record<string, ReturnType<typeof commandPreview>> = {};
-    for (const p of providers) commands[p.id] = commandPreview(p.commands);
+    // Task 5 Step 1b: teammateMode gate for the Teams entry points — only
+    // providers that implement TeamSupport report it (claude only today).
+    const teams: Record<string, { teammateMode: string | null }> = {};
+    for (const p of providers) {
+      commands[p.id] = commandPreview(p.commands);
+      // JSON drops `undefined` keys on serialize — use null so the client
+      // always sees the field present (absent vs. present-but-unset matter
+      // for the teamsAllowed() gate's "no opinion" case).
+      if (p.teams) teams[p.id] = { teammateMode: (await p.teams.teammateMode().catch(() => undefined)) ?? null };
+    }
     return {
       ...env,
       bridge: {
@@ -46,6 +55,7 @@ export default async function envRoutes(f: FastifyInstance, deps: EnvRouteDeps =
         codex: { registered: bridge.codex },
       },
       commands,
+      teams,
     };
   });
 }

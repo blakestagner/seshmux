@@ -98,6 +98,12 @@ export interface TeamSupport {
   // for live roster pushes). Hard rule 3: the path literal stays here, not in
   // the hub — callers only ever get a resolved absolute path.
   configPath(teamName: string): string;
+  // Task 5 Step 1b: the claude-swarm teammate backend, read from the SAME
+  // ~/.claude/settings.json the customizations `hooks` scanner already reads
+  // (hard rule 3 — path stays behind this provider). Only 'tmux'/'iterm2'
+  // produce attachable member jsonls; 'in-process'/'auto'/undefined do not,
+  // so the client gates the Teams entry point on this value.
+  teammateMode(): Promise<string | undefined>;
 }
 
 export interface AgentProvider {

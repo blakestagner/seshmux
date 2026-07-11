@@ -147,3 +147,36 @@ describe('CodexProvider.teams', () => {
     expect(cx.teams).toBeUndefined();
   });
 });
+
+// Task 5 Step 1b: teammateMode gate — read from the SAME ~/.claude/settings.json
+// the customizations `hooks` scanner reads (hard rule 3, own temp homeDir here).
+describe('ClaudeProvider.teams.teammateMode', () => {
+  it('returns undefined when settings.json does not exist', async () => {
+    const claude = new ClaudeProvider({ homeDir: fs.mkdtempSync(path.join(os.tmpdir(), 'smx-teammode-')) });
+    expect(await claude.teams!.teammateMode()).toBeUndefined();
+  });
+
+  it('returns undefined when settings.json has no teammateMode field', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'smx-teammode-'));
+    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify({ theme: 'dark' }));
+    const claude = new ClaudeProvider({ homeDir: dir });
+    expect(await claude.teams!.teammateMode()).toBeUndefined();
+  });
+
+  it('returns the configured teammateMode', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'smx-teammode-'));
+    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify({ teammateMode: 'tmux' }));
+    const claude = new ClaudeProvider({ homeDir: dir });
+    expect(await claude.teams!.teammateMode()).toBe('tmux');
+  });
+
+  it('never throws on malformed JSON', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'smx-teammode-'));
+    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), '{not json');
+    const claude = new ClaudeProvider({ homeDir: dir });
+    await expect(claude.teams!.teammateMode()).resolves.toBeUndefined();
+  });
+});

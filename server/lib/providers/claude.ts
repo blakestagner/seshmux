@@ -2,6 +2,7 @@
 // name are allowed to live (hard rule 3). Wraps the provider-agnostic store utilities
 // (Tasks 3–4), injecting root + provider id.
 
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { listSessions as scanListSessions, scanProjects as scan, storeBytes } from '../store/scan';
@@ -61,6 +62,18 @@ export function windowForModel(model: string): number {
 
 function defaultRoot(): string {
   return join(homedir(), '.claude', 'projects');
+}
+
+// Task 5 Step 1b: read-only, tolerant of a missing/malformed file — never
+// throws, just reports "no opinion" so the client falls back to the disabled
+// gate. Same settings.json the customizations `hooks` scanner reads.
+async function readTeammateMode(settingsPath: string): Promise<string | undefined> {
+  try {
+    const cfg = JSON.parse(await readFile(settingsPath, 'utf8'));
+    return typeof cfg?.teammateMode === 'string' ? cfg.teammateMode : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface ClaudeProviderOpts {
@@ -204,6 +217,7 @@ export class ClaudeProvider implements AgentProvider {
     teamByLeadSession: (leadSessionId) =>
       teamByLeadSession(join(this.homeDir, '.claude', 'teams'), this.root, leadSessionId),
     configPath: (teamName) => join(this.homeDir, '.claude', 'teams', teamName, 'config.json'),
+    teammateMode: () => readTeammateMode(join(this.homeDir, '.claude', 'settings.json')),
   };
 }
 

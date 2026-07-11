@@ -31,6 +31,11 @@ export type NewSessionModalProps = {
   // branch, then a session spawned in it with the picked provider/mode.
   // Omitted -> the option doesn't render (e.g. project isn't a git repo).
   onStartWorkspace?: (provider: ProviderId, mode: SessionMode) => void;
+  // Team entry point (Task 5) — claude-only. Omitted -> the option doesn't
+  // render. When present, teamsGateOk decides disabled vs enabled (Task 5
+  // Step 1b's teammateMode gate; the caller resolves it once for the app).
+  onStartTeam?: () => void;
+  teamsGateOk?: boolean;
   onClose: () => void;
 };
 
@@ -47,6 +52,8 @@ export default function NewSessionModal({
   onStart,
   onPlanoff,
   onStartWorkspace,
+  onStartTeam,
+  teamsGateOk,
   onClose,
 }: NewSessionModalProps) {
   const [provider, setProvider] = useState<ModalProvider>(providers[0] ?? 'claude');
@@ -124,6 +131,20 @@ export default function NewSessionModal({
             title="New workspace"
             desc={`${preview ? `${preview.fresh} — ` : ''}isolated git worktree + branch, own working tree`}
             onClick={() => onStartWorkspace(provider, 'new')}
+          />
+        ) : null}
+
+        {/* Teams are claude-only (native claude-swarm teammates) — never
+            offered for codex or "Both". Gated per Task 5 Step 1b's
+            teammateMode read: not tmux/iterm2 -> disabled with a warning
+            instead of spawning a lead whose members would be invisible. */}
+        {!both && provider === 'claude' && onStartTeam ? (
+          <OptionRow
+            icon="⚑"
+            title="Team…"
+            desc={teamsGateOk ? 'assemble a claude-swarm team for this task' : 'Teams needs teammateMode: tmux'}
+            disabled={!teamsGateOk}
+            onClick={() => onStartTeam()}
           />
         ) : null}
 
