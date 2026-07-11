@@ -36,16 +36,20 @@ export function initState(startTs = 0): NIState {
   return { lastActivityTs: startTs, lastFrameWaiting: false, now: () => startTs };
 }
 
-// Strip ANSI CSI/OSC/charset escapes + control bytes, collapse whitespace. After this the
-// working footer / prompt chrome are contiguous and matchable.
+// Strip ANSI CSI/OSC/charset escapes + control bytes, collapse HORIZONTAL whitespace but
+// KEEP newlines (S4-5). Preserving line structure stops a `\s`-bearing pattern (e.g.
+// `1\.\s*Yes`) from bridging content that sits on two separate screen rows — an agent that
+// prints "step 1." at a line end and "Yes" at the next line start must not read as the
+// "1. Yes" option-list chrome. Matching is done per line (see lastMatchIndex).
 export function stripAnsi(raw: string): string {
   return raw
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '') // CSI
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC
     .replace(/\x1b[()][0-9A-B]/g, '') // charset select
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '') // stray control bytes
-    .replace(/[^\x20-\x7e]/g, '') // non-ascii (box-drawing, spinner glyphs)
-    .replace(/\s+/g, ' ');
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '') // stray control bytes (drops CR; keeps \x09 tab, \x0a LF)
+    .replace(/[^\x20-\x7e\n\t]/g, '') // non-ascii (box-drawing, spinner glyphs) — KEEP newline + tab
+    .replace(/[ \t]+/g, ' ') // collapse horizontal whitespace only
+    .replace(/ *\n */g, '\n'); // trim spaces hugging newlines, keep the newline itself
 }
 
 // Working signals — a live agent turn. Matched on the stripped LATEST frame.
@@ -62,16 +66,23 @@ const FRAME_TAIL = 4096;
 
 // Index of the LAST occurrence of any pattern in text, or -1. Position matters: within a
 // frame, the signal drawn last is what's currently on screen — a permission prompt drawn
-// after the spinner stops sits later in the buffer than the stale spinner text.
+// after the spinner stops sits later in the buffer than the stale spinner text. Matching is
+// PER LINE (S4-5): a pattern can only match within a single screen row, so a `\s`-bearing
+// pattern can't span a newline; the returned index is the position in the full frame so the
+// waiting-vs-working ordering comparison stays meaningful across lines.
 function lastMatchIndex(text: string, patterns: RegExp[]): number {
   let best = -1;
-  for (const re of patterns) {
-    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
-    let m: RegExpExecArray | null;
-    while ((m = g.exec(text)) !== null) {
-      if (m.index > best) best = m.index;
-      if (m.index === g.lastIndex) g.lastIndex++; // avoid zero-width loop
+  let offset = 0;
+  for (const line of text.split('\n')) {
+    for (const re of patterns) {
+      const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+      let m: RegExpExecArray | null;
+      while ((m = g.exec(line)) !== null) {
+        if (offset + m.index > best) best = offset + m.index;
+        if (m.index === g.lastIndex) g.lastIndex++; // avoid zero-width loop
+      }
     }
+    offset += line.length + 1; // +1 for the split-out '\n'
   }
   return best;
 }
@@ -222,16 +233,20 @@ export function classifyExplain(
 function lastMatchDetail(text: string, patterns: RegExp[]): { index: number; source: string | null } {
   let best = -1;
   let bestSource: string | null = null;
-  for (const re of patterns) {
-    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
-    let m: RegExpExecArray | null;
-    while ((m = g.exec(text)) !== null) {
-      if (m.index > best) {
-        best = m.index;
-        bestSource = re.source;
+  let offset = 0;
+  for (const line of text.split('\n')) {
+    for (const re of patterns) {
+      const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+      let m: RegExpExecArray | null;
+      while ((m = g.exec(line)) !== null) {
+        if (offset + m.index > best) {
+          best = offset + m.index;
+          bestSource = re.source;
+        }
+        if (m.index === g.lastIndex) g.lastIndex++;
       }
-      if (m.index === g.lastIndex) g.lastIndex++;
     }
+    offset += line.length + 1;
   }
   return { index: best, source: bestSource };
 }

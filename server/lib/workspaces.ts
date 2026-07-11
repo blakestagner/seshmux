@@ -77,6 +77,19 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return stdout;
 }
 
+// Branch names already present in the repo under our `agent/` namespace. A 'keep'-finished
+// workspace removes its worktree and drops its workspaces.json record but leaves the branch
+// behind — invisible to a records-only scan, yet `git worktree add -b <name>` onto it fails
+// raw (S4-3). Consulting real git branches closes that gap.
+async function listAgentBranches(repoPath: string): Promise<string[]> {
+  try {
+    const out = await git(repoPath, ['branch', '--list', '--format=%(refname:short)', 'agent/*']);
+    return out.split('\n').map((l) => l.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 async function isGitRepo(repoPath: string): Promise<boolean> {
   try {
     const out = await git(repoPath, ['rev-parse', '--is-inside-work-tree']);
@@ -111,15 +124,20 @@ export async function create(repoPath: string): Promise<{ dir: string; branch: s
   }
   const repoBase = path.basename(repoPath).replace(/[^a-zA-Z0-9_-]/g, '-') || 'repo';
   const base = defaultBranch(repoPath); // kick off in parallel with existing-record scan
+  const branchList = listAgentBranches(repoPath); // and with the git branch scan
   const existing = await readAll();
   const takenBranches = new Set(existing.map((r) => r.branch));
+  // Fold in real git branches (S4-3): a kept branch has no record but still exists on disk.
+  for (const b of await branchList) takenBranches.add(b);
   const takenDirs = new Set(existing.map((r) => r.dir));
 
   let slug = randSlug();
   let n = 1;
   let branch = `agent/${slug}-${n}`;
   let dir = path.join(worktreesRoot(), repoBase, `${slug}-${n}`);
-  // Bump -n (never -f) on any collision — branch name, dir, OR an existing dir on disk.
+  // Bump -n (never -f) on any collision — recorded branch, kept git branch, dir, OR an
+  // existing dir on disk. ponytail: a branch created between this scan and `worktree add`
+  // (TOCTOU) would still fail raw; not worth a retry loop for a single-user local tool.
   while (takenBranches.has(branch) || takenDirs.has(dir) || existsSync(dir)) {
     n++;
     branch = `agent/${slug}-${n}`;
@@ -185,8 +203,23 @@ export async function remove(dir: string, opts: { mode: RemoveMode; force?: bool
   if (!record) throw new Error(`unknown workspace dir: ${dir}`);
 
   if (opts.mode === 'merge') {
-    await git(record.project, ['merge', '--no-ff', record.branch]);
-    await git(record.project, ['worktree', 'remove', dir]);
+    try {
+      await git(record.project, ['merge', '--no-ff', record.branch]);
+    } catch (e) {
+      // A real conflict leaves the parent repo mid-merge (MERGE_HEAD set, conflict markers).
+      // Abort so the parent is restored to its pre-merge HEAD, then rethrow — the route still
+      // reports the conflict as 409 and worktree/branch/record all survive for a manual retry
+      // (S4-6). `merge --abort` no-ops harmlessly if the failure wasn't a conflict.
+      await git(record.project, ['merge', '--abort']).catch(() => {});
+      throw e;
+    }
+    // Merge succeeded → the branch's committed history is now in the parent, so the worktree
+    // is disposable. Force-remove (S4-4): a plain `worktree remove` refuses when the tree
+    // holds untracked files, which would misreport a DONE merge as a 409 and wedge retries
+    // (the re-merge is a no-op "already up to date", yet the non-force remove fails again).
+    // Untracked / uncommitted-tracked files in the worktree are discarded here — they were
+    // never part of the merged branch history; the merged commits are safe on the parent.
+    await git(record.project, ['worktree', 'remove', '--force', dir]);
   } else if (opts.mode === 'keep') {
     await git(record.project, ['worktree', 'remove', dir]);
   } else {

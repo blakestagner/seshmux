@@ -109,4 +109,35 @@ describe('events-hub — team config.json lazy watch (Task 4)', () => {
     writeFileSync(configPath, JSON.stringify({ members: [{ name: 'scout' }] }));
     await waitFor(() => seen.filter((e) => e.event === 'team').length === 2);
   });
+
+  it('sweepIdleWatchers evicts an idle team watcher, and a later watchTeam re-arms it (S4-8)', async () => {
+    const { createEventsHub } = await import('../../server/events-hub');
+    const hub = await createEventsHub();
+    hubs.push(hub);
+
+    dir = mkdtempSync(join(tmpdir(), 'seshmux-team-watch-'));
+    const configPath = join(dir, 'config.json');
+    writeFileSync(configPath, JSON.stringify({ members: [] }));
+
+    const { ws, seen } = fakeWs();
+    hub.addClient(ws);
+    hub.watchTeam('Recon', 'lead-1', configPath);
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Force a sweep with a cutoff in the future so the just-touched watcher counts as idle.
+    const evicted = await hub.sweepIdleWatchers(Date.now() + 1000);
+    expect(evicted).toBeGreaterThanOrEqual(1);
+
+    // The disposed watcher no longer fires — a change now produces nothing until re-armed.
+    seen.length = 0;
+    writeFileSync(configPath, JSON.stringify({ members: [{ name: 'ghost' }] }));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(seen.filter((e) => e.event === 'team')).toHaveLength(0);
+
+    // Re-arm transparently (the next /members poll) and it watches again.
+    hub.watchTeam('Recon', 'lead-1', configPath);
+    await new Promise((r) => setTimeout(r, 200));
+    writeFileSync(configPath, JSON.stringify({ members: [{ name: 'scout' }] }));
+    await waitFor(() => seen.some((e) => e.event === 'team'));
+  });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as ws from '../../server/lib/workspaces';
@@ -73,6 +73,24 @@ describe('workspaces.create', () => {
     expect(records).toHaveLength(2);
   });
 
+  it('avoids a branch kept by a finished workspace whose record is gone (S4-3)', async () => {
+    // Deterministic: fill the ENTIRE `agent/<slug>-1` namespace with real git branches that
+    // have NO workspaces.json record (exactly the 'keep'-finished state). Whatever slug
+    // create() draws, its -1 is already taken on disk but invisible to a record-only scan —
+    // so create MUST consult git branches and bump past it, or `worktree add -b` throws raw.
+    const head = git(repo, ['rev-parse', 'HEAD']).trim();
+    const refsDir = join(repo, '.git', 'refs', 'heads', 'agent');
+    mkdirSync(refsDir, { recursive: true });
+    const adjectives = ['quiet','brisk','amber','calm','swift','bold','lucid','mellow','crisp','still','keen','sunny','misty','sharp','gentle','vivid'];
+    const nouns = ['otter','falcon','ember','birch','heron','cove','meadow','quartz','willow','harbor','lantern','thistle','ridge','coral','sparrow','ferry'];
+    for (const a of adjectives) for (const n of nouns) writeFileSync(join(refsDir, `${a}-${n}-1`), head + '\n');
+
+    const ws = await freshWorkspaces();
+    const { dir, branch } = await ws.create(repo); // must not throw
+    expect(existsSync(join(dir, 'README.md'))).toBe(true);
+    expect(branch).toMatch(/^agent\/[a-z]+-[a-z]+-[2-9]\d*$/); // bumped past the taken -1
+  });
+
   it('does not touch the main tree even with uncommitted changes there', async () => {
     writeFileSync(join(repo, 'dirty.txt'), 'wip');
     const ws = await freshWorkspaces();
@@ -135,6 +153,45 @@ describe('workspaces.remove', () => {
     await expect(ws.remove(dir, { mode: 'merge' })).rejects.toThrow();
     expect(existsSync(dir)).toBe(true); // worktree untouched on failure
     expect(await ws.list(repo)).toHaveLength(1); // record untouched
+  });
+
+  it('merge: succeeds and removes the worktree even when it holds untracked files (S4-4)', async () => {
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+    writeFileSync(join(dir, 'feature.txt'), 'new feature');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'add feature']);
+    // Untracked file left in the worktree — a plain `worktree remove` would refuse and the
+    // already-done merge would be misreported as a 409.
+    writeFileSync(join(dir, 'scratch.log'), 'build junk');
+
+    await ws.remove(dir, { mode: 'merge' });
+
+    expect(existsSync(dir)).toBe(false); // force-removed despite the untracked file
+    expect(existsSync(join(repo, 'feature.txt'))).toBe(true); // committed work merged
+    expect(await ws.list(repo)).toHaveLength(0);
+  });
+
+  it('merge conflict aborts the parent merge so the repo is not left mid-merge (S4-6)', async () => {
+    writeFileSync(join(repo, 'conflict.txt'), 'base version');
+    git(repo, ['add', '.']);
+    git(repo, ['commit', '-q', '-m', 'add conflict.txt']);
+
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+
+    writeFileSync(join(repo, 'conflict.txt'), 'main version');
+    git(repo, ['add', '.']);
+    git(repo, ['commit', '-q', '-m', 'main edits conflict.txt']);
+
+    writeFileSync(join(dir, 'conflict.txt'), 'workspace version');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'workspace edits conflict.txt']);
+
+    await expect(ws.remove(dir, { mode: 'merge' })).rejects.toThrow();
+    // Parent must be restored — no MERGE_HEAD, no conflict markers left behind.
+    expect(() => git(repo, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'])).toThrow();
+    expect(git(repo, ['status', '--porcelain'])).not.toMatch(/^UU /m);
   });
 
   it('keep: removes the worktree but the branch survives', async () => {

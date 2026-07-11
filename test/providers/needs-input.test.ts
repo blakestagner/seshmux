@@ -153,6 +153,34 @@ describe('classify — resurrection guard resets lastFrameWaiting (BUG-6)', () =
   });
 });
 
+describe('classify — line structure prevents cross-row false positives (S4-5)', () => {
+  // The agent DISPLAYS prompt-like text across two rows: "1." ends one line, "Yes" begins
+  // the next. Before S4-5 stripAnsi collapsed the newline and `1\.\s*Yes` bridged the rows,
+  // spuriously flipping to waiting. Line structure now confines the pattern to one row.
+  it('does not flip to waiting on quoted prompt text split across rows', () => {
+    const chunk = 'The tool listed its options. The first was labeled 1.\nYes was that first choice, so I picked it.\n';
+    const s = initState(0);
+    expect(classify(chunk, s, claudeWaiting)).not.toBe('waiting');
+  });
+
+  // Working footer on top, then trailing text ("… item 1." / "Yes …") the agent is still
+  // emitting. The old collapse put the bridged "1. Yes" match AFTER "esc to interrupt", so it
+  // WON the position tie and reported waiting mid-turn. Per-line matching kills the bridge, so
+  // the live footer stays authoritative.
+  it('stays working when text after a live footer would only span-match a prompt', () => {
+    const chunk = 'Cooking… (5s · thinking) esc to interrupt\nProcessing item 1.\nYes, continuing now.\n';
+    const s = initState(0);
+    expect(classify(chunk, s, claudeWaiting)).toBe('working');
+  });
+
+  // Guard the real prompt still matches when its chrome sits on ONE row (regression anchor).
+  it('still detects a real single-row option prompt as waiting', () => {
+    const chunk = 'Do you want to create NEWFILE.txt?\n❯ 1. Yes\n2. Yes, allow all\n3. No\nEsc to cancel\n';
+    const s = initState(0);
+    expect(classify(chunk, s, claudeWaiting)).toBe('waiting');
+  });
+});
+
 describe('provider needsInputPatterns', () => {
   it('both providers expose non-empty waiting patterns', () => {
     expect(claudeWaiting.length).toBeGreaterThan(0);

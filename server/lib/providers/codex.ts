@@ -542,6 +542,13 @@ export class CodexProvider implements AgentProvider {
           if (obj.type !== 'event_msg' || p?.type !== 'token_count' || !p.info) continue;
           const last = p.info.last_token_usage;
           if (!last) continue;
+          // Per-event window filter (S4-1 sibling): a rollout resumed after the cutoff has a
+          // recent mtime but its early token_count events predate the window — count only
+          // events at/after the cutoff. turn_context (model) lines above are NOT filtered:
+          // they carry the model for later in-window events. Undated events count (never seen
+          // on real rollouts; the file already passed the mtime gate).
+          const ts = typeof obj.timestamp === 'string' ? Date.parse(obj.timestamp) : NaN;
+          if (!Number.isNaN(ts) && ts < cutoff) continue;
           const input = last.input_tokens ?? 0;
           const cached = last.cached_input_tokens ?? 0;
           const output = last.output_tokens ?? 0;

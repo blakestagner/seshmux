@@ -46,6 +46,7 @@ export interface Watcher {
 // EventEmitter instead of touching the real filesystem.
 export interface ChokidarLike {
   on(event: 'add' | 'change', cb: (path: string) => void): unknown;
+  on(event: 'error', cb: (err: unknown) => void): unknown;
   close(): Promise<void>;
 }
 
@@ -94,7 +95,10 @@ export function startWatching(deps: WatchDeps): Watcher {
   const targets = deps.watchTargets ?? defaultWatchTargets();
   const factory = deps.chokidarFactory ?? defaultChokidarFactory;
   const readCtx = deps.readCtx ?? defaultReadCtx;
-  const pending = new Map<string, ReturnType<typeof setTimeout>>();
+  // Debounce carries the pending KIND, not just the timer: an 'add' immediately followed by a
+  // 'change' within DEBOUNCE_MS must still emit session-new, not be downgraded to
+  // session-touch by the later event overwriting the timer (S4-9).
+  const pending = new Map<string, { timer: ReturnType<typeof setTimeout>; kind: 'add' | 'change' }>();
 
   async function handle(filePath: string, provider: ProviderId, config: ProviderWatchConfig, kind: 'add' | 'change') {
     const { sessionId, projectId } = config.idsFromPath(filePath);
@@ -114,12 +118,17 @@ export function startWatching(deps: WatchDeps): Watcher {
   function schedule(filePath: string, provider: ProviderId, config: ProviderWatchConfig, kind: 'add' | 'change') {
     const key = `${provider}:${filePath}`;
     const existing = pending.get(key);
-    if (existing) clearTimeout(existing);
+    if (existing) {
+      clearTimeout(existing.timer);
+      // An 'add' already pending wins: a coalesced add+change is still a new session.
+      if (existing.kind === 'add') kind = 'add';
+    }
+    const emitKind = kind;
     const timer = setTimeout(() => {
       pending.delete(key);
-      void handle(filePath, provider, config, kind);
+      void handle(filePath, provider, config, emitKind);
     }, DEBOUNCE_MS);
-    pending.set(key, timer);
+    pending.set(key, { timer, kind: emitKind });
   }
 
   const watchers: ChokidarLike[] = targets.map(({ root, provider, config: explicitConfig }) => {
@@ -134,12 +143,15 @@ export function startWatching(deps: WatchDeps): Watcher {
     });
     w.on('add', (path) => schedule(path, provider, config, 'add'));
     w.on('change', (path) => schedule(path, provider, config, 'change'));
+    // A watcher 'error' (EMFILE, a vanished root, an fsevents hiccup) must never crash the
+    // process — chokidar emits it on the watcher, and an unhandled 'error' event throws.
+    w.on('error', (err) => console.error(`[watch] ${provider} watcher error:`, err));
     return w;
   });
 
   return {
     async close() {
-      for (const timer of pending.values()) clearTimeout(timer);
+      for (const { timer } of pending.values()) clearTimeout(timer);
       pending.clear();
       await Promise.all(watchers.map((w) => w.close()));
     },

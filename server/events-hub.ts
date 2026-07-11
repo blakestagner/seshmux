@@ -538,6 +538,16 @@ export async function createEventsHub(): Promise<EventsHub> {
         evicted++;
       }
     }
+    for (const [teamName, at] of teamTouched) {
+      if (at > cutoff) continue;
+      teamTouched.delete(teamName);
+      const w = teamWatched.get(teamName);
+      if (w) {
+        teamWatched.delete(teamName);
+        await w.close().catch(() => {});
+        evicted++;
+      }
+    }
     return evicted;
   }
   const watcherSweep = setInterval(() => void sweepIdleWatchers(), 5 * 60_000);
@@ -551,7 +561,12 @@ export async function createEventsHub(): Promise<EventsHub> {
   //    we broadcast one final event and dispose right away instead of leaving
   //    a dead watcher around or treating ENOENT as an error to retry.
   const teamWatched = new Map<string, { close(): Promise<void> }>();
+  // Last-touched ms per team watcher, so the idle sweep evicts it like scratchpad/subagent
+  // watchers (S4-8). Set on EVERY watchTeam call (before the has() early-return) so each
+  // /members poll re-arms the TTL; a swept team re-arms transparently on the next poll.
+  const teamTouched = new Map<string, number>();
   function watchTeam(teamName: string, leadSessionId: string, configPath: string) {
+    teamTouched.set(teamName, Date.now());
     if (teamWatched.has(teamName)) return;
     try {
       const w = chokidar.watch(configPath, { ignoreInitial: true });
@@ -561,6 +576,7 @@ export async function createEventsHub(): Promise<EventsHub> {
       w.on('unlink', () => {
         ping(); // one final event: the roster panel refetches and sees the team is gone
         teamWatched.delete(teamName);
+        teamTouched.delete(teamName);
         void w.close().catch(() => {});
       });
       teamWatched.set(teamName, w);
@@ -629,6 +645,7 @@ export async function createEventsHub(): Promise<EventsHub> {
     subagentTouched.clear();
     for (const w of teamWatched.values()) await w.close().catch(() => {});
     teamWatched.clear();
+    teamTouched.clear();
     if (monitor) monitor.close();
     for (const ws of subscribers) if (ws.readyState === ws.OPEN) ws.close();
     subscribers.clear();

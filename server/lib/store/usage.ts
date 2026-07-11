@@ -90,25 +90,29 @@ export type { Rate };
 // Definition (documented per task spec):
 //   totalTokens = sum(output_tokens) + sum(input_tokens + cache_creation_input_tokens)
 //   cacheReads  = sum(cache_read_input_tokens)   -- tracked separately, NOT in totalTokens
-interface FileUsageTotals {
+// One parsed assistant turn. `ts` is the line's own timestamp (ms) so a "last N days"
+// window filters per TURN, not per file — a resumed old session with one new turn must
+// contribute only that turn, not the whole file (S4-1).
+interface Turn {
+  ts: number; // Date.parse(line.timestamp); NaN if absent/unparseable
   tokens: number;
   cacheReads: number;
   costUsd: number;
 }
 
-// Cache parsed per-file usage totals keyed by (file, mtime), like scan.ts's headCache.
-// LRU-bounded (sessions × recency): each turn bumps mtime and orphans the old key, so an
-// unbounded Map grew forever over server uptime.
-const usageCache = new Lru<FileUsageTotals>(2000);
+// Cache the parsed per-turn array keyed by (file, mtime), like scan.ts's headCache. The
+// cache is deliberately window-INDEPENDENT: it holds every turn, and aggregateUsage()
+// applies the days cutoff after the cache read — so the same cached parse serves a 7-day
+// and a 30-day query without cross-window corruption. LRU-bounded (sessions × recency):
+// each append bumps mtime and orphans the old key, so an unbounded Map grew forever.
+const usageCache = new Lru<Turn[]>(2000);
 
-async function readFileUsage(filePath: string, mtime: number): Promise<FileUsageTotals> {
-  return usageCache.get(`${filePath}:${mtime}`, () => computeFileUsage(filePath));
+async function readFileTurns(filePath: string, mtime: number): Promise<Turn[]> {
+  return usageCache.get(`${filePath}:${mtime}`, () => computeFileTurns(filePath));
 }
 
-async function computeFileUsage(filePath: string): Promise<FileUsageTotals> {
-  let tokens = 0;
-  let cacheReads = 0;
-  let costUsd = 0;
+async function computeFileTurns(filePath: string): Promise<Turn[]> {
+  const turns: Turn[] = [];
 
   const rl = createInterface({
     input: createReadStream(filePath, { encoding: 'utf8' }),
@@ -133,22 +137,22 @@ async function computeFileUsage(filePath: string): Promise<FileUsageTotals> {
       const cacheRead = usage.cache_read_input_tokens ?? 0;
       const output = usage.output_tokens ?? 0;
 
-      tokens += input + cacheCreate + output;
-      cacheReads += cacheRead;
-
       const model = typeof obj.message.model === 'string' ? obj.message.model : '';
       const r = pricingFor(model);
-      costUsd +=
+      const costUsd =
         (input / 1_000_000) * r.input +
         (cacheCreate / 1_000_000) * r.cacheWrite +
         (cacheRead / 1_000_000) * r.cacheRead +
         (output / 1_000_000) * r.output;
+
+      const ts = typeof obj.timestamp === 'string' ? Date.parse(obj.timestamp) : NaN;
+      turns.push({ ts, tokens: input + cacheCreate + output, cacheReads: cacheRead, costUsd });
     }
   } finally {
     rl.close();
   }
 
-  return { tokens, cacheReads, costUsd };
+  return turns;
 }
 
 // ponytail: parses Claude-shaped `type:assistant / message.usage` lines only. Codex
@@ -188,14 +192,23 @@ export async function aggregateUsage(
       } catch {
         continue;
       }
-      if (mtime < cutoff) continue;
+      if (mtime < cutoff) continue; // coarse pre-filter: no turn can post-date the file's mtime
 
-      const usage = await readFileUsage(filePath, mtime);
+      // Per-turn window filter (S4-1): sum only turns at/after the cutoff. An undated turn
+      // (no parseable timestamp — never seen on real Claude lines) is counted, since the
+      // file already passed the mtime gate so its turns are recent. sessions counts every
+      // in-window file, matching the pre-fix "active sessions in this window" metric.
+      const turns = await readFileTurns(filePath, mtime);
+      let fileTokens = 0;
+      for (const t of turns) {
+        if (!Number.isNaN(t.ts) && t.ts < cutoff) continue;
+        fileTokens += t.tokens;
+        cacheReads += t.cacheReads;
+        estCostUsd += t.costUsd;
+      }
       sessions += 1;
-      totalTokens += usage.tokens;
-      cacheReads += usage.cacheReads;
-      estCostUsd += usage.costUsd;
-      perProjectTokens.set(project.name, (perProjectTokens.get(project.name) ?? 0) + usage.tokens);
+      totalTokens += fileTokens;
+      perProjectTokens.set(project.name, (perProjectTokens.get(project.name) ?? 0) + fileTokens);
     }
   }
 
