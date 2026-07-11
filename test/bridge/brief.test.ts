@@ -88,4 +88,26 @@ describe('composeDiffReview', () => {
     });
     expect(review.toLowerCase()).toContain('no'); // "no changes" / "no diff"
   });
+
+  it('runs git in the passed repo, NOT the dash-decoded projectId (R2-1)', async () => {
+    let sawCwd = '';
+    const realRepo = '/Users/demo/github/wp-foo-org'; // hyphenated: dash-decode would mangle it
+    await composeDiffReview('-Users-demo-github-wp-foo-org', 'aaaa-1111', {
+      loadTranscript,
+      gitDiff: async (cwd) => {
+        sawCwd = cwd;
+        return '';
+      },
+    }, realRepo);
+    expect(sawCwd).toBe(realRepo); // used the resolved repo, not '/Users/demo/github/wp/foo/org'
+  });
+
+  it('says the diff is unavailable (not "no changes") when git itself failed (R2-1)', async () => {
+    const review = await composeDiffReview('p', 's', {
+      loadTranscript,
+      gitDiff: async () => null, // command failure sentinel (bad cwd / not a repo)
+    });
+    expect(review.toLowerCase()).toContain('unavailable');
+    expect(review.toLowerCase()).not.toContain('no uncommitted changes');
+  });
 });

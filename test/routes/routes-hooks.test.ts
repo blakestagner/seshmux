@@ -27,7 +27,7 @@ function fakeProvider(id: 'claude' | 'codex', statusHooks?: StatusHookSupport): 
     detect: async () => ({ found: true }),
     scanProjects: async () => [],
     listSessions: async () => [],
-    parseTranscript: async () => ({ msgs: [], ctx: null }),
+    parseTranscript: async () => ({ msgs: [], ctx: null, truncated: false }),
     readCtx: async () => null,
     search: async () => [],
     usage: async () => ({ sessions: 0, totalTokens: 0, cacheReads: 0, estCostUsd: 0, byProject: [], byProvider: [] }),

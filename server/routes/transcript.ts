@@ -16,7 +16,7 @@ export interface TranscriptRouteDeps {
 export default async function transcriptRoutes(f: FastifyInstance, deps: TranscriptRouteDeps = {}) {
   // Server-side transcript cache keyed by (provider, ids, mtime): a touched file
   // (new mtime) misses and re-parses; an unchanged one is served from memory.
-  const transcriptCache = new Lru<{ msgs: Msg[]; ctx: Ctx | null }>(deps.cacheSize ?? 10);
+  const transcriptCache = new Lru<{ msgs: Msg[]; ctx: Ctx | null; truncated: boolean }>(deps.cacheSize ?? 10);
   f.get<{ Params: { projectId: string; sessionId: string } }>(
     '/api/transcript/:projectId/:sessionId',
     async (req, reply) => {
@@ -41,10 +41,10 @@ export default async function transcriptRoutes(f: FastifyInstance, deps: Transcr
       }
 
       const key = `${owner.id}:${projectId}:${sessionId}:${meta.mtime}`;
-      const { msgs, ctx } = await transcriptCache.get(key, () =>
+      const { msgs, ctx, truncated } = await transcriptCache.get(key, () =>
         owner!.parseTranscript(projectId, sessionId),
       );
-      return { msgs, ctx, meta };
+      return { msgs, ctx, meta, truncated };
     },
   );
 }

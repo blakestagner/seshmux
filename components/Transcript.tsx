@@ -101,6 +101,7 @@ export default function Transcript({ projectId, sessionId, title, provider }: Tr
   const { state, dispatch } = useAppState();
   const [msgs, setMsgs] = useState<Msg[] | null>(null);
   const [ctx, setCtx] = useState<Ctx>(null);
+  const [truncated, setTruncated] = useState(false);
   const [visible, setVisible] = useState(WINDOW_SIZE);
   const [copied, setCopied] = useState(false);
   const [resuming, setResuming] = useState(false);
@@ -179,6 +180,7 @@ export default function Transcript({ projectId, sessionId, title, provider }: Tr
       .then((data) => {
         setMsgs(data.msgs);
         setCtx(data.ctx);
+        setTruncated(!!data.truncated);
       })
       .catch((e) => setLoadError((e as Error).message || 'failed to load transcript'));
   }, [projectId, sessionId, reloadKey]);
@@ -230,6 +232,11 @@ export default function Transcript({ projectId, sessionId, title, provider }: Tr
           <div className={styles.loading}>No messages in this transcript.</div>
         ) : (
           <>
+            {truncated ? (
+              <div className={styles.loadMore}>
+                Older history truncated — this session is too large to load in full. Showing the most recent messages.
+              </div>
+            ) : null}
             {hiddenCount > 0 ? (
               <button type="button" className={styles.loadMore} onClick={() => setVisible((v) => v + WINDOW_SIZE)}>
                 Load {Math.min(WINDOW_SIZE, hiddenCount)} earlier messages ({hiddenCount} hidden)

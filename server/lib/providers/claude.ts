@@ -114,7 +114,10 @@ export class ClaudeProvider implements AgentProvider {
     return scanListSessions(projectId, { root: this.root, provider: this.id, ...opts });
   }
 
-  parseTranscript(projectId: string, sessionId: string): Promise<{ msgs: Msg[]; ctx: Ctx | null }> {
+  parseTranscript(
+    projectId: string,
+    sessionId: string,
+  ): Promise<{ msgs: Msg[]; ctx: Ctx | null; truncated: boolean }> {
     return parse(projectId, sessionId, this.root, windowForModel);
   }
 

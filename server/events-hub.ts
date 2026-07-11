@@ -36,6 +36,25 @@ import os from 'node:os';
 
 const TICK_MS = 4000; // empty-tick cadence for idle/waiting-persist transitions
 
+// Resolve a fresh hook status against the heuristic (R2-4). A fresh hook normally WINS
+// (that's Spec 2 — hooks give higher-confidence prompt detection than the regex). The one
+// exception: a 'waiting' hook can pin the UI to 'waiting' for up to 30s after the agent
+// resumes, because no hook fires on resume. So if the heuristic sees a GENUINE working
+// signal — a MATCHED working pattern (the "esc to interrupt" footer the agent redraws on
+// resume), not mere output arrival — let 'working' override the stale 'waiting' hook.
+//   • Only 'waiting' hooks are overridable; an 'idle' Stop-hook still wins (its design).
+//   • Only a matched-pattern 'working' overrides; bare output/echo (matchedPattern null)
+//     does NOT — that's exactly the miss the waiting hook exists to cover (keeps the
+//     Spec 2 "regex broken on purpose" tests green: plain cat output has no match).
+function resolveHookVsHeuristic(
+  hookStatus: NIStatus,
+  heuristicStatus: NIStatus,
+  matchedPattern: string | null,
+): NIStatus {
+  if (hookStatus === 'waiting' && heuristicStatus === 'working' && matchedPattern) return 'working';
+  return hookStatus;
+}
+
 function configDir(): string {
   return process.env.SESHMUX_CONFIG_DIR || path.join(os.homedir(), '.config', 'seshmux');
 }
@@ -262,9 +281,14 @@ export async function createEventsHub(): Promise<EventsHub> {
         const chunk = e.data;
         void readHookStatusDetail(statusDir(), ptyId).then((detail) => {
           if (!attached.has(ptyId)) return;
-          const finalStatus = detail.fresh && detail.status ? detail.status : heuristic;
+          const hookWon = detail.fresh && detail.status
+            ? resolveHookVsHeuristic(detail.status, heuristic, result.matchedPattern)
+            : heuristic;
+          const finalStatus = hookWon;
+          // override reflects the ACTUAL winner: null when the heuristic overrode a stale
+          // waiting hook (R2-4), so status-explain doesn't claim the hook decided it.
           const override =
-            detail.fresh && detail.status
+            detail.fresh && detail.status && finalStatus === detail.status
               ? { path: detail.path, ageMs: detail.ageMs, hookStatus: detail.status }
               : null;
           recordExplain(ptyId, finalStatus, result, chunk, override);
@@ -335,9 +359,14 @@ export async function createEventsHub(): Promise<EventsHub> {
       // Optional Notification-hook file is a higher-confidence override.
       void readHookStatusDetail(statusDir(), ptyId).then((detail) => {
         if (!attached.has(ptyId)) return; // exited between tick fire and resolve
-        const finalStatus = detail.fresh && detail.status ? detail.status : heuristic;
+        // Empty-tick: result.matchedPattern is always null, so resolveHookVsHeuristic never
+        // overrides here (a genuine resume only shows up as a matched footer on the data
+        // path) — a fresh hook still wins, same as before. Shared for shape consistency.
+        const finalStatus = detail.fresh && detail.status
+          ? resolveHookVsHeuristic(detail.status, heuristic, result.matchedPattern)
+          : heuristic;
         const override =
-          detail.fresh && detail.status
+          detail.fresh && detail.status && finalStatus === detail.status
             ? { path: detail.path, ageMs: detail.ageMs, hookStatus: detail.status }
             : null;
         recordExplain(ptyId, finalStatus, result, '', override);

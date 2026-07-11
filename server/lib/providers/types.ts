@@ -118,7 +118,12 @@ export interface AgentProvider {
   detect(): Promise<DetectResult>;
   scanProjects(): Promise<Project[]>;
   listSessions(projectId: string, opts?: ListSessionOpts): Promise<SessionMeta[]>;
-  parseTranscript(projectId: string, sessionId: string): Promise<{ msgs: Msg[]; ctx: Ctx | null }>;
+  // `truncated` = the oldest history was dropped by a byte cap (huge session); the client
+  // surfaces it so a partial transcript never looks complete.
+  parseTranscript(
+    projectId: string,
+    sessionId: string,
+  ): Promise<{ msgs: Msg[]; ctx: Ctx | null; truncated: boolean }>;
   readCtx(projectId: string, sessionId: string): Promise<Ctx | null>;
   search(q: string, opts?: SearchOpts): Promise<SearchHit[]>;
   usage(days: number): Promise<UsageSummary>;

@@ -393,9 +393,9 @@ export class CodexProvider implements AgentProvider {
   async parseTranscript(
     projectId: string,
     sessionId: string,
-  ): Promise<{ msgs: Msg[]; ctx: Ctx | null }> {
+  ): Promise<{ msgs: Msg[]; ctx: Ctx | null; truncated: boolean }> {
     const file = await this.fileForSession(projectId, sessionId);
-    if (!file) return { msgs: [], ctx: null };
+    if (!file) return { msgs: [], ctx: null, truncated: false };
 
     const msgs: Msg[] = [];
     const toolById = new Map<string, ToolCall>();
@@ -457,7 +457,9 @@ export class CodexProvider implements AgentProvider {
 
     const ctx: Ctx | null =
       tokens !== null ? { tokens, window, pct: Math.round((tokens / window) * 100), model } : null;
-    return { msgs, ctx };
+    // ponytail: codex rollout files are small (single-digit count in practice), so no byte
+    // cap here — always false. Apply transcript.ts's tail-cap shape if the codex store grows.
+    return { msgs, ctx, truncated: false };
   }
 
   async readCtx(projectId: string, sessionId: string): Promise<Ctx | null> {

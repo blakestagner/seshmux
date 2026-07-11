@@ -107,6 +107,57 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     }
   }, 10000);
 
+  it('a fresh waiting hook YIELDS to a genuine working footer — agent visibly resumed (R2-4)', async () => {
+    // The waiting-hook exists to catch prompts the heuristic MISSES, but with no resume-hook
+    // it would pin 'waiting' for up to 30s after the agent resumes. A matched working
+    // PATTERN ("esc to interrupt", the footer redrawn on resume) is a high-confidence resume
+    // signal, so it overrides a stale waiting hook — unlike plain output (see the test above,
+    // which stays 'waiting' because no pattern matched).
+    const { createEventsHub } = await import('../../server/events-hub');
+    const hub = await createEventsHub();
+    try {
+      const { dial } = await import('../../server/daemon-client');
+      const spawnConn = await dial();
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      spawnConn.close();
+
+      const statusDir = path.join(configDir, 'status');
+      mkdirSync(statusDir, { recursive: true });
+      // FRESH waiting hook (unlike the stale-fallback test) — the precedence tweak, not
+      // staleness, is what lets working win here.
+      writeFileSync(
+        path.join(statusDir, `${ptyId}.json`),
+        JSON.stringify({ status: 'waiting', ts: Date.now(), source: 'hook' }),
+      );
+
+      hub.trackPty(ptyId);
+      await new Promise((r) => setTimeout(r, 200));
+
+      const writeConn = await dial();
+      await writeConn.write(ptyId, 'esc to interrupt\n'); // matched working pattern = genuine resume
+      writeConn.close();
+
+      await new Promise((r) => setTimeout(r, 300));
+      const seen: any[] = [];
+      const fakeWs = {
+        readyState: 1, OPEN: 1,
+        send: (frame: string) => seen.push(JSON.parse(frame)),
+        on: () => {}, close: () => {},
+      } as any;
+      hub.addClient(fakeWs);
+      const status = seen.find((e) => e.event === 'status' && e.ptyId === ptyId);
+      expect(status?.status).toBe('working');
+      // status-explain: the hook did NOT win, so no hookOverride is claimed.
+      expect(hub.getStatusExplain(ptyId)?.hookOverride).toBeNull();
+
+      const killConn = await dial();
+      await killConn.kill(ptyId);
+      killConn.close();
+    } finally {
+      await hub.close();
+    }
+  }, 10000);
+
   it('falls back to heuristic classification once the hook file goes stale', async () => {
     const { createEventsHub } = await import('../../server/events-hub');
     const hub = await createEventsHub();

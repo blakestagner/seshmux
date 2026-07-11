@@ -131,6 +131,50 @@ describe('POST /api/bridge/planoff/pick', () => {
     expect(calls[0].provider).toBe('claude');
     expect(calls[0].firstPrompt.toLowerCase()).toContain('execute');
   });
+
+  // R2-3: validate BEFORE indexing — an invalid provider or malformed body used to index to
+  // undefined and 500 with a TypeError; a failed/empty winner used to seed an empty execution.
+  it('400s an invalid provider (no 500 TypeError)', async () => {
+    const { f, calls } = makeApp();
+    const res = await f.inject({
+      method: 'POST', url: '/api/bridge/planoff/pick', headers: { origin },
+      payload: {
+        projectId: 'demo', provider: 'gpt', task: 't',
+        planoff: {
+          claude: { provider: 'claude', ok: true, plan: 'p', durationMs: 1 },
+          codex: { provider: 'codex', ok: true, plan: 'q', durationMs: 1 },
+        },
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(calls.length).toBe(0); // never seeded an execution session
+  });
+
+  it('400s a malformed planoff body', async () => {
+    const { f, calls } = makeApp();
+    const res = await f.inject({
+      method: 'POST', url: '/api/bridge/planoff/pick', headers: { origin },
+      payload: { projectId: 'demo', provider: 'claude', task: 't', planoff: { claude: {} } },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(calls.length).toBe(0);
+  });
+
+  it('400s when the winning plan failed or is empty (never seeds an empty execution)', async () => {
+    const { f, calls } = makeApp();
+    const res = await f.inject({
+      method: 'POST', url: '/api/bridge/planoff/pick', headers: { origin },
+      payload: {
+        projectId: 'demo', provider: 'claude', task: 't',
+        planoff: {
+          claude: { provider: 'claude', ok: false, plan: '', error: 'timeout', durationMs: 1 },
+          codex: { provider: 'codex', ok: true, plan: 'q', durationMs: 1 },
+        },
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(calls.length).toBe(0);
+  });
 });
 
 describe('repo resolution guard', () => {

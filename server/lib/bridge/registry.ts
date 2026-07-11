@@ -69,7 +69,24 @@ async function readJson(path: string): Promise<Record<string, unknown>> {
 }
 
 async function registerClaude(path: string): Promise<void> {
-  const cfg = await readJson(path);
+  // Read for WRITE: unlike readJson (used by the tolerant status check), an existing but
+  // unparseable file MUST abort — writing our key onto a fresh {} would destroy every other
+  // setting in ~/.claude.json (R2-2). ENOENT (first run) is the only safe "treat as empty".
+  let cfg: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(await readFile(path, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('top-level JSON is not an object');
+    }
+    cfg = parsed as Record<string, unknown>;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Error(
+        `refusing to modify ${path}: it exists but is not valid JSON (${(e as Error).message}) — ` +
+          `fix or move it, then re-register (nothing was written)`,
+      );
+    }
+  }
   const mcpServers = (cfg.mcpServers && typeof cfg.mcpServers === 'object'
     ? (cfg.mcpServers as Record<string, unknown>)
     : {});

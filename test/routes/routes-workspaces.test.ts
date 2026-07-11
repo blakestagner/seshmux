@@ -168,7 +168,16 @@ describe('DELETE /api/workspaces', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it('409s a dirty discard without force (never silent-discard uncommitted work)', async () => {
+  it('404s an unknown workspace dir (R2-7)', async () => {
+    const { f } = makeApp();
+    const res = await f.inject({
+      method: 'DELETE', url: '/api/workspaces', headers: { origin },
+      payload: { dir: '/tmp/does-not-exist-as-a-workspace', mode: 'keep' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('400s a dirty discard without force (client precondition, not a merge conflict — R2-7)', async () => {
     const { dir } = await workspaces.create(repo);
     writeFileSync(join(dir, 'wip.txt'), 'wip');
 
@@ -177,7 +186,9 @@ describe('DELETE /api/workspaces', () => {
       method: 'DELETE', url: '/api/workspaces', headers: { origin },
       payload: { dir, mode: 'discard' },
     });
-    expect(res.statusCode).toBe(409);
+    // Missing force on a dirty discard is a 400 (bad request the client must fix by
+    // confirming), distinct from a real merge conflict which stays 409.
+    expect(res.statusCode).toBe(400);
     expect(existsSync(dir)).toBe(true);
 
     // force:true (as the client sends after its typed confirm) proceeds.

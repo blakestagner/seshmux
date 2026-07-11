@@ -3,12 +3,18 @@
 // (server/lib/providers/claude.ts) supplies both `root` and `provider`. This file only
 // knows how to read a directory of dash-encoded project dirs each holding `<id>.jsonl`.
 
-import { createReadStream } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
+import { open, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createInterface } from 'node:readline';
 import { listAll as listAllWorkspaces } from '../workspaces';
 import { Lru } from './lru';
+
+// A session head lives in the first handful of lines; cap the bytes we read so a
+// newline-free / giant single-line jsonl can't be buffered whole (BUG-C1: readline
+// over such a file pulled a 209MB line into RSS on GET /api/projects). 256KB covers
+// far more than the 50-line head scan below for any real session.
+// ponytail: if a legit head ever sits past 256KB (huge pasted first message), title
+// degrades to '' — same graceful degrade the parse-error path already accepts.
+const HEAD_BYTES = 256 * 1024;
 
 export type ProviderId = 'claude' | 'codex';
 
@@ -135,49 +141,53 @@ async function computeHead(filePath: string): Promise<HeadInfo> {
   let agentName: string | null = null;
   let lineCount = 0;
 
-  const rl = createInterface({
-    input: createReadStream(filePath, { encoding: 'utf8' }),
-    crlfDelay: Infinity,
-  });
-
+  // Bounded read of the file head only (never the whole file — BUG-C1). A partial
+  // last line from the byte cap just fails JSON.parse below and is skipped.
+  let text = '';
   try {
+    const fh = await open(filePath, 'r');
     try {
-      for await (const line of rl) {
-        if (++lineCount > 50 && title && cwd) break;
-        if (!line.trim()) continue;
-        let obj: any;
-        try {
-          obj = JSON.parse(line);
-        } catch {
-          continue; // tolerate malformed lines
-        }
-
-        if (typeof obj.gitBranch === 'string') branch = obj.gitBranch;
-        if (cwd === null && typeof obj.cwd === 'string' && obj.cwd) cwd = obj.cwd;
-        // Team membership (Teams v1 discovery): teammate sessions stamp teamName +
-        // agentName; the lead session stamps neither.
-        if (teamName === null && typeof obj.teamName === 'string') teamName = obj.teamName;
-        if (agentName === null && typeof obj.agentName === 'string') agentName = obj.agentName;
-
-        if (obj.type === 'user' && obj.message?.role === 'user') {
-          const text = firstUserText(obj.message.content);
-          if (startedAt === null && typeof obj.timestamp === 'string') {
-            startedAt = Date.parse(obj.timestamp);
-          }
-          if (!title && text) {
-            const trimmed = text.trim();
-            const isMeta = SKIP_TITLE_PREFIXES.some((p) => trimmed.startsWith(p));
-            if (!isMeta) title = trimmed.slice(0, 80);
-          }
-        }
-      }
-    } catch {
-      // stream error (EACCES/ENOENT/vanished-between-stat-and-open) — degrade to
-      // whatever was parsed so far instead of rejecting; protects both readHead
-      // call sites (computeRootScan, readDirSessions) at the root.
+      const buf = Buffer.alloc(HEAD_BYTES);
+      const { bytesRead } = await fh.read(buf, 0, HEAD_BYTES, 0);
+      text = buf.toString('utf8', 0, bytesRead);
+    } finally {
+      await fh.close();
     }
-  } finally {
-    rl.close();
+  } catch {
+    // open/read error (EACCES/ENOENT/vanished-between-stat-and-open) — degrade to an
+    // empty head instead of rejecting; protects both readHead call sites
+    // (computeRootScan, readDirSessions) at the root.
+    return { title, branch, startedAt, cwd, teamName, agentName };
+  }
+
+  for (const line of text.split('\n')) {
+    if (++lineCount > 50 && title && cwd) break;
+    if (!line.trim()) continue;
+    let obj: any;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue; // tolerate malformed lines
+    }
+
+    if (typeof obj.gitBranch === 'string') branch = obj.gitBranch;
+    if (cwd === null && typeof obj.cwd === 'string' && obj.cwd) cwd = obj.cwd;
+    // Team membership (Teams v1 discovery): teammate sessions stamp teamName +
+    // agentName; the lead session stamps neither.
+    if (teamName === null && typeof obj.teamName === 'string') teamName = obj.teamName;
+    if (agentName === null && typeof obj.agentName === 'string') agentName = obj.agentName;
+
+    if (obj.type === 'user' && obj.message?.role === 'user') {
+      const text = firstUserText(obj.message.content);
+      if (startedAt === null && typeof obj.timestamp === 'string') {
+        startedAt = Date.parse(obj.timestamp);
+      }
+      if (!title && text) {
+        const trimmed = text.trim();
+        const isMeta = SKIP_TITLE_PREFIXES.some((p) => trimmed.startsWith(p));
+        if (!isMeta) title = trimmed.slice(0, 80);
+      }
+    }
   }
 
   return { title, branch, startedAt, cwd, teamName, agentName };

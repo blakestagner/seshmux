@@ -114,6 +114,26 @@ describe('peekTerminal (real daemon)', () => {
   }, 10000);
 });
 
+// R2-6: a NaN lines param (the REST route's Number('abc')) used to slip past the cap —
+// Math.min/max propagate NaN and slice(-NaN) returns the WHOLE buffer. No daemon needed;
+// inject a fake connection that replays many lines on attach.
+describe('peekTerminal — NaN lines guard (R2-6)', () => {
+  it('falls back to the 80-line default cap for a non-finite lines param', async () => {
+    const { peekTerminal } = await import('../../server/lib/bridge/peek');
+    const many = Array.from({ length: 200 }, (_, i) => `L${i}`).join('\n') + '\n';
+    const fakeDial = async () => {
+      let cb: (e: any) => void = () => {};
+      return {
+        onEvent: (fn: any) => { cb = fn; },
+        attach: async (id: string) => { cb({ event: 'data', ptyId: id, data: many }); },
+        close: () => {},
+      } as any;
+    };
+    const result = await peekTerminal('pty1', NaN as any, { dial: fakeDial, settleMs: 5 });
+    expect(result.lines.length).toBe(80); // capped to the default, not all 200
+  });
+});
+
 function waitUntil(pred: () => boolean, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const start = Date.now();

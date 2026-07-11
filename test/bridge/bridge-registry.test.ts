@@ -42,6 +42,17 @@ describe('registerBridge — claude json', () => {
     expect(cfg.mcpServers['seshmux-bridge']).toEqual({ command: 'npx', args: ['seshmux', 'mcp-bridge'] });
   });
 
+  it('aborts (never clobbers) when the file exists but is not valid JSON (R2-2)', async () => {
+    const { deps, claudePath } = makeDeps();
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    mkdirSync(join(claudePath, '..'), { recursive: true });
+    const garbage = '{ this is not valid json, and holds the user\'s real settings ';
+    writeFileSync(claudePath, garbage);
+    await expect(registerBridge(deps)).rejects.toThrow(/not valid JSON/i);
+    // The original file is untouched — no {} written over it.
+    expect(readFileSync(claudePath, 'utf8')).toBe(garbage);
+  });
+
   it('is idempotent: second call produces identical content, no duplicate entries', async () => {
     const { deps, claudePath } = makeDeps();
     await registerBridge(deps);

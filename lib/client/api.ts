@@ -76,7 +76,7 @@ export type Ctx = { tokens: number; window: number; pct: number; model: string }
 export function getTranscript(
   projectId: string,
   sessionId: string,
-): Promise<{ msgs: Msg[]; ctx: Ctx; meta: SessionMeta }> {
+): Promise<{ msgs: Msg[]; ctx: Ctx; meta: SessionMeta; truncated?: boolean }> {
   return req(`/api/transcript/${projectId}/${sessionId}`);
 }
 

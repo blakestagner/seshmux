@@ -40,7 +40,11 @@ export async function peekTerminal(
 ): Promise<PeekResult> {
   const dialFn = deps.dial ?? dial;
   const settleMs = deps.settleMs ?? SETTLE_MS;
-  const capped = Math.min(Math.max(1, lines), MAX_PEEK_LINES);
+  // NaN-guard: the REST route passes Number(req.query.lines), which is NaN for `lines=abc`
+  // — and NaN slips past Math.min/max, making slice(-NaN) return the WHOLE buffer, bypassing
+  // the cap (R2-6). Fall back to the 80-line default for any non-finite value.
+  const n = Number.isFinite(lines) ? lines : 80;
+  const capped = Math.min(Math.max(1, n), MAX_PEEK_LINES);
 
   const conn = await dialFn();
   try {
