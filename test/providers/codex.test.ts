@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { cpSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 import { CodexProvider } from '../../server/lib/providers/codex';
@@ -95,20 +95,26 @@ describe('CodexProvider.search (PERF-6 (file,mtime) line cache)', () => {
       expect(rollout).not.toBe('');
       const cx = new CodexProvider(tmp);
 
+      // Pin a whole-second mtime BEFORE warming: fs mtimes carry sub-ms precision
+      // that a Date round-trip truncates, so restoring the stat()'d mtime sometimes
+      // changed the cache key (flake). A whole second survives the round-trip exactly.
+      const t0 = new Date(Math.floor(Date.now() / 1000) * 1000 - 60_000);
+      utimesSync(rollout, t0, t0);
+
       const first = await cx.search('feature');
       expect(first.length).toBeGreaterThan(0);
       expect(first[0]).toMatchObject({ provider: 'codex', sessionId: 'bbbb-2222' });
       expect(first[0].snippet.toLowerCase()).toContain('feature');
 
-      // Gut the file but keep its mtime → cache key unchanged → still a hit from memory.
-      const { atime, mtime } = statSync(rollout);
+      // Gut the file but keep its (whole-second, exactly-representable) mtime →
+      // cache key unchanged → still a hit from memory.
       writeFileSync(rollout, '');
-      utimesSync(rollout, atime, mtime);
+      utimesSync(rollout, t0, t0);
       const cached = await cx.search('feature');
       expect(cached.length).toBe(first.length);
 
       // Bump mtime → cache key changes → the now-empty file is re-read → no hit.
-      const later = new Date(mtime.getTime() + 5_000);
+      const later = new Date(t0.getTime() + 5_000);
       utimesSync(rollout, later, later);
       expect(await cx.search('feature')).toEqual([]);
     } finally {

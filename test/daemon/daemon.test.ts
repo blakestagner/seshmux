@@ -430,7 +430,11 @@ tmuxDescribe('seshmuxd tmux tier', () => {
       // Stamping is async (set-option retries until new-session settles) —
       // wait for the @seshmux-config stamp to land before booting the foreign
       // daemon, since the ownership guarantee starts at the stamp.
-      const deadline = Date.now() + 5000;
+      // 15s headroom for set-option retries under full-suite load (isolation
+      // needs <1s). NOTE: a rare fast-fail flake (~130ms, wrong stamp value)
+      // was also observed here under load — that's a race, not this timeout;
+      // if it recurs, capture the received value before touching the deadline.
+      const deadline = Date.now() + 15000;
       let stamped = '';
       while (Date.now() < deadline) {
         try {
