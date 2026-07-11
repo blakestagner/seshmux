@@ -185,6 +185,32 @@ export async function dirtyCount(dir: string): Promise<number> {
 }
 
 /**
+ * True when no TRACKED file has uncommitted changes (staged or not). Untracked files are
+ * deliberately ignored — unlike dirtyCount, which counts them. Merge uses this to tell
+ * "real edits a merge would not carry" (refuse) from "a build artifact left in the tree"
+ * (safe to discard once the commits are merged). Fails CLOSED: if git can't answer, report
+ * dirty so the caller refuses rather than force-removing on a bad read.
+ */
+async function isTrackedClean(dir: string): Promise<boolean> {
+  try {
+    await git(dir, ['diff', '--quiet', 'HEAD']); // non-zero exit → throws → dirty
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** How many commits `branch` has that `project`'s current HEAD does not. 0 = nothing to merge. */
+async function commitsAhead(project: string, branch: string): Promise<number> {
+  try {
+    const out = await git(project, ['rev-list', '--count', `HEAD..${branch}`]);
+    return Number(out.trim()) || 0;
+  } catch {
+    return 0; // can't tell → treat as nothing to merge (guard refuses; never force-removes)
+  }
+}
+
+/**
  * Finish a workspace. merge: `git merge --no-ff <branch>` in the parent repo
  * (failure surfaces stderr, nothing else happens — worktree/branch/record all
  * survive so the user can resolve manually and retry). keep: remove the
@@ -203,14 +229,24 @@ export async function remove(dir: string, opts: { mode: RemoveMode; force?: bool
   if (!record) throw new Error(`unknown workspace dir: ${dir}`);
 
   if (opts.mode === 'merge') {
-    // Merge is the mode users pick to KEEP work, so it must never destroy any. Uncommitted
-    // changes in the worktree are NOT part of the branch history a merge moves, so merging
-    // would silently drop them on the force-remove below (R5-1: an agent that edits without
-    // committing makes `merge --no-ff` a no-op "Already up to date" that exits 0). Refuse,
-    // same shape as the discard guard — the caller must commit them or discard explicitly.
-    if ((await dirtyCount(dir)) > 0) {
+    // Merge is the mode users pick to KEEP work, so it must never destroy any — but it also
+    // must not refuse a finished workspace just because a build artifact is lying around.
+    // Two precise guards instead of a blanket "is anything dirty" (which re-broke S4-4):
+    //
+    //   1. Uncommitted edits to TRACKED files are real work that a merge does NOT move (it
+    //      moves commits) and the force-remove below would destroy them (R5-1).
+    if (!(await isTrackedClean(dir))) {
       throw new Error('workspace has uncommitted changes — commit them in the workspace before merging');
     }
+    //   2. Nothing committed to merge at all: `merge --no-ff` would exit 0 ("Already up to
+    //      date") and the force-remove would silently delete an untracked-but-real file the
+    //      agent wrote and never staged, while reporting success (the other half of R5-1).
+    if ((await commitsAhead(record.project, record.branch)) === 0) {
+      throw new Error('workspace has no commits to merge — commit the work in the workspace first');
+    }
+    // Past both guards the worktree holds only untracked leftovers (build artifacts) and the
+    // branch has real commits, so the merge genuinely moves the work and the leftovers are
+    // disposable — that's the S4-4 case, and the force-remove below is safe.
     // Was the PARENT already mid-merge (the user's own conflict, maybe hand-resolved) before
     // we touched it? If so our merge refuses to start ("You have not concluded your merge"),
     // and aborting on the way out would destroy THEIR work (R5-2). Only abort a mid-merge we
@@ -229,9 +265,10 @@ export async function remove(dir: string, opts: { mode: RemoveMode; force?: bool
       }
       throw e;
     }
-    // Merge succeeded and the tree was clean → the branch's history is in the parent and the
-    // worktree holds nothing unique. Force-remove so a stray build artifact can't misreport a
-    // DONE merge as a 409 and wedge retries (S4-4).
+    // Merge succeeded and (per the guards above) the worktree holds no tracked edits and the
+    // branch's commits are now in the parent — so the only things left are untracked
+    // artifacts. Force-remove: a plain remove refuses on those, which would misreport a DONE
+    // merge as a 409 and wedge every retry (the re-merge is a no-op, the remove fails again).
     await git(record.project, ['worktree', 'remove', '--force', dir]);
   } else if (opts.mode === 'keep') {
     await git(record.project, ['worktree', 'remove', dir]);

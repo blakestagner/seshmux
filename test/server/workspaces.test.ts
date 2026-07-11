@@ -155,32 +155,51 @@ describe('workspaces.remove', () => {
     expect(await ws.list(repo)).toHaveLength(1); // record untouched
   });
 
-  it('merge: refuses when the worktree is dirty, destroying nothing (R5-1)', async () => {
+  it('merge: refuses when tracked files have uncommitted edits, destroying nothing (R5-1)', async () => {
     const ws = await freshWorkspaces();
     const { dir } = await ws.create(repo);
-    // The agent edited/created files but never committed — `merge --no-ff` would be a no-op
-    // ("Already up to date", exit 0) and a force-remove would silently delete this work.
-    writeFileSync(join(dir, 'agent-report.md'), 'the work');
+    writeFileSync(join(dir, 'feature.txt'), 'committed');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'commit one']);
+    // Agent then kept editing a TRACKED file without committing. A merge moves commits, not
+    // these edits — force-removing would destroy them while reporting success.
+    writeFileSync(join(dir, 'feature.txt'), 'edits the agent never committed');
 
     await expect(ws.remove(dir, { mode: 'merge' })).rejects.toThrow(/uncommitted changes/i);
 
-    expect(existsSync(join(dir, 'agent-report.md'))).toBe(true); // work survives
+    expect(readFileSync(join(dir, 'feature.txt'), 'utf8')).toBe('edits the agent never committed');
     expect(existsSync(dir)).toBe(true);
     expect(await ws.list(repo)).toHaveLength(1); // record intact, retryable
   });
 
-  it('merge: force-removes the worktree once the work is committed and merged (S4-4)', async () => {
+  it('merge: force-removes the worktree once the work is committed and merged, even with untracked build artifacts left behind (S4-4)', async () => {
     const ws = await freshWorkspaces();
     const { dir } = await ws.create(repo);
     writeFileSync(join(dir, 'feature.txt'), 'new feature');
     git(dir, ['add', '.']);
     git(dir, ['commit', '-q', '-m', 'add feature']);
+    // Untracked leftovers: the work IS committed, so these are artifacts — they must not
+    // block the merge (guarding on any-dirty re-broke exactly this case).
+    writeFileSync(join(dir, 'scratch.log'), 'build junk');
 
     await ws.remove(dir, { mode: 'merge' });
 
     expect(existsSync(dir)).toBe(false);
     expect(existsSync(join(repo, 'feature.txt'))).toBe(true); // committed work merged
     expect(await ws.list(repo)).toHaveLength(0);
+  });
+
+  it('merge: refuses when the branch has no commits, even if the only work is untracked (R5-1)', async () => {
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+    // Agent wrote a brand-new file and never staged it: `merge --no-ff` would be a no-op and
+    // the force-remove would delete it while reporting success.
+    writeFileSync(join(dir, 'agent-report.md'), 'the only copy of the work');
+
+    await expect(ws.remove(dir, { mode: 'merge' })).rejects.toThrow(/no commits to merge/i);
+
+    expect(readFileSync(join(dir, 'agent-report.md'), 'utf8')).toBe('the only copy of the work');
+    expect(await ws.list(repo)).toHaveLength(1);
   });
 
   it('merge: leaves a pre-existing parent merge alone instead of aborting the user\'s work (R5-2)', async () => {
