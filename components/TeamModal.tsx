@@ -59,7 +59,10 @@ export function buildPredefinedPayload(template: TeamTemplate, task: string): Om
 
 export type TeamModalProps = {
   projectName: string;
-  onStart: (payload: Omit<TeamStartPayload, 'projectId'>) => void;
+  // Rejecting = the start failed: the modal stays open, shows the error
+  // inline, and keeps everything the user typed. Only the caller closes it
+  // (on success, or via onClose).
+  onStart: (payload: Omit<TeamStartPayload, 'projectId'>) => Promise<void>;
   onClose: () => void;
 };
 
@@ -68,6 +71,8 @@ export default function TeamModal({ projectName, onStart, onClose }: TeamModalPr
   const [templates, setTemplates] = useState<TeamTemplate[]>([]);
   const [selected, setSelected] = useState<TeamTemplate | null>(null);
   const [task, setTask] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const [name, setName] = useState('');
   const [rows, setRows] = useState<MemberRow[]>([newRow()]);
@@ -86,11 +91,23 @@ export default function TeamModal({ projectName, onStart, onClose }: TeamModalPr
   const inlineReady = name.trim() && rows.some((r) => r.name.trim() && r.role.trim()) && task.trim();
   const predefinedReady = !!selected && task.trim();
 
-  function handleStart() {
-    if (mode === 'predefined' && selected && task.trim()) {
-      onStart(buildPredefinedPayload(selected, task));
-    } else if (mode === 'inline' && inlineReady) {
-      onStart(buildInlinePayload(name, rows, task, saveTemplate));
+  async function handleStart() {
+    const payload =
+      mode === 'predefined' && selected && task.trim()
+        ? buildPredefinedPayload(selected, task)
+        : mode === 'inline' && inlineReady
+          ? buildInlinePayload(name, rows, task, saveTemplate)
+          : null;
+    if (!payload || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onStart(payload);
+    } catch (e) {
+      // Failed start: modal stays open, typed state intact, error shown inline.
+      setError(e instanceof Error ? e.message : 'failed to start team');
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -169,13 +186,15 @@ export default function TeamModal({ projectName, onStart, onClose }: TeamModalPr
         </div>
       )}
 
+      {error ? <div className={styles.error}>{error}</div> : null}
+
       <div className={styles.foot}>
         <Button
           variant="primary"
-          disabled={mode === 'predefined' ? !predefinedReady : !inlineReady}
-          onClick={handleStart}
+          disabled={busy || (mode === 'predefined' ? !predefinedReady : !inlineReady)}
+          onClick={() => void handleStart()}
         >
-          Start
+          {busy ? 'Starting…' : 'Start'}
         </Button>
       </div>
     </Modal>

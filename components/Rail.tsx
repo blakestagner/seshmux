@@ -156,18 +156,16 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenPro
 
   // Team modal's Start button (Task 5) — same split as handleStartSession:
   // the modal only builds the payload, this does the POST + opens the lead
-  // tab + switches to tabs view (the modal doesn't own view state).
+  // tab + switches to tabs view (the modal doesn't own view state). Close the
+  // modal ONLY on success — a rejection propagates back to TeamModal, which
+  // stays open, shows the error inline, and keeps everything the user typed.
   async function handleStartTeam(payload: Omit<TeamStartPayload, 'projectId'>) {
     const project = teamProject;
-    setTeamProject(null);
     if (!project) return;
-    try {
-      const { tabMeta } = await startTeam({ ...payload, projectId: project.id });
-      dispatch({ type: 'openTerm', ptyId: tabMeta.ptyId, projectId: project.id, label: project.name, provider: 'claude' });
-      dispatch({ type: 'setView', view: 'tabs' });
-    } catch {
-      // Surfacing errors as a toast lands with the events-ws wave (Task 15).
-    }
+    const { tabMeta } = await startTeam({ ...payload, projectId: project.id });
+    setTeamProject(null);
+    dispatch({ type: 'openTerm', ptyId: tabMeta.ptyId, projectId: project.id, label: project.name, provider: 'claude' });
+    dispatch({ type: 'setView', view: 'tabs' });
   }
 
   const [workspaceBusy, setWorkspaceBusy] = useState<string | null>(null);

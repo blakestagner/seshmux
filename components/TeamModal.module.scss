@@ -49,6 +49,13 @@
   justify-content: space-between;
 }
 
+// Inline start-failure message — same pattern as WorkspaceFinishPrompt .error.
+.error {
+  @include t-sub;
+  color: var(--hot);
+  margin-top: 10px;
+}
+
 .foot {
   margin-top: 16px;
   display: flex;
