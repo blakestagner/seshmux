@@ -26,7 +26,6 @@
       "Bash(git log:*)"
     ],
     "deny": [
-      "Bash(git push:*)",
       "Bash(npm publish:*)"
     ]
   }
