@@ -8,6 +8,7 @@ import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { listAll as listAllWorkspaces } from '../workspaces';
+import { Lru } from './lru';
 
 export type ProviderId = 'claude' | 'codex';
 
@@ -93,7 +94,9 @@ interface HeadInfo {
 }
 
 // Cache parsed head info keyed by (file, mtime) so repeated listings are cheap.
-const headCache = new Map<string, HeadInfo>();
+// LRU-bounded: every agent turn bumps mtime and orphans the old key, so an
+// unbounded Map grew forever over server uptime.
+const headCache = new Lru<HeadInfo>(500);
 
 function firstUserText(content: unknown): string | null {
   if (typeof content === 'string') return content;
@@ -110,10 +113,10 @@ function firstUserText(content: unknown): string | null {
 // Read only the first ~50 lines of a jsonl session file to extract title + branch +
 // startedAt, stopping as soon as we have a title (branch keeps updating to last seen).
 async function readHead(filePath: string, mtime: number): Promise<HeadInfo> {
-  const cacheKey = `${filePath}:${mtime}`;
-  const cached = headCache.get(cacheKey);
-  if (cached) return cached;
+  return headCache.get(`${filePath}:${mtime}`, () => computeHead(filePath));
+}
 
+async function computeHead(filePath: string): Promise<HeadInfo> {
   let title = '';
   let branch: string | null = null;
   let startedAt: number | null = null;
@@ -161,9 +164,7 @@ async function readHead(filePath: string, mtime: number): Promise<HeadInfo> {
     rl.close();
   }
 
-  const info: HeadInfo = { title, branch, startedAt, cwd, teamName, agentName };
-  headCache.set(cacheKey, info);
-  return info;
+  return { title, branch, startedAt, cwd, teamName, agentName };
 }
 
 // worktree dir -> parent repo absolute path (workspaces.json is the lookup —

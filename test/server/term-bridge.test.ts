@@ -55,12 +55,12 @@ describe('term.validateStart (argv injection guard)', () => {
 
   it('accepts an absolute existing dir + normal resumeId', async () => {
     const { validateStart } = await import('../../server/routes/term');
-    const r = validateStart({ projectPath: realDir, provider: 'claude', resumeId: '1d3e8c0e-uuid' });
+    const r = await validateStart({ projectPath: realDir, provider: 'claude', resumeId: '1d3e8c0e-uuid' });
     expect(r.ok).toBe(true);
   });
   it('rejects a resumeId starting with "-" (flag injection)', async () => {
     const { validateStart } = await import('../../server/routes/term');
-    const r = validateStart({
+    const r = await validateStart({
       projectPath: realDir,
       provider: 'claude',
       resumeId: '--dangerously-skip-permissions',
@@ -69,22 +69,22 @@ describe('term.validateStart (argv injection guard)', () => {
   });
   it('rejects a relative projectPath', async () => {
     const { validateStart } = await import('../../server/routes/term');
-    expect(validateStart({ projectPath: 'relative/dir', provider: 'claude' }).ok).toBe(false);
+    expect((await validateStart({ projectPath: 'relative/dir', provider: 'claude' })).ok).toBe(false);
   });
   it('rejects a nonexistent projectPath', async () => {
     const { validateStart } = await import('../../server/routes/term');
-    expect(validateStart({ projectPath: '/no/such/dir/xyz123', provider: 'claude' }).ok).toBe(false);
+    expect((await validateStart({ projectPath: '/no/such/dir/xyz123', provider: 'claude' })).ok).toBe(false);
   });
   it('rejects a projectPath that is a file, not a dir', async () => {
     const { validateStart } = await import('../../server/routes/term');
     const file = path.join(realDir, 'f.txt');
     fs.writeFileSync(file, 'x');
-    expect(validateStart({ projectPath: file, provider: 'claude' }).ok).toBe(false);
+    expect((await validateStart({ projectPath: file, provider: 'claude' })).ok).toBe(false);
   });
   it('rejects missing provider / projectPath', async () => {
     const { validateStart } = await import('../../server/routes/term');
-    expect(validateStart({ projectPath: realDir }).ok).toBe(false);
-    expect(validateStart({ provider: 'claude' }).ok).toBe(false);
+    expect((await validateStart({ projectPath: realDir })).ok).toBe(false);
+    expect((await validateStart({ provider: 'claude' })).ok).toBe(false);
   });
 });
 

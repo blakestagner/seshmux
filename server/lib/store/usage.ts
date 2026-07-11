@@ -8,6 +8,7 @@ import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { scanProjects, type ProviderId } from './scan';
+import { Lru } from './lru';
 
 export interface UsageSummary {
   sessions: number;
@@ -96,13 +97,15 @@ interface FileUsageTotals {
 }
 
 // Cache parsed per-file usage totals keyed by (file, mtime), like scan.ts's headCache.
-const usageCache = new Map<string, FileUsageTotals>();
+// LRU-bounded (sessions × recency): each turn bumps mtime and orphans the old key, so an
+// unbounded Map grew forever over server uptime.
+const usageCache = new Lru<FileUsageTotals>(2000);
 
 async function readFileUsage(filePath: string, mtime: number): Promise<FileUsageTotals> {
-  const cacheKey = `${filePath}:${mtime}`;
-  const cached = usageCache.get(cacheKey);
-  if (cached) return cached;
+  return usageCache.get(`${filePath}:${mtime}`, () => computeFileUsage(filePath));
+}
 
+async function computeFileUsage(filePath: string): Promise<FileUsageTotals> {
   let tokens = 0;
   let cacheReads = 0;
   let costUsd = 0;
@@ -145,9 +148,7 @@ async function readFileUsage(filePath: string, mtime: number): Promise<FileUsage
     rl.close();
   }
 
-  const totals: FileUsageTotals = { tokens, cacheReads, costUsd };
-  usageCache.set(cacheKey, totals);
-  return totals;
+  return { tokens, cacheReads, costUsd };
 }
 
 // ponytail: parses Claude-shaped `type:assistant / message.usage` lines only. Codex

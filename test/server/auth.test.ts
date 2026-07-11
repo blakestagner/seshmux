@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { checkOrigin, checkToken, requireAuth, AuthError } from '../../server/lib/auth';
+import { checkHost, checkOrigin, checkToken, requireAuth, AuthError } from '../../server/lib/auth';
 
 const PORT = 4700;
 const TOKEN = 'deadbeef'.repeat(8); // 64 hex chars
@@ -10,13 +10,30 @@ function reqLike(opts: {
   query?: Record<string, string>;
   url?: string;
 }) {
+  // Default to a loopback Host so the new Layer-0 allowlist passes unless a test
+  // deliberately overrides it.
   return {
     method: opts.method ?? 'GET',
-    headers: opts.headers ?? {},
+    headers: { host: `127.0.0.1:${PORT}`, ...(opts.headers ?? {}) },
     query: opts.query ?? {},
     url: opts.url ?? '/api/projects',
   };
 }
+
+describe('checkHost', () => {
+  it('accepts loopback hostnames on any port', () => {
+    expect(checkHost('127.0.0.1:4700')).toBe(true);
+    expect(checkHost('localhost:9999')).toBe(true);
+    expect(checkHost('127.0.0.1')).toBe(true);
+    expect(checkHost('[::1]:4700')).toBe(true);
+  });
+  it('rejects a rebound / foreign Host', () => {
+    expect(checkHost('evil.example.com')).toBe(false);
+    expect(checkHost('evil.example.com:4700')).toBe(false);
+    expect(checkHost('169.254.169.254')).toBe(false);
+    expect(checkHost(undefined)).toBe(false);
+  });
+});
 
 describe('checkOrigin', () => {
   it('accepts matching 127.0.0.1 and localhost origins', () => {
@@ -106,6 +123,15 @@ describe('requireAuth (GET /api/* still needs token)', () => {
     expect(() =>
       requireAuth(reqLike({ method: 'GET', headers: { 'x-seshmux-token': TOKEN } }), ctx),
     ).not.toThrow();
+  });
+  it('GET with valid token but rebound Host -> 403 (DNS-rebinding block)', () => {
+    const err = grab(() =>
+      requireAuth(
+        reqLike({ method: 'GET', headers: { host: 'evil.example.com', 'x-seshmux-token': TOKEN } }),
+        ctx,
+      ),
+    );
+    expect(err.statusCode).toBe(403);
   });
 });
 
