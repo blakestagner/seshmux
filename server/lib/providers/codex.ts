@@ -35,7 +35,7 @@ import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { decodeProjectDir, storeBytes } from '../store/scan';
 import type { SearchHit, SearchOpts } from '../store/search';
-import type { UsageSummary } from '../store/usage';
+import { pricingFor, type UsageSummary } from '../store/usage';
 import type { Ctx, Msg, ToolCall } from '../store/transcript';
 import { loadNeedsInputPatterns } from './manifest';
 import {
@@ -480,20 +480,80 @@ export class CodexProvider implements AgentProvider {
     return hits;
   }
 
-  // ponytail: codex token accounting isn't wired yet (rollout token_count summing differs
-  // from Claude's per-line usage). Report session count in the window with zero tokens so
-  // the usage card's "by agent" bar can still show codex is present; upgrade when codex
-  // spend needs a real number. Route merges this with claude's real totals.
+  // Sums last_token_usage deltas from token_count events per rollout file (verified:
+  // last_token_usage is the per-request delta, not cumulative). Priced per-model via the
+  // shared family matcher in store/usage.ts. byProject mirrors claude's shape (pct of
+  // in-window tokens per project name); no per-file cache — codex trees are small
+  // (handful of files/30 days), not hot like the claude usage path.
   async usage(days: number): Promise<UsageSummary> {
     const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
     const all = await this.allSummaries();
-    const sessions = all.filter(({ mtime }) => mtime >= cutoff).length;
+    const inWindow = all.filter(({ mtime }) => mtime >= cutoff);
+
+    let totalTokens = 0;
+    let cacheReads = 0;
+    let estCostUsd = 0;
+    const perProjectTokens = new Map<string, number>();
+
+    for (const { file, s } of inWindow) {
+      let model = '';
+      let fileTokens = 0;
+      const rl = createInterface({
+        input: createReadStream(file, { encoding: 'utf8' }),
+        crlfDelay: Infinity,
+      });
+      try {
+        for await (const line of rl) {
+          if (!line.trim() || (line.indexOf('token_count') === -1 && line.indexOf('turn_context') === -1)) continue;
+          let obj: any;
+          try {
+            obj = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          const p = obj.payload;
+          if (obj.type === 'turn_context' && typeof p?.model === 'string') {
+            model = p.model;
+            continue;
+          }
+          if (obj.type !== 'event_msg' || p?.type !== 'token_count' || !p.info) continue;
+          const last = p.info.last_token_usage;
+          if (!last) continue;
+          const input = last.input_tokens ?? 0;
+          const cached = last.cached_input_tokens ?? 0;
+          const output = last.output_tokens ?? 0;
+          const fresh = Math.max(0, input - cached);
+
+          fileTokens += fresh + output;
+          cacheReads += cached;
+
+          const r = pricingFor(model);
+          estCostUsd +=
+            (fresh / 1_000_000) * r.input + (cached / 1_000_000) * r.cacheRead + (output / 1_000_000) * r.output;
+        }
+      } finally {
+        rl.close();
+      }
+      totalTokens += fileTokens;
+      if (s.cwd) {
+        const name = decodeProjectDir(encodeProjectId(s.cwd)).name;
+        perProjectTokens.set(name, (perProjectTokens.get(name) ?? 0) + fileTokens);
+      }
+    }
+
+    const byProject =
+      totalTokens > 0
+        ? [...perProjectTokens.entries()]
+            .map(([name, tokens]) => ({ name, pct: Math.round((tokens / totalTokens) * 100) }))
+            .sort((a, b) => b.pct - a.pct)
+        : [];
+
     return {
-      sessions,
-      totalTokens: 0,
-      cacheReads: 0,
-      estCostUsd: 0,
-      byProject: [],
+      sessions: inWindow.length,
+      totalTokens,
+      cacheReads,
+      estCostUsd,
+      byProject,
       byProvider: [],
     };
   }
