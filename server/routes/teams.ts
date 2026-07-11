@@ -51,6 +51,17 @@ async function isDir(path: string): Promise<boolean> {
 
 const MODELS = ['opus', 'sonnet', 'haiku'];
 
+// Real team names are claude's auto session-<hex> or a human-typed template
+// name — never a path segment. teamName flows straight into
+// join(teamsRoot, teamName, 'config.json') in teams-store, so an unvalidated
+// value (e.g. `../../../../etc`) is a path-traversal vector into an arbitrary
+// config.json, including arming a chokidar watch on it. Allowlist rather than
+// blocklist: reject anything but this safe charset.
+const SAFE_TEAM_NAME = /^[A-Za-z0-9._-]+$/;
+function isSafeTeamName(name: string): boolean {
+  return SAFE_TEAM_NAME.test(name) && !name.includes('..');
+}
+
 function isTeamDef(v: unknown): v is TeamDef {
   if (!v || typeof v !== 'object') return false;
   const t = v as Partial<TeamDef>;
@@ -203,6 +214,10 @@ export default async function teamRoutes(f: FastifyInstance, deps: TeamRouteDeps
       if (!teamName && !leadSession) {
         reply.code(400);
         return { error: 'teamName or leadSession is required' };
+      }
+      if (teamName && !isSafeTeamName(teamName)) {
+        reply.code(400);
+        return { error: 'invalid teamName' };
       }
       const info = teamName ? await doTeamRoster(teamName) : await doTeamByLeadSession(leadSession as string);
       if (!info) {

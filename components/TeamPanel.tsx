@@ -111,6 +111,28 @@ export default function TeamPanel({ leadSessionId, projectId, refreshKey, touchP
     lastTouchRef.current = touch;
   }, [openSessionId, touchPings]);
 
+  // Fresh-lead rescue: a lead session can take 15-60s+ to write config.json
+  // (claude-swarm only creates it once the lead model makes named Agent
+  // calls) — long past RETRY_DELAYS_MS's ~7s budget. Once retries exhaust and
+  // status lands on 'unresolved', the only further signal we get is the
+  // lead's OWN jsonl growing (touchPings bumps on every session-touch), so
+  // re-attempt resolution on each bump instead of leaving 'unresolved'
+  // permanent. No new plumbing: reuses the existing touchPings prop.
+  useEffect(() => {
+    if (status !== 'unresolved') return;
+    if (touchPings[leadSessionId] === undefined) return;
+    let cancelled = false;
+    getTeamMembers(leadSessionId).then((data) => {
+      if (cancelled) return;
+      everResolvedRef.current = true;
+      setInfo(data);
+      setStatus('live');
+    }, () => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [status, leadSessionId, touchPings[leadSessionId]]);
+
   const members = info?.members ?? [];
   const rolledUp = status === 'gone';
 

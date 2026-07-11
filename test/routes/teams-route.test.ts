@@ -201,4 +201,23 @@ describe('GET /api/teams/members', () => {
     expect(res.statusCode).toBe(404);
     expect(armed).toHaveLength(0);
   });
+
+  it('400s a path-traversal teamName without ever calling the provider', async () => {
+    const calls: string[] = [];
+    const { f } = makeApp({
+      teamRoster: async (name) => {
+        calls.push(name);
+        return null;
+      },
+    });
+    for (const bad of ['../../../../etc', '..%2f..%2fetc', 'foo/bar', 'foo\\bar', '..']) {
+      const res = await f.inject({
+        method: 'GET',
+        url: `/api/teams/members?teamName=${encodeURIComponent(bad)}`,
+        headers: { origin },
+      });
+      expect(res.statusCode).toBe(400);
+    }
+    expect(calls).toHaveLength(0);
+  });
 });
