@@ -39,6 +39,11 @@ const TMUX_PREFIX = 'seshmux-';
 // Per-PTY scrollback ring buffer cap, counted in newlines.
 const RING_BUFFER_LINES = 5000;
 
+// Parallel byte cap for the same ring. Newline-count alone lets CR-spinner /
+// giant-single-line output grow the buffer unbounded (no '\n' ever bumps the
+// line counter). ~4MB bounds worst-case memory per PTY regardless of newlines.
+const RING_BUFFER_BYTES = 4 * 1024 * 1024;
+
 /**
  * Encode a message object as a single NDJSON frame (trailing newline).
  * JSON.stringify escapes any embedded '\n' (e.g. inside PTY `data`), so a
@@ -83,6 +88,7 @@ module.exports = {
   PROTOCOL,
   TMUX_PREFIX,
   RING_BUFFER_LINES,
+  RING_BUFFER_BYTES,
   encode,
   createDecoder,
 };

@@ -19,7 +19,13 @@ const pty = require('@homebridge/node-pty-prebuilt-multiarch');
 const { execFile } = require('node:child_process');
 const path = require('node:path');
 const os = require('node:os');
-const { TMUX_PREFIX, RING_BUFFER_LINES } = require('./protocol');
+const { TMUX_PREFIX, RING_BUFFER_LINES, RING_BUFFER_BYTES } = require('./protocol');
+
+// Dead PTY entries (alive=false) linger so a recently-exited session can still
+// be re-attached / rehydrated, then get swept once past this grace window —
+// without it the _ptys Map (each entry holding its full ring) grows forever.
+const DEAD_GRACE_MS = 10 * 60 * 1000;
+const SWEEP_INTERVAL_MS = 60 * 1000;
 
 /**
  * Env for tmux child processes: strip $TMUX/$TMUX_PANE so tmux talks to its
@@ -112,6 +118,23 @@ class PtyManager {
     /** listeners: (event) => void, where event is a {event,...} object */
     this._onEvent = null;
     this._configTag = opts.configDir || defaultConfigDirTag();
+    // Unref'd so it never keeps the daemon process alive on its own.
+    this._sweepTimer = setInterval(() => this._sweepDead(), SWEEP_INTERVAL_MS);
+    this._sweepTimer.unref();
+  }
+
+  /** Drop dead entries whose grace window has elapsed. Live entries and
+   *  recently-exited ones (still re-attachable) are always kept. */
+  _sweepDead() {
+    const cutoff = Date.now() - DEAD_GRACE_MS;
+    for (const [id, e] of this._ptys) {
+      if (!e.alive && e.deadAt != null && e.deadAt <= cutoff) this._ptys.delete(id);
+    }
+  }
+
+  /** Stop the background sweep. Called by the daemon on close(). */
+  close() {
+    clearInterval(this._sweepTimer);
   }
 
   /** Register the sink that receives {event:'data'|'exit', ...} objects. */
@@ -135,9 +158,16 @@ class PtyManager {
   _appendRing(entry, chunk) {
     entry.ring.push(chunk);
     entry.ringLines += countNewlines(chunk);
-    while (entry.ringLines > RING_BUFFER_LINES && entry.ring.length > 1) {
+    entry.ringBytes += chunk.length;
+    // Evict oldest while EITHER cap is exceeded — the byte cap catches
+    // newline-free growth (spinners, one giant line) the line cap misses.
+    while (
+      entry.ring.length > 1 &&
+      (entry.ringLines > RING_BUFFER_LINES || entry.ringBytes > RING_BUFFER_BYTES)
+    ) {
       const dropped = entry.ring.shift();
       entry.ringLines -= countNewlines(dropped);
+      entry.ringBytes -= dropped.length;
     }
   }
 
@@ -219,8 +249,10 @@ class PtyManager {
       cols: columns,
       rows: lines,
       alive: true,
+      deadAt: null,
       ring: [],
       ringLines: 0,
+      ringBytes: 0,
     };
     this._ptys.set(ptyId, entry);
 
@@ -230,6 +262,7 @@ class PtyManager {
     });
     proc.onExit(({ exitCode }) => {
       entry.alive = false;
+      entry.deadAt = Date.now();
       this._emit({ event: 'exit', ptyId, code: exitCode });
     });
 
@@ -401,8 +434,10 @@ class PtyManager {
         cols: 80,
         rows: 24,
         alive: true,
+        deadAt: null,
         ring: [],
         ringLines: 0,
+        ringBytes: 0,
       };
       this._ptys.set(ptyId, entry);
       proc.onData((data) => {
@@ -411,6 +446,7 @@ class PtyManager {
       });
       proc.onExit(({ exitCode }) => {
         entry.alive = false;
+        entry.deadAt = Date.now();
         this._emit({ event: 'exit', ptyId, code: exitCode });
       });
     }

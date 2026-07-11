@@ -140,7 +140,8 @@ async function ensureDaemon(opts = {}) {
   const retries = opts.retries ?? 40; // ~40 * 250ms = 10s ceiling
   const delay = opts.retryDelayMs ?? 250;
 
-  fs.mkdirSync(dir, { recursive: true });
+  // mode 0o700: guards the control socket the daemon binds inside this dir.
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 
   for (let attempt = 0; attempt < retries; attempt++) {
     const dialOk = await tryHello(p.sock);

@@ -241,6 +241,42 @@ describe('seshmuxd daemon', () => {
     await c.waitForEvent((e) => e.event === 'exit' && e.ptyId === ptyId);
     c.close();
   });
+
+  it('sweeps dead pty entries past the grace period, keeps recently-exited ones (MEM-1)', async () => {
+    const c = new Client(sockPath);
+    await c.ready();
+    const spawn = await c.call('spawn', { cwd: os.tmpdir(), args: ['/bin/cat'] });
+    const ptyId = spawn.result.ptyId;
+    await c.call('attach', { ptyId });
+    await c.call('kill', { ptyId });
+    await c.waitForEvent((e) => e.event === 'exit' && e.ptyId === ptyId);
+
+    const pm = daemon.ptyManager;
+    // Within grace: retained, so a re-attach/rehydrate of a just-exited PTY works.
+    pm._sweepDead();
+    expect(pm.has(ptyId)).toBe(true);
+    // Past grace: swept out (entry + its ring freed).
+    pm._ptys.get(ptyId).deadAt = Date.now() - 11 * 60 * 1000;
+    pm._sweepDead();
+    expect(pm.has(ptyId)).toBe(false);
+    c.close();
+  });
+
+  it('caps the ring buffer by bytes on newline-free output (MEM-2)', () => {
+    const { RING_BUFFER_BYTES } = require('../../daemon/protocol.js');
+    const pm = daemon.ptyManager;
+    const entry = { ring: [], ringLines: 0, ringBytes: 0 };
+    const chunk = 'x'.repeat(100 * 1024); // 100KB, zero newlines
+    for (let i = 0; i < 60; i++) pm._appendRing(entry, chunk); // ~6MB fed in
+    // Bounded despite no newlines ever bumping the line counter.
+    expect(entry.ringBytes).toBeLessThanOrEqual(RING_BUFFER_BYTES + chunk.length);
+    expect(entry.ring.length).toBeGreaterThanOrEqual(1); // never fully drained
+  });
+
+  it('socket file is chmod 0600 (SEC-2)', () => {
+    if (process.platform === 'win32') return;
+    expect(fs.statSync(sockPath).mode & 0o777).toBe(0o600);
+  });
 });
 
 // tmux-tier: gated (skips if tmux absent), kills its own seshmux- sessions in
