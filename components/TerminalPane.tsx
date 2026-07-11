@@ -116,6 +116,7 @@ export default function TerminalPane({
     let socket: TermSocket | null = null;
     let ro: ResizeObserver | null = null;
     let onFocus: (() => void) | null = null;
+    let themeObserver: MutationObserver | null = null;
 
     (async () => {
       const [{ Terminal }, { FitAddon }] = await Promise.all([
@@ -289,6 +290,22 @@ export default function TerminalPane({
       // window, grid pane) may have resized the shared PTY smaller while this
       // pane sat unchanged — the container never resizes, so the ResizeObserver
       // stays silent and the terminal paints narrow until the user pokes it.
+      // Live theme/accent toggle (BUG-5): xterm's theme is read once at
+      // creation and never told about data-theme/data-accent flipping on
+      // <html> afterward — re-read the same CSS vars and reassign on change.
+      themeObserver = new MutationObserver(() => {
+        if (disposed || !term) return;
+        term.options.theme = {
+          background: readVar('--term-bg', '#0a0d11'),
+          foreground: readVar('--term-text', '#c9d3dc'),
+          cursor: readVar('--accent', '#2dd4bf'),
+        };
+      });
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-theme', 'data-accent'],
+      });
+
       onFocus = () => pushSize();
       window.addEventListener('focus', onFocus);
       // …and on clicking INTO the terminal (focusin bubbles from xterm's
@@ -302,6 +319,7 @@ export default function TerminalPane({
       disposed = true;
       pushSizeRef.current = null;
       ro?.disconnect();
+      themeObserver?.disconnect();
       if (onFocus) {
         window.removeEventListener('focus', onFocus);
         mountRef.current?.removeEventListener('focusin', onFocus);

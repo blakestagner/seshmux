@@ -148,10 +148,12 @@ export default function Settings() {
 
   function rescan() {
     setRescanning(true);
-    (getEnv() as Promise<EnvResponse>).then((e) => {
-      setEnv(e);
-      setRescanning(false);
-    });
+    (getEnv() as Promise<EnvResponse>)
+      .then((e) => {
+        setEnv(e);
+        setRescanning(false);
+      })
+      .catch(() => setRescanning(false));
   }
 
   function handleRegister() {

@@ -117,7 +117,10 @@ export function classify(chunk: string, state: NIState, waitingPatterns: RegExp[
     // flips it to working" bug: TerminalPane's jiggle-resize triggers a SIGWINCH repaint of a
     // finished screen). A genuine resumption always redraws the working footer, so workAt >= 0
     // correctly falls through to re-arm and resurrect below.
-    if (wasIdle && workAt < 0) return 'idle';
+    if (wasIdle && workAt < 0) {
+      state.lastFrameWaiting = false;
+      return 'idle';
+    }
 
     // Working signal present, or non-prompt output still arriving.
     state.lastActivityTs = now;

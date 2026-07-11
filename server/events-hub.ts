@@ -560,6 +560,16 @@ export async function createEventsHub(): Promise<EventsHub> {
       // Broadcast carries expiresAt so the UI toast can show a countdown +
       // auto-dismiss. The listener still owns the hard 120s deny.
       broadcast({ event: 'approval', ...info });
+      // Self-expire at expiresAt so a late UI approve can't find a stale entry
+      // and report false "approved" for a request the listener already denied.
+      const ttl = Math.max(0, info.expiresAt - Date.now());
+      const expiry = setTimeout(() => {
+        if (pendingApprovals.get(info.requestId) === resolve) {
+          pendingApprovals.delete(info.requestId);
+          resolve(false); // self-expire matches the listener's timeout deny
+        }
+      }, ttl);
+      if (typeof expiry.unref === 'function') expiry.unref();
     });
   }
   function resolveApproval(requestId: string, approved: boolean): boolean {

@@ -98,6 +98,11 @@ function AppShell() {
   // (Task 4's session-touch, not a bespoke poller).
   const [teamPings, setTeamPings] = useState<Record<string, number>>({});
   const [touchPings, setTouchPings] = useState<Record<string, number>>({});
+  const [scratchpadPings, setScratchpadPings] = useState<Record<string, number>>({});
+  // BUG-3: true from {event:'server-restarting'} until the first event after
+  // auto-reconnect (the server replays events on reconnect, so the next
+  // message proves the server is back) — no timer, no fake progress.
+  const [restarting, setRestarting] = useState(false);
   const activeTab = state.tabs.find((t) => t.id === state.activeTab);
 
   // Mirrors Rail's handleTogglePin: optimistic dispatch + persist. Lives here
@@ -310,6 +315,7 @@ function AppShell() {
       idle: 'live',
     };
     const client = openEventsSocket((e) => {
+      setRestarting(e.event === 'server-restarting');
       switch (e.event) {
         case 'status': {
           dispatch({ type: 'setTermStatus', ptyId: e.ptyId, status: WS_STATUS[e.status], ni: e.status, ts: Date.now() });
@@ -378,7 +384,10 @@ function AppShell() {
         case 'team':
           setTeamPings((prev) => ({ ...prev, [e.leadSessionId]: (prev[e.leadSessionId] ?? 0) + 1 }));
           break;
-        // server-restarting is consumed by the Updates banner in its own component.
+        case 'scratchpad':
+          setScratchpadPings((prev) => ({ ...prev, [e.projectId]: (prev[e.projectId] ?? 0) + 1 }));
+          break;
+        // server-restarting is handled above (top of this callback), before the switch.
         default:
           break;
       }
@@ -470,7 +479,9 @@ function AppShell() {
       );
     }
     if (tab.kind === 'scratchpad' && tab.projectId) {
-      return <Scratchpad key={tab.id} projectId={tab.projectId} path={tab.label} />;
+      return (
+        <Scratchpad key={tab.id} projectId={tab.projectId} path={tab.label} refreshKey={scratchpadPings[tab.projectId]} />
+      );
     }
     if (tab.kind === 'planoff' && tab.projectId) {
       return (
@@ -511,6 +522,7 @@ function AppShell() {
 
   return (
     <div className={styles.shell}>
+      {restarting ? <div className={styles.restartBanner}>Updating — reconnecting…</div> : null}
       <TopNav onPickHit={handlePickHit} onOpenCustomizations={() => setCustOpen({})} />
       <div className={styles.app}>
         {/* Settings is a full-page overlay: hide the rail so it reads as its own

@@ -106,6 +106,8 @@ export default function Transcript({ projectId, sessionId, title, provider }: Tr
   const [resuming, setResuming] = useState(false);
   const [bridging, setBridging] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const project = state.projects.find((p) => p.id === projectId);
   // The bridge always targets the OPPOSITE provider (mockup: labels flip by
@@ -171,12 +173,15 @@ export default function Transcript({ projectId, sessionId, title, provider }: Tr
 
   useEffect(() => {
     setMsgs(null);
+    setLoadError(null);
     setVisible(WINDOW_SIZE);
-    getTranscript(projectId, sessionId).then((data) => {
-      setMsgs(data.msgs);
-      setCtx(data.ctx);
-    });
-  }, [projectId, sessionId]);
+    getTranscript(projectId, sessionId)
+      .then((data) => {
+        setMsgs(data.msgs);
+        setCtx(data.ctx);
+      })
+      .catch((e) => setLoadError((e as Error).message || 'failed to load transcript'));
+  }, [projectId, sessionId, reloadKey]);
 
   const shown = useMemo(() => (msgs ? msgs.slice(Math.max(0, msgs.length - visible)) : []), [msgs, visible]);
   const hiddenCount = msgs ? msgs.length - shown.length : 0;
@@ -214,7 +219,12 @@ export default function Transcript({ projectId, sessionId, title, provider }: Tr
           {actionError ? <div className={styles.actionError}>{actionError}</div> : null}
         </div>
 
-        {msgs === null ? (
+        {loadError ? (
+          <div className={styles.loading}>
+            Failed to load transcript: {loadError}
+            <Button onClick={() => setReloadKey((k) => k + 1)}>Retry</Button>
+          </div>
+        ) : msgs === null ? (
           <div className={styles.loading}>Loading transcript…</div>
         ) : msgs.length === 0 ? (
           <div className={styles.loading}>No messages in this transcript.</div>

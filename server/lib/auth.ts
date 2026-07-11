@@ -1,7 +1,8 @@
 // Local security boundary. This app spawns shells, so localhost binding alone is NOT a
 // boundary (DNS-rebinding + cross-site POST can reach 127.0.0.1). Two mandatory layers:
 //   1. Origin/Referer check on every mutating request (non-GET) and every WS upgrade.
-//   2. Per-process random token on ALL /api/* requests + WS upgrades (query param).
+//   2. Per-process random token: `x-seshmux-token` header on /api/* requests,
+//      `?token=` query param on WS upgrades.
 // Both are enforced by a single Fastify onRequest hook (server/index.ts) via requireAuth.
 
 import { timingSafeEqual } from 'node:crypto';

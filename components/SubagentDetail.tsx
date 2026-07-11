@@ -4,12 +4,15 @@ import { useState } from 'react';
 import type { SubagentDetail as SubagentDetailData } from '../lib/client/types';
 import StatusDot from './ui/StatusDot';
 import IconButton from './ui/IconButton';
+import Button from './ui/Button';
 import { renderMarkdown } from './Transcript';
 import { renderOutcomeBlocks, type OutcomeBlock } from './subagentOutcome';
 import styles from './SubagentViewer.module.scss';
 
 export interface SubagentDetailProps {
-  detail: SubagentDetailData | null; // null = loading
+  detail: SubagentDetailData | null; // null = loading (or errored, see `error`)
+  error?: boolean;
+  onRetry?: () => void;
   onBack: () => void;
 }
 
@@ -55,14 +58,20 @@ function OutcomeBlockView({ block }: { block: OutcomeBlock }) {
   }
 }
 
-export default function SubagentDetail({ detail, onBack }: SubagentDetailProps) {
+export default function SubagentDetail({ detail, error, onRetry, onBack }: SubagentDetailProps) {
   const [promptExpanded, setPromptExpanded] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
 
   if (detail === null) {
     return (
       <div className={styles.detail}>
-        <div className={styles.loading}>Loading…</div>
+        {error ? (
+          <div className={styles.loading}>
+            Failed to load subagent detail. <Button onClick={() => onRetry?.()}>Retry</Button>
+          </div>
+        ) : (
+          <div className={styles.loading}>Loading…</div>
+        )}
       </div>
     );
   }

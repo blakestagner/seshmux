@@ -219,7 +219,7 @@ Adding a whole new agent = a provider module (`server/lib/providers/<agent>.ts`:
 When a status dot looks wrong, ask the classifier to show its work:
 
 ```bash
-curl "http://127.0.0.1:4700/api/term/<ptyId>/status-explain?token=<token>"
+curl -H "x-seshmux-token: <token>" "http://127.0.0.1:4700/api/term/<ptyId>/status-explain"
 ```
 
 Returns the current status plus evidence: which manifest pattern matched, which precedence branch decided (activity / prompt-frame / silence), milliseconds since last output, whether a hook override beat the heuristics (and the hook file's age), and the last ~20 ANSI-stripped lines that were classified.

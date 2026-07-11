@@ -10,6 +10,22 @@
   flex-direction: column;
 }
 
+// Honest, no-frills notice while the server auto-restarts (BUG-3) — no
+// progress bar, no timer guess, just says what's happening. Top strip so it
+// never collides with the bottom-right Toast.
+.restartBanner {
+  @include t-row;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 500;
+  text-align: center;
+  padding: 6px 12px;
+  background: var(--waiting);
+  color: var(--accent-contrast);
+}
+
 .app {
   flex: 1;
   display: flex;

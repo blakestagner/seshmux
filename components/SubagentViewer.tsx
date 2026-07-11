@@ -30,6 +30,8 @@ export default function SubagentViewer({ projectId, sessionId, refreshKey, onClo
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
   const [detail, setDetail] = useState<SubagentDetail | null>(null);
+  const [detailError, setDetailError] = useState(false);
+  const [detailReloadKey, setDetailReloadKey] = useState(0);
 
   // Refetch the tree. Seed collapsedIds from finished top-level roots on the FIRST load
   // only (auto-collapse finished branches, keep running paths open) — never clobber the
@@ -63,17 +65,18 @@ export default function SubagentViewer({ projectId, sessionId, refreshKey, onClo
     }
     let cancelled = false;
     setDetail(null); // loading state ONLY on a real selection change
+    setDetailError(false);
     getSubagentDetail(projectId, sessionId, selectedId)
       .then((d) => {
         if (!cancelled) setDetail(d);
       })
       .catch(() => {
-        /* unknown agent / race — leave loading, next select retries */
+        if (!cancelled) setDetailError(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [selectedId, projectId, sessionId]);
+  }, [selectedId, projectId, sessionId, detailReloadKey]);
 
   // A ping (refreshKey) while a detail is open → refetch and REPLACE IN PLACE (no
   // setDetail(null)), so a running agent's transcript grows without a loading flicker
@@ -114,7 +117,12 @@ export default function SubagentViewer({ projectId, sessionId, refreshKey, onClo
         </IconButton>
       </div>
       {selectedId ? (
-        <SubagentDetailPane detail={detail} onBack={() => setSelectedId(null)} />
+        <SubagentDetailPane
+          detail={detail}
+          error={detailError}
+          onRetry={() => setDetailReloadKey((k) => k + 1)}
+          onBack={() => setSelectedId(null)}
+        />
       ) : (
         <SubagentTree
           nodes={nodes}

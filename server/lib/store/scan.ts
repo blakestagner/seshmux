@@ -141,34 +141,40 @@ async function computeHead(filePath: string): Promise<HeadInfo> {
   });
 
   try {
-    for await (const line of rl) {
-      if (++lineCount > 50 && title && cwd) break;
-      if (!line.trim()) continue;
-      let obj: any;
-      try {
-        obj = JSON.parse(line);
-      } catch {
-        continue; // tolerate malformed lines
-      }
-
-      if (typeof obj.gitBranch === 'string') branch = obj.gitBranch;
-      if (cwd === null && typeof obj.cwd === 'string' && obj.cwd) cwd = obj.cwd;
-      // Team membership (Teams v1 discovery): teammate sessions stamp teamName +
-      // agentName; the lead session stamps neither.
-      if (teamName === null && typeof obj.teamName === 'string') teamName = obj.teamName;
-      if (agentName === null && typeof obj.agentName === 'string') agentName = obj.agentName;
-
-      if (obj.type === 'user' && obj.message?.role === 'user') {
-        const text = firstUserText(obj.message.content);
-        if (startedAt === null && typeof obj.timestamp === 'string') {
-          startedAt = Date.parse(obj.timestamp);
+    try {
+      for await (const line of rl) {
+        if (++lineCount > 50 && title && cwd) break;
+        if (!line.trim()) continue;
+        let obj: any;
+        try {
+          obj = JSON.parse(line);
+        } catch {
+          continue; // tolerate malformed lines
         }
-        if (!title && text) {
-          const trimmed = text.trim();
-          const isMeta = SKIP_TITLE_PREFIXES.some((p) => trimmed.startsWith(p));
-          if (!isMeta) title = trimmed.slice(0, 80);
+
+        if (typeof obj.gitBranch === 'string') branch = obj.gitBranch;
+        if (cwd === null && typeof obj.cwd === 'string' && obj.cwd) cwd = obj.cwd;
+        // Team membership (Teams v1 discovery): teammate sessions stamp teamName +
+        // agentName; the lead session stamps neither.
+        if (teamName === null && typeof obj.teamName === 'string') teamName = obj.teamName;
+        if (agentName === null && typeof obj.agentName === 'string') agentName = obj.agentName;
+
+        if (obj.type === 'user' && obj.message?.role === 'user') {
+          const text = firstUserText(obj.message.content);
+          if (startedAt === null && typeof obj.timestamp === 'string') {
+            startedAt = Date.parse(obj.timestamp);
+          }
+          if (!title && text) {
+            const trimmed = text.trim();
+            const isMeta = SKIP_TITLE_PREFIXES.some((p) => trimmed.startsWith(p));
+            if (!isMeta) title = trimmed.slice(0, 80);
+          }
         }
       }
+    } catch {
+      // stream error (EACCES/ENOENT/vanished-between-stat-and-open) — degrade to
+      // whatever was parsed so far instead of rejecting; protects both readHead
+      // call sites (computeRootScan, readDirSessions) at the root.
     }
   } finally {
     rl.close();
@@ -233,6 +239,11 @@ async function scanRoot(root: string, provider: ProviderId): Promise<RootScan> {
   if (hit && Date.now() - hit.at < SCAN_TTL_MS) return hit.scan;
   const scan = computeRootScan(root, provider);
   scanCache.set(key, { at: Date.now(), scan });
+  // A rejected scan must not stay cached for the full TTL (it would recur on
+  // every read) — evict it, guarded by identity so a newer entry isn't clobbered.
+  scan.catch(() => {
+    if (scanCache.get(key)?.scan === scan) scanCache.delete(key);
+  });
   return scan;
 }
 

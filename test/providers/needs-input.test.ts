@@ -133,6 +133,26 @@ describe('classify — idle repaint (click-a-done-agent flip) does not re-arm', 
   });
 });
 
+describe('classify — resurrection guard resets lastFrameWaiting (BUG-6)', () => {
+  it('does not pin status to waiting forever after a sticky-waiting prompt vanishes and the guard fires idle', () => {
+    const s: NIState = initState(0);
+    let t = 0;
+    s.now = () => t;
+    // Get into lastFrameWaiting=true via a real waiting prompt.
+    expect(classify(claudePermission, s, claudeWaiting)).toBe('waiting');
+    expect(s.lastFrameWaiting).toBe(true);
+    // Advance past SILENCE_MS, then feed a chunk where the prompt is GONE and
+    // there's no working signal — sticky-waiting block falls through, wasIdle
+    // is true, workAt < 0 → resurrection guard returns 'idle'.
+    t = 25_000;
+    const status = classify('plain assistant text, no prompt, no spinner', s, claudeWaiting);
+    expect(status).toBe('idle');
+    expect(s.lastFrameWaiting).toBe(false); // must be reset, not left stuck true
+    // Next empty tick must stay idle, NOT resurrect to 'waiting' via the stale flag.
+    expect(classify('', s, claudeWaiting)).toBe('idle');
+  });
+});
+
 describe('provider needsInputPatterns', () => {
   it('both providers expose non-empty waiting patterns', () => {
     expect(claudeWaiting.length).toBeGreaterThan(0);

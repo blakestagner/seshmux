@@ -54,9 +54,10 @@ export function parseScratchpad(md: string): ScratchEntry[] {
 export type ScratchpadProps = {
   projectId: string;
   path: string;
+  refreshKey?: number;
 };
 
-export default function Scratchpad({ projectId, path }: ScratchpadProps) {
+export default function Scratchpad({ projectId, path, refreshKey }: ScratchpadProps) {
   const [entries, setEntries] = useState<ScratchEntry[] | null>(null);
   const [clearing, setClearing] = useState(false);
 
@@ -75,7 +76,7 @@ export default function Scratchpad({ projectId, path }: ScratchpadProps) {
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, refreshKey]);
 
   function handleClear() {
     setClearing(true);

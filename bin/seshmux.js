@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 'use strict';
 
+// Runtime backstop for package.json engines (npm doesn't enforce it). ES5-only syntax.
+var _nodeMajor = parseInt(process.versions.node.split('.')[0], 10);
+if (_nodeMajor < 20) { console.error('seshmux requires Node.js >= 20 (found ' + process.versions.node + '). Please upgrade.'); process.exit(1); }
+
 // seshmux CLI entry. Ensures a responsive seshmuxd daemon, picks a free port
 // (reusing an already-running seshmux if one answers), starts the Fastify
 // server, and opens the browser to the chosen port.

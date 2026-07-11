@@ -13,6 +13,7 @@ import IconButton from './ui/IconButton';
 import ProjectVisibilityList from './ProjectVisibilityList';
 import { getCustomizations, type CustomizationsPayload } from '../lib/client/api';
 import { renderMarkdown } from './Transcript';
+import Button from './ui/Button';
 import type { CustomizationItem, Project } from '../lib/client/types';
 
 type Section = 'overview' | 'agents' | 'skills' | 'instructions' | 'hooks' | 'mcp' | 'projects';
@@ -81,14 +82,19 @@ export default function CustomizationsModal({
   const [section, setSection] = useState<Section>('overview');
   const [scope, setScope] = useState<'global' | 'project'>(projectId ? 'project' : 'global');
   const [data, setData] = useState<CustomizationsPayload | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [detail, setDetail] = useState<CustomizationItem | null>(null);
   const [detailSection, setDetailSection] = useState<Section>('overview');
 
   useEffect(() => {
     if (!open) return;
     setData(null);
-    getCustomizations(scope, projectId).then(setData).catch(() => setData(null));
-  }, [open, scope, projectId]);
+    setLoadError(null);
+    getCustomizations(scope, projectId)
+      .then(setData)
+      .catch((e) => setLoadError((e as Error).message || 'failed to load'));
+  }, [open, scope, projectId, reloadKey]);
 
   // Reset to Overview + re-scope whenever the modal is (re)opened for a
   // (possibly different) project — stale nav position from a prior open
@@ -149,6 +155,10 @@ export default function CustomizationsModal({
           <div className={styles.content}>
             {section === 'projects' ? (
               <ProjectVisibilityList projects={projects} hidden={hidden} onToggleHidden={(id) => onToggleHidden?.(id)} />
+            ) : loadError ? (
+              <div className={styles.empty}>
+                Failed to load: {loadError} <Button onClick={() => setReloadKey((k) => k + 1)}>Retry</Button>
+              </div>
             ) : !data ? (
               <div className={styles.empty}>Loading…</div>
             ) : section === 'overview' ? (

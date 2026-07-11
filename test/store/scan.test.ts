@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { utimesSync, statSync, readdirSync } from 'node:fs';
+import { utimesSync, statSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { scanProjects, listSessions, storeBytes } from '../../server/lib/store/scan';
 
@@ -58,6 +59,38 @@ describe('listSessions', () => {
       limit: 5,
     });
     expect(older.map((s) => s.id)).toEqual(['aaaa-1111']);
+  });
+});
+
+describe('scanProjects — unreadable session file does not break the whole scan (BUG-7)', () => {
+  it('skips an unreadable .jsonl and still returns the other readable sessions', async () => {
+    const tRoot = mkdtempSync(join(tmpdir(), 'scan-bug7-'));
+    const dirName = '-Users-demo-github-unreadable-repo';
+    const projDir = join(tRoot, dirName);
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(
+      join(projDir, 'good-1111.jsonl'),
+      '{"type":"user","message":{"role":"user","content":"a real task"},"timestamp":"2026-07-01T10:00:00.000Z","cwd":"/Users/demo/github/unreadable-repo","gitBranch":"main"}\n',
+    );
+    const badPath = join(projDir, 'bad-2222.jsonl');
+    writeFileSync(badPath, '{"type":"user"}\n');
+    chmodSync(badPath, 0o000);
+
+    try {
+      const projects = await scanProjects(tRoot, 'claude');
+      const p = projects.find((x) => x.id === dirName);
+      expect(p).toBeDefined();
+      expect(p!.sessionCount).toBe(2); // both files counted, unreadable one just degrades
+
+      const sessions = await listSessions(dirName, { root: tRoot, provider: 'claude' });
+      expect(sessions).toHaveLength(2);
+      const good = sessions.find((s) => s.id === 'good-1111')!;
+      expect(good.title).toBe('a real task');
+      const bad = sessions.find((s) => s.id === 'bad-2222')!;
+      expect(bad.title).toBe(''); // degraded to empty head, not thrown
+    } finally {
+      chmodSync(badPath, 0o644); // restore so the tmpdir can be cleaned up
+    }
   });
 });
 

@@ -300,6 +300,36 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     }
   }, 10000);
 
+  // BUG-8: requestApproval must self-expire at expiresAt so a stale pendingApprovals
+  // entry can't be resolved late (after the listener's own 120s timeout deny) and
+  // report a false "approved" success.
+  it('requestApproval self-expires at expiresAt — a late resolveApproval finds nothing and reports false', async () => {
+    const { createEventsHub } = await import('../../server/events-hub');
+    const hub = await createEventsHub();
+    try {
+      const expiresAt = Date.now() + 100;
+      const approvalPromise = hub.requestApproval({
+        requestId: 'bug8-req-1',
+        tool: 'test-tool',
+        question: 'proceed?',
+        cwd: os.tmpdir(),
+        hop: 0,
+        expiresAt,
+      });
+
+      // Wait past expiresAt so the self-expire timer fires.
+      await new Promise((r) => setTimeout(r, 200));
+      const resolved = await approvalPromise;
+      expect(resolved).toBe(false); // self-expired, matches the listener's timeout deny
+
+      // A late UI approve after expiry must find the entry already evicted.
+      const lateResult = hub.resolveApproval('bug8-req-1', true);
+      expect(lateResult).toBe(false); // no false "approved" success
+    } finally {
+      await hub.close();
+    }
+  }, 10000);
+
   // Spec 6: getStatusExplain surfaces the evidence behind the classify feed.
   it('getStatusExplain names the matching pattern for a heuristic-only PTY (no hooks)', async () => {
     const { createEventsHub } = await import('../../server/events-hub');

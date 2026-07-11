@@ -290,7 +290,12 @@ export class CodexProvider implements AgentProvider {
       } catch {
         continue;
       }
-      const s = await readSummary(file, mtime);
+      let s: RolloutSummary;
+      try {
+        s = await readSummary(file, mtime);
+      } catch {
+        continue; // unreadable/vanished file — skip, don't fail the whole scan
+      }
       results.push({ file, mtime, s });
     }
     return results;
