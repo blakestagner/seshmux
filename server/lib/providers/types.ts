@@ -28,6 +28,13 @@ export interface ProviderCommands {
   continue(cwd: string): string[];
   resume(cwd: string, id: string): string[];
   plan?(cwd: string): string[];
+  // Fresh interactive session with an initial prompt already submitted — replaces the
+  // race-prone "spawn fresh() then write firstPrompt into the TUI after a settle delay"
+  // seam (a slow-booting TUI, e.g. one printing MCP setup warnings, could swallow the
+  // delayed write entirely). Optional: only implemented where the CLI has a documented
+  // positional/flag for an initial prompt; callers must fall back to the delayed-write
+  // path when a provider omits this.
+  freshPrompt?(cwd: string, prompt: string): string[];
   // Headless (non-interactive) argv for the agent bridge. Binary names + sandbox flags live
   // here (hard rule 3) — the bridge caller only does execFile/output-capture, no CLI knowledge.
   // Both put the untrusted text AFTER a `--` end-of-options separator so it can't smuggle a flag.

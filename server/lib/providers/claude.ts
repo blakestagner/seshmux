@@ -132,6 +132,11 @@ export class ClaudeProvider implements AgentProvider {
 
   commands: ProviderCommands = {
     fresh: () => [CLAUDE_BIN],
+    // A bare positional prompt starts the interactive TUI with that prompt already
+    // submitted (distinct from `-p`, which runs headless and exits). `--` shields it as
+    // an end-of-options separator, same flag-proofing convention as headlessAsk below —
+    // untrusted text can never be parsed as a flag even if it starts with `-`.
+    freshPrompt: (_cwd, prompt) => [CLAUDE_BIN, '--', prompt],
     continue: () => [CLAUDE_BIN, '--continue'],
     // `--resume=<id>` (glued, not `--resume <id>`) so a hostile id starting with `-` can
     // never be parsed as a separate flag — flag-proof even if a caller skips validation.
