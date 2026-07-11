@@ -58,6 +58,12 @@ export type TerminalPaneProps = {
   // Bumped by page.tsx when a {event:'subagents'} ping lands for this session, so the
   // chip's lazy poll re-runs live (not only on mount/focus).
   subagentPing?: number;
+  // Teams v1.1: tmux teammateMode already tiles teammates INSIDE this terminal, so the
+  // TeamPanel split is opt-in via this chip instead of auto-showing (mirrors the
+  // subagent chip above, but toggles open/closed rather than open-only).
+  isTeamLead?: boolean;
+  teamMemberCount?: number;
+  onOpenTeam?: () => void;
 };
 
 // Aperture terminal theme — values from tokens.scss --term-* / --accent.
@@ -79,6 +85,9 @@ export default function TerminalPane({
   variant = 'default',
   onOpenSubagents,
   subagentPing,
+  isTeamLead,
+  teamMemberCount,
+  onOpenTeam,
 }: TerminalPaneProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<'live' | 'done'>('live');
@@ -404,6 +413,12 @@ export default function TerminalPane({
     };
   }, [canShowSubagents, projectId, sessionId, subagentPing]);
   const subagentChipCount = subagentCount.running || subagentCount.total;
+  // Team chip: shown as soon as this tab is a team lead (isTeamLead resolves
+  // synchronously on spawn — see store.ts), no fetch of its own. The member
+  // count is best-effort — it only appears once the panel has been opened at
+  // least once and its roster resolved (page.tsx lifts just the count, not
+  // the fetch).
+  const canShowTeam = variant !== 'grid' && !!isTeamLead && !!onOpenTeam;
 
   async function handleFinish(mode: WorkspaceFinishMode, force: boolean) {
     if (!wsRecord || finishBusy) return;
@@ -543,6 +558,16 @@ export default function TerminalPane({
             <span className={styles.divider} aria-hidden="true" />
             <Button variant="chip" title="View subagents" onClick={() => onOpenSubagents?.()}>
               ◦ {subagentChipCount} agent{subagentChipCount === 1 ? '' : 's'}
+            </Button>
+          </>
+        ) : null}
+        {/* Team chip: opt-in TeamPanel split (tmux teammateMode already tiles
+            teammates inside this terminal — see components/TerminalPane.tsx docstring). */}
+        {canShowTeam ? (
+          <>
+            <span className={styles.divider} aria-hidden="true" />
+            <Button variant="chip" title="View team roster" onClick={() => onOpenTeam?.()}>
+              ⚑ {teamMemberCount != null ? `${teamMemberCount} ` : ''}team
             </Button>
           </>
         ) : null}

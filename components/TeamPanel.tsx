@@ -23,6 +23,10 @@ export interface TeamPanelProps {
   // growing, so the open member's transcript freshness rides the existing
   // session-touch watch (Task 4) instead of a bespoke poller.
   touchPings: Record<string, number>;
+  // Team panel is opt-in (opened via the statusbar chip) — this lifts just the
+  // resolved member count back to page.tsx so the chip can show it once
+  // available. No new fetch: piggybacks the roster fetch this panel already does.
+  onMembersResolved?: (count: number) => void;
 }
 
 // Fresh-start race: Rail marks the lead tab isTeamLead immediately (before the lead
@@ -46,7 +50,13 @@ function timeSince(ms: number): string {
   return `${Math.floor(h / 24)}d`;
 }
 
-export default function TeamPanel({ leadSessionId, projectId, refreshKey, touchPings }: TeamPanelProps) {
+export default function TeamPanel({
+  leadSessionId,
+  projectId,
+  refreshKey,
+  touchPings,
+  onMembersResolved,
+}: TeamPanelProps) {
   const [info, setInfo] = useState<TeamInfo | null>(null);
   const [status, setStatus] = useState<PanelStatus>('loading');
   const [openMember, setOpenMember] = useState<TeamMemberInfo | null>(null);
@@ -63,6 +73,7 @@ export default function TeamPanel({ leadSessionId, projectId, refreshKey, touchP
           everResolvedRef.current = true;
           setInfo(data);
           setStatus('live');
+          onMembersResolved?.(data.members.length);
         })
         .catch(() => {
           if (cancelled) return;
@@ -127,6 +138,7 @@ export default function TeamPanel({ leadSessionId, projectId, refreshKey, touchP
       everResolvedRef.current = true;
       setInfo(data);
       setStatus('live');
+      onMembersResolved?.(data.members.length);
     }, () => {});
     return () => {
       cancelled = true;
