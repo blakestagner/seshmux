@@ -5,7 +5,7 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { listSessions as scanListSessions, scanProjects as scan, storeBytes } from '../store/scan';
+import { isSafeId, listSessions as scanListSessions, scanProjects as scan, storeBytes } from '../store/scan';
 import { searchStore, type SearchHit, type SearchOpts } from '../store/search';
 import { aggregateUsage, type UsageSummary } from '../store/usage';
 import { parseTranscript as parse, readCtx as tailCtx } from '../store/transcript';
@@ -204,14 +204,29 @@ export class ClaudeProvider implements AgentProvider {
   // injects the absolute session dir (hard rule 3). Codex omits this capability, so its
   // `subagents` is undefined and the client chip never shows.
   subagents: SubagentSupport = {
-    list: (projectId, sessionId) => listSubagentNodes(join(this.root, projectId, sessionId)),
+    // Gate projectId against the (cached, cheap) scanned project list and reject any
+    // traversal in sessionId before path-joining into the store (SEC-3). Both ids are
+    // joined into an absolute ~/.claude path, so an unvalidated "../" would read an
+    // arbitrary subagents dir off disk.
+    list: async (projectId, sessionId) => {
+      if (!(await this.isKnownSession(projectId, sessionId))) return [];
+      return listSubagentNodes(join(this.root, projectId, sessionId));
+    },
     detail: async (projectId, sessionId, agentId) => {
+      if (!(await this.isKnownSession(projectId, sessionId))) return null;
       const nodes = await listSubagentNodes(join(this.root, projectId, sessionId));
       const node = nodes.find((n) => n.id === agentId);
       if (!node) return null;
       return parseSubagentDetail(node.jsonlPath ?? '', node);
     },
   };
+
+  // True only when projectId is a real scanned project AND sessionId is separator-free.
+  private async isKnownSession(projectId: string, sessionId: string): Promise<boolean> {
+    if (!isSafeId(sessionId)) return false;
+    const projects = await this.scanProjects();
+    return projects.some((p) => p.id === projectId);
+  }
 
   // Teams v1 (native `claude-swarm` teammates). Team-file layout knowledge stays in
   // store/teams-store.ts (provider-agnostic, mirrors scan.ts); only this provider

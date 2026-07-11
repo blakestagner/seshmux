@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { cpSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import { join } from 'node:path';
 import { CodexProvider } from '../../server/lib/providers/codex';
 
 const root = new URL('../fixtures/codex-sessions', import.meta.url).pathname;
@@ -64,5 +67,52 @@ describe('CodexProvider.readCtx / commands', () => {
     const evil = cx.commands.resume('/tmp/x', '--dangerously-bypass-approvals-and-sandbox');
     expect(evil[evil.length - 2]).toBe('--');
     expect(evil[evil.length - 1]).toBe('--dangerously-bypass-approvals-and-sandbox');
+  });
+});
+
+describe('CodexProvider.search (PERF-6 (file,mtime) line cache)', () => {
+  // Copy the fixture store to a temp dir so we can prove the (file,mtime) cache serves a
+  // second query without re-reading disk: after warming, we truncate the rollout but
+  // RESTORE its mtime — a cached read still finds the hit; a live re-read would find none.
+  function findRollout(dir: string): string {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) {
+        const hit = findRollout(p);
+        if (hit) return hit;
+      } else if (e.name.startsWith('rollout-') && e.name.endsWith('.jsonl')) {
+        return p;
+      }
+    }
+    return '';
+  }
+
+  it('serves a repeat query from cache (no disk re-read) and honours mtime invalidation', async () => {
+    const tmp = mkdtempSync(join(os.tmpdir(), 'seshmux-codex-search-'));
+    try {
+      cpSync(root, tmp, { recursive: true });
+      const rollout = findRollout(tmp);
+      expect(rollout).not.toBe('');
+      const cx = new CodexProvider(tmp);
+
+      const first = await cx.search('feature');
+      expect(first.length).toBeGreaterThan(0);
+      expect(first[0]).toMatchObject({ provider: 'codex', sessionId: 'bbbb-2222' });
+      expect(first[0].snippet.toLowerCase()).toContain('feature');
+
+      // Gut the file but keep its mtime → cache key unchanged → still a hit from memory.
+      const { atime, mtime } = statSync(rollout);
+      writeFileSync(rollout, '');
+      utimesSync(rollout, atime, mtime);
+      const cached = await cx.search('feature');
+      expect(cached.length).toBe(first.length);
+
+      // Bump mtime → cache key changes → the now-empty file is re-read → no hit.
+      const later = new Date(mtime.getTime() + 5_000);
+      utimesSync(rollout, later, later);
+      expect(await cx.search('feature')).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

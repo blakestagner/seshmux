@@ -8,6 +8,7 @@ import { createReadStream } from 'node:fs';
 import { open, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { isSafeId } from './scan';
 
 export interface ToolCall {
   name: string;
@@ -75,6 +76,8 @@ export async function parseTranscript(
   root: string,
   window: number | ((model: string) => number),
 ): Promise<{ msgs: Msg[]; ctx: Ctx | null }> {
+  // Traversal guard (SEC-4): both ids are path-joined below — refuse "../" in either.
+  if (!isSafeId(projectId) || !isSafeId(sessionId)) return { msgs: [], ctx: null };
   const filePath = join(root, projectId, `${sessionId}.jsonl`);
   const msgs: Msg[] = [];
   const toolById = new Map<string, ToolCall>();

@@ -72,6 +72,16 @@ const LIVE_WINDOW_MS = 60_000;
 
 // Decode a dash-encoded project dir name into an absolute cwd + short repo name.
 // `-Users-demo-github-myrepo` -> path `/Users/demo/github/myrepo`, name `myrepo`.
+// Reject an id that could traverse out of the store root when path-joined. A valid
+// projectId/sessionId is always a single dirent name or a dash-encoded path (never
+// contains a real "/"), so banning path separators, NUL and any ".." segment closes
+// traversal (join can only escape root via "..") without rejecting any legit id form.
+// ponytail: syntactic reject is enough — no separators/".." means join(root,id) stays
+// under root, so realpath containment would be redundant.
+export function isSafeId(id: string): boolean {
+  return !!id && !id.includes('/') && !id.includes('\\') && !id.includes('\0') && !id.includes('..');
+}
+
 export function decodeProjectDir(dir: string): { path: string; name: string } {
   const path = dir.replace(/-/g, '/');
   const segments = path.split('/').filter(Boolean);
@@ -441,6 +451,7 @@ function memberDirs(
 
 export async function listSessions(projectId: string, opts: ListOpts): Promise<SessionMeta[]> {
   const { root, provider, before, limit, q } = opts;
+  if (!isSafeId(projectId)) return []; // traversal guard (SEC-4): never join a "../" id
   const dirPath = join(root, projectId);
 
   // Resolve projectId to the parent repo's real path, handling all three id

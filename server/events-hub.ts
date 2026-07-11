@@ -66,6 +66,13 @@ export interface EventsHub {
    */
   watchScratchpad(projectId: string, repoPath: string): void;
   /**
+   * Close scratchpad + subagent watchers idle past the cutoff (default: last touched
+   * over 15min ago); returns how many were closed. Runs automatically on a background
+   * interval — exposed for tests and manual memory-pressure shedding. Re-opening a tab
+   * re-arms its watcher transparently.
+   */
+  sweepIdleWatchers(cutoff?: number): Promise<number>;
+  /**
    * Watch a claude session's subagents/ dir (incl. workflows/<wf>/) for a session
    * with an open subagent viewer → emit {event:'subagents', projectId, sessionId}
    * (ping-only; the client refetches GET /api/subagents). Idempotent per
@@ -407,7 +414,12 @@ export async function createEventsHub(): Promise<EventsHub> {
   // ── Scratchpad watch (plan 16.6): live-refresh the tab when either agent writes
   //    <repo>/.seshmux/handoff.md. One chokidar watcher per project, lazily added.
   const scratchpadWatched = new Map<string, { close(): Promise<void> }>();
+  // Last-touched ms per watcher key, so the idle sweep (MEM-5/MEM-6) can evict
+  // watchers no tab has re-opened in a while. A re-open transparently re-arms via
+  // the existing lazy-create path below.
+  const scratchpadTouched = new Map<string, number>();
   function watchScratchpad(projectId: string, repoPath: string) {
+    scratchpadTouched.set(projectId, Date.now());
     if (scratchpadWatched.has(projectId)) return;
     const file = path.join(repoPath, '.seshmux', 'handoff.md');
     try {
@@ -430,8 +442,10 @@ export async function createEventsHub(): Promise<EventsHub> {
   //    rewrite in bursts) so a rewrite storm collapses to one ping.
   const subagentWatched = new Map<string, { close(): Promise<void> }>();
   const subagentDebounce = new Map<string, NodeJS.Timeout>();
+  const subagentTouched = new Map<string, number>();
   function watchSubagents(projectId: string, sessionId: string) {
     const key = `${projectId}:${sessionId}`;
+    subagentTouched.set(key, Date.now());
     if (subagentWatched.has(key)) return;
     // The subagents/ layout stays in the provider (hard rule 3) — resolve the dir there.
     const dir = claudeSubagentWatchConfig.sessionDir(claudeStoreRoot(), projectId, sessionId);
@@ -459,6 +473,46 @@ export async function createEventsHub(): Promise<EventsHub> {
       /* watching unavailable — the viewer still works via manual refetch */
     }
   }
+
+  // ── Idle watcher eviction (MEM-5/MEM-6): scratchpad + subagent watchers were armed
+  //    on first open and only released at hub close — an fd leak per tab ever opened
+  //    over server uptime. Close any watcher not touched (re/opened) in IDLE_MS; a
+  //    later re-open re-arms it transparently via the lazy-create guards above.
+  const WATCHER_IDLE_MS = 15 * 60_000;
+  // Close every watcher last touched before `cutoff` (default: idle > WATCHER_IDLE_MS).
+  // Returns the count of watchers closed — exposed so tests can force a sweep and so a
+  // caller could shed watchers under memory pressure.
+  async function sweepIdleWatchers(cutoff = Date.now() - WATCHER_IDLE_MS): Promise<number> {
+    let evicted = 0;
+    for (const [projectId, at] of scratchpadTouched) {
+      if (at > cutoff) continue;
+      scratchpadTouched.delete(projectId);
+      const w = scratchpadWatched.get(projectId);
+      if (w) {
+        scratchpadWatched.delete(projectId);
+        await w.close().catch(() => {});
+        evicted++;
+      }
+    }
+    for (const [key, at] of subagentTouched) {
+      if (at > cutoff) continue;
+      subagentTouched.delete(key);
+      const t = subagentDebounce.get(key);
+      if (t) {
+        clearTimeout(t);
+        subagentDebounce.delete(key);
+      }
+      const w = subagentWatched.get(key);
+      if (w) {
+        subagentWatched.delete(key);
+        await w.close().catch(() => {});
+        evicted++;
+      }
+    }
+    return evicted;
+  }
+  const watcherSweep = setInterval(() => void sweepIdleWatchers(), 5 * 60_000);
+  watcherSweep.unref?.(); // never keep the process alive for the sweep alone
 
   // ── Team watch (Task 4): live-refresh the roster panel when a team's
   //    config.json changes (member join / isActive flip). One chokidar watcher
@@ -523,14 +577,17 @@ export async function createEventsHub(): Promise<EventsHub> {
   async function close() {
     closing = true;
     clearInterval(timer);
+    clearInterval(watcherSweep);
     if (watcher) await watcher.close().catch(() => {});
     if (statusWatcher) await statusWatcher.close().catch(() => {});
     for (const w of scratchpadWatched.values()) await w.close().catch(() => {});
     scratchpadWatched.clear();
+    scratchpadTouched.clear();
     for (const t of subagentDebounce.values()) clearTimeout(t);
     subagentDebounce.clear();
     for (const w of subagentWatched.values()) await w.close().catch(() => {});
     subagentWatched.clear();
+    subagentTouched.clear();
     for (const w of teamWatched.values()) await w.close().catch(() => {});
     teamWatched.clear();
     if (monitor) monitor.close();
@@ -557,6 +614,7 @@ export async function createEventsHub(): Promise<EventsHub> {
     watchScratchpad,
     watchSubagents,
     watchTeam,
+    sweepIdleWatchers,
     emit: (event) => broadcast(event),
     requestApproval,
     resolveApproval,

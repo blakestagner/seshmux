@@ -84,4 +84,16 @@ describe('provider subagents capability', () => {
     const codex: AgentProvider = new CodexProvider();
     expect(codex.subagents).toBeUndefined();
   });
+
+  // SEC-3: projectId is gated against the scanned project list and sessionId is
+  // separator-checked before the absolute ~/.claude join — a traversal or unknown
+  // project reads nothing.
+  it('refuses a traversal / unknown projectId and a traversal sessionId (SEC-3)', async () => {
+    const claude = new ClaudeProvider({ root: FIX });
+    expect(await claude.subagents!.list('../plain-general', 'session')).toEqual([]);
+    expect(await claude.subagents!.list('not-a-real-project', 'session')).toEqual([]);
+    expect(await claude.subagents!.list('plain-general', '../session')).toEqual([]);
+    expect(await claude.subagents!.detail('../plain-general', 'session', 'x')).toBeNull();
+    expect(await claude.subagents!.detail('plain-general', '../session', 'x')).toBeNull();
+  });
 });

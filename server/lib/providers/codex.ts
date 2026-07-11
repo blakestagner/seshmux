@@ -117,6 +117,30 @@ async function findRolloutFiles(root: string): Promise<string[]> {
 // Read head of a rollout for grouping/listing (cwd, branch, title, startedAt).
 const summaryCache = new Map<string, RolloutSummary>();
 
+// Full-file line cache for search (PERF-6): search re-read every rollout end-to-end on
+// each keystroke. Keyed (file,mtime) like summaryCache — a rollout append bumps mtime and
+// orphans the old key; codex trees are a handful of files so unbounded is fine (same
+// ceiling summaryCache already accepts).
+const searchLinesCache = new Map<string, string[]>();
+
+async function readSearchLines(file: string, mtime: number): Promise<string[]> {
+  const key = `${file}:${mtime}`;
+  const cached = searchLinesCache.get(key);
+  if (cached) return cached;
+  const lines: string[] = [];
+  const rl = createInterface({
+    input: createReadStream(file, { encoding: 'utf8' }),
+    crlfDelay: Infinity,
+  });
+  try {
+    for await (const line of rl) lines.push(line);
+  } finally {
+    rl.close();
+  }
+  searchLinesCache.set(key, lines);
+  return lines;
+}
+
 async function readSummary(filePath: string, mtime: number): Promise<RolloutSummary> {
   const cacheKey = `${filePath}:${mtime}`;
   const cached = summaryCache.get(cacheKey);
@@ -446,22 +470,14 @@ export class CodexProvider implements AgentProvider {
     const all = await this.allSummaries();
     const hits: SearchHit[] = [];
 
-    for (const { file, s } of all) {
+    for (const { file, mtime, s } of all) {
       if (!s.cwd) continue;
       let matchLine: string | null = null;
-      const rl = createInterface({
-        input: createReadStream(file, { encoding: 'utf8' }),
-        crlfDelay: Infinity,
-      });
-      try {
-        for await (const line of rl) {
-          if (line.toLowerCase().includes(needle)) {
-            matchLine = line;
-            break;
-          }
+      for (const line of await readSearchLines(file, mtime)) {
+        if (line.toLowerCase().includes(needle)) {
+          matchLine = line;
+          break;
         }
-      } finally {
-        rl.close();
       }
       if (!matchLine) continue;
       const idx = matchLine.toLowerCase().indexOf(needle);
