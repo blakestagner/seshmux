@@ -5,7 +5,7 @@ import { marked } from 'marked';
 import ProviderBadge, { PROV } from './ui/ProviderBadge';
 import Button from './ui/Button';
 import MetaLine from './ui/MetaLine';
-import { getTranscript, startSession, bridgeHandoff, bridgeReview } from '../lib/client/api';
+import { getTranscript, startSession, bridgeHandoff, bridgeReview, getTeamMembers } from '../lib/client/api';
 import type { Msg, Ctx, BridgeStart } from '../lib/client/api';
 import type { ProviderId } from '../lib/client/types';
 import { useAppState } from '../lib/client/store';
@@ -126,7 +126,17 @@ export default function Transcript({ projectId, sessionId, title, provider }: Tr
         resumeId: sessionId,
       });
       // Convert THIS transcript tab into a live term in place (same tab id).
-      dispatch({ type: 'resumeToTerm', tabId: 'tab-' + sessionId, ptyId: tabMeta.ptyId });
+      const tabId = 'tab-' + sessionId;
+      dispatch({ type: 'resumeToTerm', tabId, ptyId: tabMeta.ptyId });
+      // Teams v1 (Task 6) resumed-lead reattach: a resumed lead reuses its old
+      // team dir (keyed by the lead's session id, which survives resume) — the
+      // resumed tab carries no isTeamLead marker of its own (it was opened as a
+      // plain transcript tab, not via the team-start flow), so do a one-shot
+      // check here. 404 (not a team, or the team dir was already cleaned up) is
+      // silently ignored — the tab just stays a normal terminal.
+      getTeamMembers(sessionId)
+        .then((info) => dispatch({ type: 'setTabTeam', tabId, teamName: info.teamName }))
+        .catch(() => {});
     } catch (e) {
       setResuming(false); // stay on the transcript on failure
       setActionError((e as Error).message || 'resume failed');

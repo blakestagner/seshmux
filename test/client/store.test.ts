@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { reducer, initialState, shouldMarkUnviewed, findTabToBindSession, type Tab } from '../../lib/client/store';
+import { reducer, initialState, shouldMarkUnviewed, findTabToBindSession, activeTeam, type Tab } from '../../lib/client/store';
 
 function tab(overrides: Partial<Tab> & Pick<Tab, 'id' | 'kind' | 'label'>): Tab {
   return overrides;
@@ -350,5 +350,52 @@ describe('agents view store support', () => {
     let state = initialState({ view: 'agents' });
     state = reducer(state, { type: 'openSession', sessionId: 's1', projectId: 'p1', label: 'p1', kind: 'transcript' });
     expect(state.view).toBe('tabs');
+  });
+});
+
+describe('activeTeam (Task 6, mirrors activePair)', () => {
+  it('null when there is no active tab', () => {
+    expect(activeTeam([], null)).toBeNull();
+  });
+
+  it('null for a normal (non-team) term tab', () => {
+    const t = tab({ id: 'term-p1', kind: 'term', label: 'x', ptyId: 'p1', sessionId: 's1' });
+    expect(activeTeam([t], 'term-p1')).toBeNull();
+  });
+
+  it('null when isTeamLead but sessionId not yet bound (fresh spawn, pre session-new)', () => {
+    const t = tab({ id: 'term-p1', kind: 'term', label: 'x', ptyId: 'p1', isTeamLead: true });
+    expect(activeTeam([t], 'term-p1')).toBeNull();
+  });
+
+  it('resolves once isTeamLead + sessionId are both set — leadSessionId mirrors sessionId', () => {
+    const t = tab({ id: 'term-p1', kind: 'term', label: 'x', ptyId: 'p1', sessionId: 's1', isTeamLead: true });
+    const result = activeTeam([t], 'term-p1');
+    expect(result).not.toBeNull();
+    expect(result!.tab.id).toBe('term-p1');
+    expect(result!.leadSessionId).toBe('s1');
+  });
+
+  it('does not gate on teamName — the split must not wait on the async roster fetch', () => {
+    const t = tab({ id: 'term-p1', kind: 'term', label: 'x', ptyId: 'p1', sessionId: 's1', isTeamLead: true });
+    expect(t.teamName).toBeUndefined();
+    expect(activeTeam([t], 'term-p1')).not.toBeNull();
+  });
+
+  it('null for a transcript-kind tab even if isTeamLead somehow set', () => {
+    const t = tab({ id: 'tab-s1', kind: 'transcript', label: 'x', sessionId: 's1', isTeamLead: true });
+    expect(activeTeam([t], 'tab-s1')).toBeNull();
+  });
+});
+
+describe('setTabTeam', () => {
+  it('marks isTeamLead + teamName on the matching tab, leaves others untouched', () => {
+    const a = tab({ id: 'term-a', kind: 'term', label: 'a', ptyId: 'a', sessionId: 's1' });
+    const b = tab({ id: 'term-b', kind: 'term', label: 'b', ptyId: 'b', sessionId: 's2' });
+    let state = initialState({ tabs: [a, b] });
+    state = reducer(state, { type: 'setTabTeam', tabId: 'term-a', teamName: 'session-abc123' });
+    expect(state.tabs[0].isTeamLead).toBe(true);
+    expect(state.tabs[0].teamName).toBe('session-abc123');
+    expect(state.tabs[1].isTeamLead).toBeUndefined();
   });
 });

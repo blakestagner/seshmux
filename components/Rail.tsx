@@ -164,7 +164,7 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenPro
     if (!project) return;
     const { tabMeta } = await startTeam({ ...payload, projectId: project.id });
     setTeamProject(null);
-    dispatch({ type: 'openTerm', ptyId: tabMeta.ptyId, projectId: project.id, label: project.name, provider: 'claude' });
+    dispatch({ type: 'openTerm', ptyId: tabMeta.ptyId, projectId: project.id, label: project.name, provider: 'claude', isTeamLead: true });
     dispatch({ type: 'setView', view: 'tabs' });
   }
 
