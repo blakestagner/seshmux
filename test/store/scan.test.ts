@@ -116,3 +116,40 @@ describe('storeBytes', () => {
     expect(await storeBytes('/no/such/store/anywhere')).toBe(0);
   });
 });
+
+describe('computeHead — giant first line past the 256KB cap (round-3 regression)', () => {
+  it('recovers cwd from the tail so the project path is not the lossy dash-decode', async () => {
+    const tRoot = mkdtempSync(join(tmpdir(), 'scan-bighead-'));
+    const dirName = '-Users-demo-github-hyphen-repo';
+    const projDir = join(tRoot, dirName);
+    mkdirSync(projDir, { recursive: true });
+    const realCwd = '/Users/demo/github/hyphen-repo';
+    // First line: a user event whose pasted content pushes the LINE past 256KB.
+    const giant = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: 'x'.repeat(300 * 1024) },
+      timestamp: '2026-07-01T10:00:00.000Z',
+      cwd: realCwd,
+    });
+    const later = JSON.stringify({ type: 'assistant', cwd: realCwd, gitBranch: 'main' });
+    writeFileSync(join(projDir, 'big-1111.jsonl'), giant + '\n' + later + '\n');
+
+    const projects = await scanProjects(tRoot, 'claude');
+    const p = projects.find((x) => x.id === dirName);
+    expect(p).toBeDefined();
+    // cwd recovered from tail — NOT the dash-decode '/Users/demo/github/hyphen/repo'.
+    expect(p!.path).toBe(realCwd);
+  });
+
+  it('a single giant line with no later lines still degrades gracefully (no throw)', async () => {
+    const tRoot = mkdtempSync(join(tmpdir(), 'scan-bighead2-'));
+    const dirName = '-tmp-solo';
+    mkdirSync(join(tRoot, dirName), { recursive: true });
+    writeFileSync(
+      join(tRoot, dirName, 'solo-1.jsonl'),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'y'.repeat(400 * 1024) }, cwd: '/tmp/solo' }),
+    );
+    const projects = await scanProjects(tRoot, 'claude');
+    expect(projects.find((x) => x.id === dirName)).toBeDefined(); // falls back to decode, no crash
+  });
+});

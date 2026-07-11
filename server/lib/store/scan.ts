@@ -12,9 +12,11 @@ import { Lru } from './lru';
 // newline-free / giant single-line jsonl can't be buffered whole (BUG-C1: readline
 // over such a file pulled a 209MB line into RSS on GET /api/projects). 256KB covers
 // far more than the 50-line head scan below for any real session.
-// ponytail: if a legit head ever sits past 256KB (huge pasted first message), title
-// degrades to '' — same graceful degrade the parse-error path already accepts.
+// ponytail: if a legit head sits past 256KB (huge pasted first message), title degrades
+// to '' — but cwd is RECOVERED from a bounded tail read (see computeHead), because a null
+// cwd mis-paths the whole project group (resume 400s on hyphenated repos).
 const HEAD_BYTES = 256 * 1024;
+const TAIL_RECOVER_BYTES = 64 * 1024;
 
 export type ProviderId = 'claude' | 'codex';
 
@@ -144,12 +146,28 @@ async function computeHead(filePath: string): Promise<HeadInfo> {
   // Bounded read of the file head only (never the whole file — BUG-C1). A partial
   // last line from the byte cap just fails JSON.parse below and is skipped.
   let text = '';
+  let tail = '';
   try {
     const fh = await open(filePath, 'r');
     try {
       const buf = Buffer.alloc(HEAD_BYTES);
       const { bytesRead } = await fh.read(buf, 0, HEAD_BYTES, 0);
       text = buf.toString('utf8', 0, bytesRead);
+      // A first LINE bigger than the cap leaves zero parseable head lines → cwd null →
+      // the project path falls back to the lossy dash-decode (resume 400s on hyphenated
+      // repos — the exact failure the head read exists to avoid). Recover cwd/branch from
+      // a bounded TAIL read: later events also stamp cwd, and the tail of a giant-first-
+      // line file is still cheap. Only when the head hit the cap without a newline.
+      if (bytesRead === HEAD_BYTES && !text.includes('\n')) {
+        const { size } = await fh.stat();
+        const tailStart = Math.max(HEAD_BYTES, size - TAIL_RECOVER_BYTES);
+        const tailBuf = Buffer.alloc(Math.min(TAIL_RECOVER_BYTES, Math.max(0, size - tailStart)));
+        if (tailBuf.length > 0) {
+          const r = await fh.read(tailBuf, 0, tailBuf.length, tailStart);
+          tail = tailBuf.toString('utf8', 0, r.bytesRead);
+          tail = tail.slice(tail.indexOf('\n') + 1); // drop the leading partial line
+        }
+      }
     } finally {
       await fh.close();
     }
@@ -159,6 +177,7 @@ async function computeHead(filePath: string): Promise<HeadInfo> {
     // (computeRootScan, readDirSessions) at the root.
     return { title, branch, startedAt, cwd, teamName, agentName };
   }
+  if (tail) text = text.slice(0, text.lastIndexOf('\n') + 1) + tail;
 
   for (const line of text.split('\n')) {
     if (++lineCount > 50 && title && cwd) break;
