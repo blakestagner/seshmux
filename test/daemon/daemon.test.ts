@@ -296,6 +296,27 @@ const tmuxDescribe = hasTmux() ? describe : describe.skip;
 // uses, even when the suite itself runs inside a tmux pane.
 const { TMUX: _t, TMUX_PANE: _tp, ...TMUX_FREE_ENV } = process.env;
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Wait until this session's @seshmux-config stamp equals `want`, or the deadline.
+// Stamping is async (set-option retries until new-session settles), so ownership
+// tests must not act before it lands.
+async function waitForStamp(full: string, want: string, ms = 15000): Promise<string> {
+  const deadline = Date.now() + ms;
+  let stamped = '';
+  while (Date.now() < deadline) {
+    try {
+      stamped = execFileSync('tmux', ['show-options', '-qv', '-t', full, '@seshmux-config'], {
+        encoding: 'utf8',
+        env: TMUX_FREE_ENV,
+      }).trim();
+    } catch {}
+    if (stamped) break;
+    await sleep(100);
+  }
+  return stamped;
+}
+
 tmuxDescribe('seshmuxd tmux tier', () => {
   let daemon: any;
   let configDir: string;
@@ -488,6 +509,144 @@ tmuxDescribe('seshmuxd tmux tier', () => {
     } finally {
       try {
         execFileSync('tmux', ['kill-session', '-t', fullOwn], { stdio: 'ignore', env: TMUX_FREE_ENV });
+      } catch {}
+      c.close();
+    }
+  });
+
+  // BUG-11: a tmux-tier client detach must NOT orphan the still-running session.
+  it('revives a tmux-tier session under the SAME ptyId when its client detaches (BUG-11)', async () => {
+    const name = 'test-revive-' + process.pid;
+    const full = 'seshmux-' + name;
+    const c = new Client(daemon.sockPath);
+    await c.ready();
+    try {
+      const spawn = await c.call('spawn', { cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24, tmuxName: name });
+      const ptyId = spawn.result.ptyId;
+      await c.call('attach', { ptyId });
+      await c.waitForEvent((e) => e.event === 'data' && e.ptyId === ptyId);
+
+      const pm = daemon.ptyManager;
+      const oldPid = pm._ptys.get(ptyId).proc.pid;
+
+      // Detach the daemon's tmux client — its node-pty exits, the session lives on.
+      execFileSync('tmux', ['detach-client', '-s', full], { stdio: 'ignore', env: TMUX_FREE_ENV });
+
+      // Reconcile re-attaches a FRESH client (new pid) under the same ptyId.
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline && pm._ptys.get(ptyId).proc.pid === oldPid) await sleep(100);
+      const entry = pm._ptys.get(ptyId);
+      expect(entry.alive).toBe(true);
+      expect(entry.proc.pid).not.toBe(oldPid);
+      // No 'exit' was emitted — the session never looked dead to a subscriber.
+      expect(c.events.some((e) => e.event === 'exit' && e.ptyId === ptyId)).toBe(false);
+
+      // Write + scrollback still work through the revived client (cat echoes).
+      await c.call('write', { ptyId, data: 'after-revive\n' });
+      const echo = await c.waitForEvent(
+        (e) => e.event === 'data' && e.ptyId === ptyId && e.data.includes('after-revive'),
+        8000,
+      );
+      expect(echo.data).toContain('after-revive');
+    } finally {
+      try {
+        execFileSync('tmux', ['kill-session', '-t', full], { stdio: 'ignore', env: TMUX_FREE_ENV });
+      } catch {}
+      c.close();
+    }
+  });
+
+  it('does NOT revive a detached session stamped by a FOREIGN config dir (BUG-11 ownership)', async () => {
+    const name = 'test-revive-foreign-' + process.pid;
+    const full = 'seshmux-' + name;
+    const c = new Client(daemon.sockPath);
+    await c.ready();
+    try {
+      const spawn = await c.call('spawn', { cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24, tmuxName: name });
+      const ptyId = spawn.result.ptyId;
+      await c.call('attach', { ptyId });
+      await c.waitForEvent((e) => e.event === 'data' && e.ptyId === ptyId);
+
+      // Wait for our stamp to settle (so markTmuxConfig has stopped retrying),
+      // then overwrite it to a foreign owner.
+      expect(await waitForStamp(full, configDir)).toBe(configDir);
+      execFileSync('tmux', ['set-option', '-t', full, '@seshmux-config', '/some/foreign/dir'], {
+        stdio: 'ignore',
+        env: TMUX_FREE_ENV,
+      });
+
+      // Detach → reconcile sees a foreign session → declines revive → emits exit.
+      const exitP = c.waitForEvent((e) => e.event === 'exit' && e.ptyId === ptyId, 8000);
+      execFileSync('tmux', ['detach-client', '-s', full], { stdio: 'ignore', env: TMUX_FREE_ENV });
+      await exitP;
+      expect(daemon.ptyManager._ptys.get(ptyId).alive).toBe(false);
+    } finally {
+      try {
+        execFileSync('tmux', ['kill-session', '-t', full], { stdio: 'ignore', env: TMUX_FREE_ENV });
+      } catch {}
+      c.close();
+    }
+  });
+
+  it('kill RPC on a tmux-tier PTY stays dead — no revive, tmux session detaches-but-survives (BUG-11 noRevive)', async () => {
+    const name = 'test-kill-norevive-' + process.pid;
+    const full = 'seshmux-' + name;
+    const c = new Client(daemon.sockPath);
+    await c.ready();
+    try {
+      const spawn = await c.call('spawn', { cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24, tmuxName: name });
+      const ptyId = spawn.result.ptyId;
+      await c.call('attach', { ptyId });
+      await c.waitForEvent((e) => e.event === 'data' && e.ptyId === ptyId);
+
+      // Explicit kill: proc dies, but the tmux session survives by design.
+      const exitP = c.waitForEvent((e) => e.event === 'exit' && e.ptyId === ptyId, 8000);
+      await c.call('kill', { ptyId });
+      await exitP;
+
+      // Well past the reconcile window: the entry must NOT come back to life,
+      // and the sweep must not revive it either.
+      await sleep(700); // comfortably past the daemon's 300ms reconcile window
+      const pm = daemon.ptyManager;
+      expect(pm._ptys.get(ptyId).alive).toBe(false);
+      await pm._sweepDead();
+      expect(pm._ptys.get(ptyId).alive).toBe(false);
+      // The tmux session is still there (kill detaches the client, not the session).
+      const sessions = execFileSync('tmux', ['ls', '-F', '#{session_name}'], { encoding: 'utf8', env: TMUX_FREE_ENV });
+      expect(sessions).toContain(full);
+    } finally {
+      try {
+        execFileSync('tmux', ['kill-session', '-t', full], { stdio: 'ignore', env: TMUX_FREE_ENV });
+      } catch {}
+      c.close();
+    }
+  });
+
+  it('a genuinely killed tmux session stays dead and sweeps normally (BUG-11)', async () => {
+    const name = 'test-revive-killed-' + process.pid;
+    const full = 'seshmux-' + name;
+    const c = new Client(daemon.sockPath);
+    await c.ready();
+    try {
+      const spawn = await c.call('spawn', { cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24, tmuxName: name });
+      const ptyId = spawn.result.ptyId;
+      await c.call('attach', { ptyId });
+      await c.waitForEvent((e) => e.event === 'data' && e.ptyId === ptyId);
+
+      // Kill the session outright — reconcile finds no session, lets it die.
+      const exitP = c.waitForEvent((e) => e.event === 'exit' && e.ptyId === ptyId, 8000);
+      execFileSync('tmux', ['kill-session', '-t', full], { stdio: 'ignore', env: TMUX_FREE_ENV });
+      await exitP;
+
+      const pm = daemon.ptyManager;
+      expect(pm._ptys.get(ptyId).alive).toBe(false);
+      // Past grace: the sweep (which also re-checks has-session) prunes it.
+      pm._ptys.get(ptyId).deadAt = Date.now() - 11 * 60 * 1000;
+      await pm._sweepDead();
+      expect(pm.has(ptyId)).toBe(false);
+    } finally {
+      try {
+        execFileSync('tmux', ['kill-session', '-t', full], { stdio: 'ignore', env: TMUX_FREE_ENV });
       } catch {}
       c.close();
     }
