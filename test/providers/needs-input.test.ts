@@ -9,6 +9,7 @@ import {
   initState,
   readHookStatus,
   readHookStatusDetail,
+  stripAnsi,
   type NIState,
 } from '../../server/lib/needs-input';
 import { ClaudeProvider } from '../../server/lib/providers/claude';
@@ -373,5 +374,23 @@ describe('classifyExplain (Spec 6 — status-explain evidence, classify() untouc
     t = 4_200;
     const result = classifyExplain('', s, claudeWaiting);
     expect(result.msSinceLastOutput).toBe(4_200);
+  });
+});
+
+describe('needs-input — real TUI row structure (R5-3)', () => {
+  it('splits a real claude frame into rows even though it emits zero newlines', () => {
+    // Claude positions rows with CR / cursor-move escapes, never LF. If stripAnsi flattens
+    // those away, the whole frame is one "row" and per-row matching is inert (R5-3).
+    const raw = fx('claude-permission.raw');
+    expect(raw.includes('\n')).toBe(false); // the premise: no LF in real output
+    expect(stripAnsi(raw).split('\n').length).toBeGreaterThan(1);
+  });
+
+  it('does not read prompt-like text displayed across CR-positioned rows as waiting', () => {
+    const frame = 'Here is the plan. Step 1.\rYes, we will refactor.\r(12s · esc to interrupt · 1.2k tokens)';
+    const st = initState(0);
+    st.now = () => 1000;
+    st.lastActivityTs = 900;
+    expect(classify(frame, st, [/\b1\.\s*Yes\b/i])).toBe('working');
   });
 });

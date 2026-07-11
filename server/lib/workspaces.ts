@@ -203,22 +203,35 @@ export async function remove(dir: string, opts: { mode: RemoveMode; force?: bool
   if (!record) throw new Error(`unknown workspace dir: ${dir}`);
 
   if (opts.mode === 'merge') {
+    // Merge is the mode users pick to KEEP work, so it must never destroy any. Uncommitted
+    // changes in the worktree are NOT part of the branch history a merge moves, so merging
+    // would silently drop them on the force-remove below (R5-1: an agent that edits without
+    // committing makes `merge --no-ff` a no-op "Already up to date" that exits 0). Refuse,
+    // same shape as the discard guard — the caller must commit them or discard explicitly.
+    if ((await dirtyCount(dir)) > 0) {
+      throw new Error('workspace has uncommitted changes — commit them in the workspace before merging');
+    }
+    // Was the PARENT already mid-merge (the user's own conflict, maybe hand-resolved) before
+    // we touched it? If so our merge refuses to start ("You have not concluded your merge"),
+    // and aborting on the way out would destroy THEIR work (R5-2). Only abort a mid-merge we
+    // created ourselves.
+    const parentWasMidMerge = await git(record.project, ['rev-parse', '--verify', 'MERGE_HEAD'])
+      .then(() => true)
+      .catch(() => false);
     try {
       await git(record.project, ['merge', '--no-ff', record.branch]);
     } catch (e) {
-      // A real conflict leaves the parent repo mid-merge (MERGE_HEAD set, conflict markers).
-      // Abort so the parent is restored to its pre-merge HEAD, then rethrow — the route still
-      // reports the conflict as 409 and worktree/branch/record all survive for a manual retry
-      // (S4-6). `merge --abort` no-ops harmlessly if the failure wasn't a conflict.
-      await git(record.project, ['merge', '--abort']).catch(() => {});
+      // A real conflict leaves the parent mid-merge (MERGE_HEAD set, conflict markers). Abort
+      // so the parent is restored to its pre-merge HEAD, then rethrow — the route reports 409
+      // and worktree/branch/record all survive for a manual retry (S4-6).
+      if (!parentWasMidMerge) {
+        await git(record.project, ['merge', '--abort']).catch(() => {});
+      }
       throw e;
     }
-    // Merge succeeded → the branch's committed history is now in the parent, so the worktree
-    // is disposable. Force-remove (S4-4): a plain `worktree remove` refuses when the tree
-    // holds untracked files, which would misreport a DONE merge as a 409 and wedge retries
-    // (the re-merge is a no-op "already up to date", yet the non-force remove fails again).
-    // Untracked / uncommitted-tracked files in the worktree are discarded here — they were
-    // never part of the merged branch history; the merged commits are safe on the parent.
+    // Merge succeeded and the tree was clean → the branch's history is in the parent and the
+    // worktree holds nothing unique. Force-remove so a stray build artifact can't misreport a
+    // DONE merge as a 409 and wedge retries (S4-4).
     await git(record.project, ['worktree', 'remove', '--force', dir]);
   } else if (opts.mode === 'keep') {
     await git(record.project, ['worktree', 'remove', dir]);

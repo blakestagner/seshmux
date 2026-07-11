@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as ws from '../../server/lib/workspaces';
@@ -155,21 +155,66 @@ describe('workspaces.remove', () => {
     expect(await ws.list(repo)).toHaveLength(1); // record untouched
   });
 
-  it('merge: succeeds and removes the worktree even when it holds untracked files (S4-4)', async () => {
+  it('merge: refuses when the worktree is dirty, destroying nothing (R5-1)', async () => {
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+    // The agent edited/created files but never committed — `merge --no-ff` would be a no-op
+    // ("Already up to date", exit 0) and a force-remove would silently delete this work.
+    writeFileSync(join(dir, 'agent-report.md'), 'the work');
+
+    await expect(ws.remove(dir, { mode: 'merge' })).rejects.toThrow(/uncommitted changes/i);
+
+    expect(existsSync(join(dir, 'agent-report.md'))).toBe(true); // work survives
+    expect(existsSync(dir)).toBe(true);
+    expect(await ws.list(repo)).toHaveLength(1); // record intact, retryable
+  });
+
+  it('merge: force-removes the worktree once the work is committed and merged (S4-4)', async () => {
     const ws = await freshWorkspaces();
     const { dir } = await ws.create(repo);
     writeFileSync(join(dir, 'feature.txt'), 'new feature');
     git(dir, ['add', '.']);
     git(dir, ['commit', '-q', '-m', 'add feature']);
-    // Untracked file left in the worktree — a plain `worktree remove` would refuse and the
-    // already-done merge would be misreported as a 409.
-    writeFileSync(join(dir, 'scratch.log'), 'build junk');
 
     await ws.remove(dir, { mode: 'merge' });
 
-    expect(existsSync(dir)).toBe(false); // force-removed despite the untracked file
+    expect(existsSync(dir)).toBe(false);
     expect(existsSync(join(repo, 'feature.txt'))).toBe(true); // committed work merged
     expect(await ws.list(repo)).toHaveLength(0);
+  });
+
+  it('merge: leaves a pre-existing parent merge alone instead of aborting the user\'s work (R5-2)', async () => {
+    // Parent is already mid-merge with a hand-resolved file staged. Our merge refuses to
+    // start; aborting on the way out would destroy the user's resolution.
+    writeFileSync(join(repo, 'shared.txt'), 'base');
+    git(repo, ['add', '.']);
+    git(repo, ['commit', '-q', '-m', 'base']);
+    git(repo, ['checkout', '-q', '-b', 'other']);
+    writeFileSync(join(repo, 'shared.txt'), 'other-side');
+    git(repo, ['commit', '-q', '-am', 'other side']);
+    git(repo, ['checkout', '-q', '-']);
+    writeFileSync(join(repo, 'shared.txt'), 'main-side');
+    git(repo, ['commit', '-q', '-am', 'main side']);
+
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+    writeFileSync(join(dir, 'x.txt'), 'x');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'work']);
+
+    try {
+      git(repo, ['merge', 'other']); // conflicts, leaves MERGE_HEAD
+    } catch {
+      /* expected conflict */
+    }
+    writeFileSync(join(repo, 'shared.txt'), 'carefully hand-resolved by the user');
+    git(repo, ['add', 'shared.txt']); // user's in-progress resolution, staged
+
+    await expect(ws.remove(dir, { mode: 'merge' })).rejects.toThrow();
+
+    // The user's merge state and resolution must both survive.
+    expect(existsSync(join(repo, '.git', 'MERGE_HEAD'))).toBe(true);
+    expect(readFileSync(join(repo, 'shared.txt'), 'utf8')).toBe('carefully hand-resolved by the user');
   });
 
   it('merge conflict aborts the parent merge so the repo is not left mid-merge (S4-6)', async () => {
