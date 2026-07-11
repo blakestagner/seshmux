@@ -19,8 +19,10 @@ export interface StartSessionInput {
   provider: ProviderId;
   mode?: SessionMode;
   resumeId?: string;
-  // Bridge/plan-off seed: written to the PTY after a post-spawn settle so the
-  // agent TUI receives it as its first input (agreed seam with lead-data).
+  // Bridge/plan-off seed: the agent TUI's first input. Passed as a real argv element
+  // via provider.commands.freshPrompt when available (new session, no resumeId);
+  // otherwise written into the PTY after a post-spawn settle (agreed seam with
+  // lead-data) as a best-effort fallback.
   firstPrompt?: string;
   // Bridge pairing metadata (lead-data passes an OBJECT; we flatten into tabMeta).
   linkSrc?: { sessionId: string; kind: 'handoff' | 'review' };
@@ -49,8 +51,10 @@ export function setSpawnListener(fn: (ptyId: string) => void): void {
   onSpawned = fn;
 }
 
-// Time to let a TUI settle before writing firstPrompt to its input box.
-const FIRST_PROMPT_SETTLE_MS = 1200;
+// Time to let a TUI settle before writing firstPrompt to its input box. Fallback path
+// only (providers without freshPrompt, or resume/continue modes) — 1200ms proved too
+// short live (a Claude session printing MCP setup warnings swallowed the write).
+const FIRST_PROMPT_SETTLE_MS = 3000;
 
 const tmuxCounters = new Map<string, number>();
 // BARE name — the daemon adds the `seshmux-` prefix (Task 12 convention).
@@ -98,7 +102,14 @@ export async function startSession(input: StartSessionInput): Promise<StartSessi
   const provider = providers.find((p) => p.id === providerId);
   if (!provider) throw new Error(`unknown provider: ${providerId}`);
 
-  const args = argvFor(provider, mode, projectPath, resumeId);
+  // Seed firstPrompt as a real argv element when possible — no race, no delayed write.
+  // Only for a genuinely fresh session (new mode, no resumeId) on a provider that
+  // implements freshPrompt; every other case (resume/continue/plan, or a provider that
+  // doesn't support it) keeps the delayed-write fallback below.
+  const seedViaArgv = !!(firstPrompt && mode === 'new' && !resumeId && provider.commands.freshPrompt);
+  const args = seedViaArgv
+    ? provider.commands.freshPrompt!(projectPath, firstPrompt!)
+    : argvFor(provider, mode, projectPath, resumeId);
 
   // Auto tmux tier when tmux is present (tier-2 persistence).
   const env = await detectEnv().catch(() => null);
@@ -119,9 +130,9 @@ export async function startSession(input: StartSessionInput): Promise<StartSessi
     }
     const { ptyId } = await conn.spawn({ cwd: projectPath, args, tmuxName });
 
-    if (firstPrompt) {
-      // Write after a settle so the TUI's input box is ready. A separate short-
-      // lived connection issues the write; the daemon owns delivery thereafter.
+    if (firstPrompt && !seedViaArgv) {
+      // Fallback: write after a settle so the TUI's input box is ready. A separate
+      // short-lived connection issues the write; the daemon owns delivery thereafter.
       setTimeout(() => {
         void (async () => {
           try {

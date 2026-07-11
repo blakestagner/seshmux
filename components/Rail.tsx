@@ -5,11 +5,13 @@ import type { DragEvent } from 'react';
 import TextInput from './ui/TextInput';
 import StatusDot from './ui/StatusDot';
 import IconButton from './ui/IconButton';
-import { getSessions, startSession, createWorkspace } from '../lib/client/api';
+import { getSessions, startSession, createWorkspace, getEnvTeams, startTeam } from '../lib/client/api';
+import type { TeamStartPayload } from '../lib/client/api';
 import type { SessionMeta, Project, Config, ProviderId } from '../lib/client/types';
 import { useAppState } from '../lib/client/store';
 import type { RailSort, Tab } from '../lib/client/store';
 import NewSessionModal, { type SessionMode } from './NewSessionModal';
+import TeamModal, { teamsAllowed } from './TeamModal';
 import FilterMenu from './FilterMenu';
 import styles from './Rail.module.scss';
 
@@ -112,6 +114,17 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenPro
   const [railFilter, setRailFilter] = useState('');
   // "+" opens NewSessionModal for one project; null = closed.
   const [modalProject, setModalProject] = useState<Project | null>(null);
+  // "⚑" (or NewSessionModal's "Team…") opens TeamModal for one project.
+  const [teamProject, setTeamProject] = useState<Project | null>(null);
+  // Task 5 Step 1b: claude's claude-swarm teammate backend — Teams entry
+  // points gate on this (only 'tmux'/'iterm2' produce attachable jsonls).
+  const [teammateMode, setTeammateMode] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    getEnvTeams()
+      .then((teams) => setTeammateMode(teams.claude?.teammateMode ?? undefined))
+      .catch(() => {});
+  }, []);
+  const teamsGateOk = teamsAllowed(teammateMode);
 
   // Providers offered in the modal: every provider seen across loaded projects
   // (claude always present; codex only when its store was detected). Distinct,
@@ -139,6 +152,20 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenPro
     } catch {
       // Surfacing errors as a toast lands with the events-ws wave (Task 15).
     }
+  }
+
+  // Team modal's Start button (Task 5) — same split as handleStartSession:
+  // the modal only builds the payload, this does the POST + opens the lead
+  // tab + switches to tabs view (the modal doesn't own view state). Close the
+  // modal ONLY on success — a rejection propagates back to TeamModal, which
+  // stays open, shows the error inline, and keeps everything the user typed.
+  async function handleStartTeam(payload: Omit<TeamStartPayload, 'projectId'>) {
+    const project = teamProject;
+    if (!project) return;
+    const { tabMeta } = await startTeam({ ...payload, projectId: project.id });
+    setTeamProject(null);
+    dispatch({ type: 'openTerm', ptyId: tabMeta.ptyId, projectId: project.id, label: project.name, provider: 'claude', isTeamLead: true });
+    dispatch({ type: 'setView', view: 'tabs' });
   }
 
   const [workspaceBusy, setWorkspaceBusy] = useState<string | null>(null);
@@ -442,6 +469,19 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenPro
                     >
                       {workspaceBusy === p.id ? '…' : '⊕'}
                     </IconButton>
+                    {p.provider === 'claude' ? (
+                      <IconButton
+                        label="Team…"
+                        disabled={!teamsGateOk}
+                        disabledReason="Teams needs teammateMode: tmux"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTeamProject(p);
+                        }}
+                      >
+                        ⚑
+                      </IconButton>
+                    ) : null}
                     <IconButton
                       label="Customizations"
                       onClick={(e) => {
@@ -535,7 +575,20 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenPro
             setModalProject(null);
             if (project) void doCreateWorkspace(project, provider, mode);
           }}
+          onStartTeam={() => {
+            const project = modalProject;
+            setModalProject(null);
+            if (project) setTeamProject(project);
+          }}
+          teamsGateOk={teamsGateOk}
           onClose={() => setModalProject(null)}
+        />
+      ) : null}
+      {teamProject ? (
+        <TeamModal
+          projectName={teamProject.name}
+          onStart={handleStartTeam}
+          onClose={() => setTeamProject(null)}
         />
       ) : null}
     </aside>

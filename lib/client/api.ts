@@ -101,6 +101,14 @@ export function getEnvCommands(): Promise<Record<ProviderId, CommandPreview>> {
   return req('/api/env').then((e) => (e as { commands?: Record<ProviderId, CommandPreview> }).commands ?? ({} as Record<ProviderId, CommandPreview>));
 }
 
+// Task 5 Step 1b: per-provider claude-swarm teammate backend — the Teams entry
+// points gate on this (only 'tmux'/'iterm2' produce attachable member jsonls).
+export function getEnvTeams(): Promise<Partial<Record<ProviderId, { teammateMode: string | null }>>> {
+  return req('/api/env').then(
+    (e) => (e as { teams?: Partial<Record<ProviderId, { teammateMode: string | null }>> }).teams ?? {},
+  );
+}
+
 export function getUsage(days = 30): Promise<unknown> {
   return req(`/api/usage?days=${days}`);
 }
@@ -293,4 +301,57 @@ export interface CustomizationsPayload {
 export function getCustomizations(scope: 'global' | 'project', projectId?: string): Promise<CustomizationsPayload> {
   const q = scope === 'project' ? `?scope=project&project=${encodeURIComponent(projectId!)}` : '?scope=global';
   return req(`/api/customizations${q}`);
+}
+
+// ── Teams (v1, Task 5) ───────────────────────────────────────────────────────
+export type TeamMemberTemplate = { name: string; role: string; model?: 'opus' | 'sonnet' | 'haiku' };
+export type TeamTemplate = { name: string; members: TeamMemberTemplate[]; createdAt: number };
+export type TeamDef = { name: string; members: TeamMemberTemplate[] };
+
+export function getTeamTemplates(): Promise<TeamTemplate[]> {
+  return req('/api/teams');
+}
+
+export type TeamStartPayload = {
+  projectId: string;
+  template?: TeamDef;
+  inline?: TeamDef;
+  task: string;
+  saveTemplate?: boolean;
+};
+
+export function startTeam(payload: TeamStartPayload): Promise<{ tabMeta: TabMeta }> {
+  return req('/api/teams/start', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+// Mirror of server/lib/store/teams-store.ts TeamMemberInfo/TeamInfo — client never
+// imports server code (hard rule 3), re-declared here same as Project/SessionMeta.
+// NOTE: no token/usage field exists on TeamMemberInfo server-side (Task 6 finding) —
+// the roster shows "—" for token count rather than inventing a number or adding a
+// heavy new per-member parse.
+export type TeamMemberInfo = {
+  name: string;
+  agentType?: string;
+  model?: string;
+  color?: string;
+  role?: string;
+  backendType?: 'tmux' | 'in-process';
+  isActive?: boolean;
+  joinedAt: number;
+  sessionId: string | null;
+};
+
+export type TeamInfo = {
+  teamName: string;
+  leadSessionId: string;
+  createdAt: number;
+  members: TeamMemberInfo[];
+};
+
+// GET /api/teams/members?leadSession=<id> — resolves + arms the live roster watch
+// (Task 4) on first call for this team. 404 (thrown by `req`) means either "not a
+// team lead" or "team dir gone" — callers distinguish by whether they'd resolved
+// before.
+export function getTeamMembers(leadSessionId: string): Promise<TeamInfo> {
+  return req(`/api/teams/members?leadSession=${encodeURIComponent(leadSessionId)}`);
 }

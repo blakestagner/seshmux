@@ -71,6 +71,16 @@ export interface EventsHub {
    * projectId:sessionId. Called by the subagents GET route.
    */
   watchSubagents(projectId: string, sessionId: string): void;
+  /**
+   * Watch a team's config.json (absolute path resolved by the caller via
+   * provider.teams.configPath — hard rule 3, the hub never builds the path
+   * itself) → emit {event:'team', teamName, leadSessionId} on change (summary
+   * only; client refetches GET /api/teams/members). Idempotent per teamName.
+   * An unlink (lead session exited, config.json removed) broadcasts one final
+   * event then disposes the watcher — "team ended" is not an error, don't retry.
+   * Called by the teams GET /members route on first request for a team.
+   */
+  watchTeam(teamName: string, leadSessionId: string, configPath: string): void;
   /** Broadcast an arbitrary event to all clients (planoff stream, etc.). */
   emit(event: Record<string, unknown>): void;
   /**
@@ -442,6 +452,32 @@ export async function createEventsHub(): Promise<EventsHub> {
     }
   }
 
+  // ── Team watch (Task 4): live-refresh the roster panel when a team's
+  //    config.json changes (member join / isActive flip). One chokidar watcher
+  //    per teamName, lazily added on first /api/teams/members request. Unlike
+  //    scratchpad/subagents (which stay armed until hub close), config.json is
+  //    DELETED when the lead session exits — an unlink means "team ended," so
+  //    we broadcast one final event and dispose right away instead of leaving
+  //    a dead watcher around or treating ENOENT as an error to retry.
+  const teamWatched = new Map<string, { close(): Promise<void> }>();
+  function watchTeam(teamName: string, leadSessionId: string, configPath: string) {
+    if (teamWatched.has(teamName)) return;
+    try {
+      const w = chokidar.watch(configPath, { ignoreInitial: true });
+      const ping = () => broadcast({ event: 'team', teamName, leadSessionId });
+      w.on('add', ping);
+      w.on('change', ping);
+      w.on('unlink', () => {
+        ping(); // one final event: the roster panel refetches and sees the team is gone
+        teamWatched.delete(teamName);
+        void w.close().catch(() => {});
+      });
+      teamWatched.set(teamName, w);
+    } catch {
+      /* watching unavailable — /api/teams/members still works via manual refetch */
+    }
+  }
+
   // ── MCP approval (plan 16.7): broadcast an approval request to the UI and await
   //    its correlated reply. lead-data's approval listener injects requestApproval
   //    as its onRequest; the UI POSTs {requestId, approved} to resolveApproval.
@@ -487,6 +523,8 @@ export async function createEventsHub(): Promise<EventsHub> {
     subagentDebounce.clear();
     for (const w of subagentWatched.values()) await w.close().catch(() => {});
     subagentWatched.clear();
+    for (const w of teamWatched.values()) await w.close().catch(() => {});
+    teamWatched.clear();
     if (monitor) monitor.close();
     for (const ws of subscribers) if (ws.readyState === ws.OPEN) ws.close();
     subscribers.clear();
@@ -510,6 +548,7 @@ export async function createEventsHub(): Promise<EventsHub> {
     getStatusExplain,
     watchScratchpad,
     watchSubagents,
+    watchTeam,
     emit: (event) => broadcast(event),
     requestApproval,
     resolveApproval,

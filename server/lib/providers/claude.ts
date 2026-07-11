@@ -2,6 +2,7 @@
 // name are allowed to live (hard rule 3). Wraps the provider-agnostic store utilities
 // (Tasks 3–4), injecting root + provider id.
 
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { listSessions as scanListSessions, scanProjects as scan, storeBytes } from '../store/scan';
@@ -9,6 +10,7 @@ import { searchStore, type SearchHit, type SearchOpts } from '../store/search';
 import { aggregateUsage, type UsageSummary } from '../store/usage';
 import { parseTranscript as parse, readCtx as tailCtx } from '../store/transcript';
 import { listSubagentNodes, parseSubagentDetail } from '../store/subagents';
+import { teamRoster, teamByLeadSession } from '../store/teams-store';
 import { loadNeedsInputPatterns } from './manifest';
 import {
   hooksAvailable,
@@ -36,6 +38,7 @@ import type {
   SessionMeta,
   StatusHookSupport,
   SubagentSupport,
+  TeamSupport,
 } from './types';
 
 const CLAUDE_BIN = 'claude';
@@ -59,6 +62,18 @@ export function windowForModel(model: string): number {
 
 function defaultRoot(): string {
   return join(homedir(), '.claude', 'projects');
+}
+
+// Task 5 Step 1b: read-only, tolerant of a missing/malformed file — never
+// throws, just reports "no opinion" so the client falls back to the disabled
+// gate. Same settings.json the customizations `hooks` scanner reads.
+async function readTeammateMode(settingsPath: string): Promise<string | undefined> {
+  try {
+    const cfg = JSON.parse(await readFile(settingsPath, 'utf8'));
+    return typeof cfg?.teammateMode === 'string' ? cfg.teammateMode : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface ClaudeProviderOpts {
@@ -117,6 +132,11 @@ export class ClaudeProvider implements AgentProvider {
 
   commands: ProviderCommands = {
     fresh: () => [CLAUDE_BIN],
+    // A bare positional prompt starts the interactive TUI with that prompt already
+    // submitted (distinct from `-p`, which runs headless and exits). `--` shields it as
+    // an end-of-options separator, same flag-proofing convention as headlessAsk below —
+    // untrusted text can never be parsed as a flag even if it starts with `-`.
+    freshPrompt: (_cwd, prompt) => [CLAUDE_BIN, '--', prompt],
     continue: () => [CLAUDE_BIN, '--continue'],
     // `--resume=<id>` (glued, not `--resume <id>`) so a hostile id starting with `-` can
     // never be parsed as a separate flag — flag-proof even if a caller skips validation.
@@ -191,6 +211,18 @@ export class ClaudeProvider implements AgentProvider {
       if (!node) return null;
       return parseSubagentDetail(node.jsonlPath ?? '', node);
     },
+  };
+
+  // Teams v1 (native `claude-swarm` teammates). Team-file layout knowledge stays in
+  // store/teams-store.ts (provider-agnostic, mirrors scan.ts); only this provider
+  // supplies the `.claude/teams` + `.claude/projects` paths (hard rule 3). Codex has
+  // no team-roster file layout, so it omits `teams` entirely.
+  teams: TeamSupport = {
+    teamRoster: (teamName) => teamRoster(join(this.homeDir, '.claude', 'teams'), this.root, teamName),
+    teamByLeadSession: (leadSessionId) =>
+      teamByLeadSession(join(this.homeDir, '.claude', 'teams'), this.root, leadSessionId),
+    configPath: (teamName) => join(this.homeDir, '.claude', 'teams', teamName, 'config.json'),
+    teammateMode: () => readTeammateMode(join(this.homeDir, '.claude', 'settings.json')),
   };
 }
 

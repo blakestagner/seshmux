@@ -7,7 +7,7 @@
 // restart. TMUX_TMPDIR points every tmux invocation in the test process (and
 // the in-process daemons it boots) at a private tmux server instead.
 // globalSetup kills that server after the run.
-import { defineConfig } from 'vitest/config';
+import { defineConfig, configDefaults } from 'vitest/config';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,5 +20,9 @@ export default defineConfig({
   test: {
     globalSetup: './test/global-tmux-isolation.ts',
     env: { TMUX_TMPDIR: tmuxDir },
+    // Agent worktrees carry a full copy of test/ — without this exclude a
+    // bare `npm test` runs both copies concurrently against the shared real
+    // ~/.config/seshmux and they clobber each other.
+    exclude: [...configDefaults.exclude, '.claude/worktrees/**'],
   },
 });

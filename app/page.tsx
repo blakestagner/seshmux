@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { AppStateProvider, useAppState, activePair, shouldMarkUnviewed, findTabToBindSession, type Tab } from '../lib/client/store';
-import { getProjects, getConfig, getEnv, getLive, notify, resolveApproval, putConfig, type SearchHit, type LiveSession } from '../lib/client/api';
+import { AppStateProvider, useAppState, activePair, activeTeam, shouldMarkUnviewed, findTabToBindSession, type Tab } from '../lib/client/store';
+import { getProjects, getConfig, getEnv, getLive, notify, resolveApproval, putConfig, getTeamMembers, type SearchHit, type LiveSession } from '../lib/client/api';
 import { openEventsSocket } from '../lib/client/ws';
 import type { EventMessage } from '../lib/client/ws';
 import TopNav from '../components/TopNav';
@@ -20,6 +20,7 @@ import TerminalPane from '../components/TerminalPane';
 import SubagentViewer from '../components/SubagentViewer';
 import GridView from '../components/GridView';
 import AgentsView from '../components/AgentsView';
+import TeamPanel from '../components/TeamPanel';
 import EmptyComposer from '../components/EmptyComposer';
 import type { ProviderId } from '../lib/client/types';
 import Card from '../components/ui/Card';
@@ -80,6 +81,23 @@ function AppShell() {
   // refetch live.
   const [openViewerFor, setOpenViewerFor] = useState<string | null>(null);
   const [subagentPings, setSubagentPings] = useState<Record<string, number>>({});
+  // Teams v1.1: TeamPanel is opt-in via a statusbar chip (tmux teammateMode already
+  // tiles teammates inside the lead terminal — the auto-split was redundant screen
+  // space). openTeamFor mirrors openViewerFor exactly (keyed by tab id, default
+  // closed); the two are mutually exclusive — opening one closes the other, same
+  // precedence as the pair-split winning over both (see `team` below).
+  const [openTeamFor, setOpenTeamFor] = useState<string | null>(null);
+  // Chip member count, keyed by leadSessionId (mirrors teamPings) — lifted from
+  // TeamPanel's own roster fetch the FIRST time it resolves, so it only populates
+  // once the panel has been opened at least once (no new fetch added).
+  const [teamMemberCounts, setTeamMemberCounts] = useState<Record<string, number>>({});
+  // Teams v1 (Task 6): teamPings (keyed by leadSessionId) bump on each {event:'team'} —
+  // TeamPanel's refreshKey, mirroring subagentPings/SubagentViewer's refreshKey. touchPings
+  // (keyed by sessionId) piggyback the EXISTING session-new/session-touch handling so
+  // TeamPanel can refetch the currently-open member's transcript on its own jsonl growth
+  // (Task 4's session-touch, not a bespoke poller).
+  const [teamPings, setTeamPings] = useState<Record<string, number>>({});
+  const [touchPings, setTouchPings] = useState<Record<string, number>>({});
   const activeTab = state.tabs.find((t) => t.id === state.activeTab);
 
   // Mirrors Rail's handleTogglePin: optimistic dispatch + persist. Lives here
@@ -94,6 +112,11 @@ function AppShell() {
   // Tabs view only: when the active tab is one half of a bridge pair, render
   // both members side by side (source LEFT, linked RIGHT). Null → single pane.
   const pair = activePair(state.tabs, state.activeTab);
+  // Teams v1 (Task 6): tabs view only, and only when there's no linked-pair split
+  // active (a lead being both a bridge partner and a team lead simultaneously is an
+  // edge case the pair-split wins for — team members aren't attachable as terminals
+  // anyway, so there's nothing lost by the pair taking priority there).
+  const team = pair ? null : activeTeam(state.tabs, state.activeTab);
 
   // Providers offered in the empty-pane composer: every provider seen across
   // projects (claude always present; codex only when its store was detected).
@@ -255,6 +278,16 @@ function AppShell() {
             provider: proj?.provider,
             sessionId: s.sessionId,
           });
+          // Teams v1 (Task 6) reload case: a rehydrated live tab carries no
+          // isTeamLead marker (getLive()'s LiveSession has no team field) — one-shot
+          // check per rehydrated session so a reloaded team-lead tab re-arms its
+          // roster panel instead of staying a plain terminal until the user resumes it.
+          if (s.sessionId) {
+            const tabId = 'term-' + s.ptyId;
+            getTeamMembers(s.sessionId)
+              .then((info) => dispatch({ type: 'setTabTeam', tabId, teamName: info.teamName }))
+              .catch(() => {});
+          }
         }
         // Restore the pre-reload active tab (openTerm activated the LAST
         // rehydrated tab otherwise). Only if its PTY is still alive; then
@@ -332,8 +365,19 @@ function AppShell() {
         case 'session-touch': {
           const tabId = findTabToBindSession(tabsRef.current, e.projectId);
           if (tabId) dispatch({ type: 'setTabSession', tabId, sessionId: e.sessionId });
+          // Teams v1 (Task 6): a touched session's jsonl may be an open team member's
+          // transcript growing — TeamPanel watches this map (keyed by sessionId) to
+          // bump its Transcript's remount key, mirroring subagentPings above.
+          setTouchPings((prev) => ({ ...prev, [e.sessionId]: (prev[e.sessionId] ?? 0) + 1 }));
           break;
         }
+        // A team's config.json changed (member joined/finished) or the team ended
+        // (unlink → one final ping then the hub disposes its watcher). Bump the
+        // ping keyed by leadSessionId — the event carries it directly, so no tab
+        // lookup is needed (mirrors the subagents ping pattern).
+        case 'team':
+          setTeamPings((prev) => ({ ...prev, [e.leadSessionId]: (prev[e.leadSessionId] ?? 0) + 1 }));
+          break;
         // server-restarting is consumed by the Updates banner in its own component.
         default:
           break;
@@ -367,6 +411,18 @@ function AppShell() {
     if (!approval) return;
     resolveApproval(approval.requestId, approved).catch(() => {}); // 404 = already expired
     setApproval(null);
+  }
+
+  // Chip handlers: only one right-pane panel open at a time, so opening either
+  // closes the other (exclusivity requirement — mirrors the pair-split winning
+  // over the term/viewer split above it).
+  function toggleTeamPanel(tabId: string) {
+    setOpenViewerFor(null);
+    setOpenTeamFor((cur) => (cur === tabId ? null : tabId));
+  }
+  function openSubagentViewer(tabId: string) {
+    setOpenTeamFor(null);
+    setOpenViewerFor(tabId);
   }
 
   // Plain function (NOT a nested component) so key={tab.id} reconciliation is
@@ -405,8 +461,11 @@ function AppShell() {
           provider={tab.provider}
           branch={tab.branch}
           ctx={tab.ctx}
-          onOpenSubagents={canViewSubagents ? () => setOpenViewerFor(tab.id) : undefined}
+          onOpenSubagents={canViewSubagents ? () => openSubagentViewer(tab.id) : undefined}
           subagentPing={tab.sessionId ? subagentPings[tab.sessionId] : undefined}
+          isTeamLead={tab.isTeamLead}
+          teamMemberCount={tab.sessionId ? teamMemberCounts[tab.sessionId] : undefined}
+          onOpenTeam={tab.isTeamLead ? () => toggleTeamPanel(tab.id) : undefined}
         />
       );
     }
@@ -510,11 +569,21 @@ function AppShell() {
           ) : activeTab && activeTab.kind === 'term' ? (
             // Term tabs ALWAYS render inside the split host so the terminal's tree
             // position (and its live xterm/PTY) never remounts when the subagent viewer
-            // opens/closes — only the conditional right pane mounts/unmounts. The
-            // accent divider appears only WITH the viewer (viewerSplit modifier).
+            // or team panel opens/closes — only the conditional right pane mounts/
+            // unmounts. The accent divider appears only WITH a right pane (viewerSplit
+            // modifier). Teams v1.1: the team split is opt-in (statusbar chip, default
+            // closed — tmux teammateMode already tiles teammates inside the terminal),
+            // so it shares this same right-pane slot with the subagent viewer instead
+            // of forcing its own always-on split; `team` (pair-gated above) supplies
+            // the leadSessionId once openTeamFor confirms the user actually opened it.
             (() => {
+              const teamOpen = !!team && openTeamFor === activeTab.id;
               const viewerOpen =
-                openViewerFor === activeTab.id && !!activeTab.sessionId && !!activeTab.projectId;
+                !teamOpen &&
+                openViewerFor === activeTab.id &&
+                !!activeTab.sessionId &&
+                !!activeTab.projectId;
+              const rightOpen = teamOpen || viewerOpen;
               // Percentage flex-basis (not px) since container width is unknown at
               // render; min-width enforces TERM_MIN/VIEWER_MIN without measuring.
               // clampSize guards against a stored extreme hiding a pane on reload.
@@ -522,15 +591,40 @@ function AppShell() {
               return (
                 <div
                   ref={viewerSplitRef}
-                  className={`${styles.split} ${viewerOpen ? '' : styles.splitSolo}`}
+                  className={`${styles.split} ${rightOpen ? '' : styles.splitSolo}`}
                 >
                   <div
                     className={styles.splitSide}
-                    style={viewerOpen ? { flex: `0 0 ${leftPct}%`, minWidth: `${TERM_MIN}px` } : undefined}
+                    style={rightOpen ? { flex: `0 0 ${leftPct}%`, minWidth: `${TERM_MIN}px` } : undefined}
                   >
                     {renderPane(activeTab)}
                   </div>
-                  {viewerOpen ? (
+                  {teamOpen ? (
+                    <>
+                      <div
+                        className={styles.splitHandle}
+                        onPointerDown={viewerDrag.onPointerDown}
+                        onDoubleClick={() => setViewerRatio(DEFAULT_RATIO)}
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label="Resize terminal / team split"
+                      />
+                      <div
+                        className={`${styles.splitSide} ${styles.splitSideRight}`}
+                        style={{ flex: '1 1 0', minWidth: `${VIEWER_MIN}px` }}
+                      >
+                        <TeamPanel
+                          leadSessionId={team!.leadSessionId}
+                          projectId={team!.tab.projectId ?? ''}
+                          refreshKey={teamPings[team!.leadSessionId]}
+                          touchPings={touchPings}
+                          onMembersResolved={(count) =>
+                            setTeamMemberCounts((prev) => ({ ...prev, [team!.leadSessionId]: count }))
+                          }
+                        />
+                      </div>
+                    </>
+                  ) : viewerOpen ? (
                     <>
                       <div
                         className={styles.splitHandle}

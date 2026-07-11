@@ -153,6 +153,26 @@ describe('provider needsInputPatterns', () => {
     expect(evil).not.toContain('--dangerously-skip-permissions'); // never a standalone argv item
   });
 
+  it('claude freshPrompt shields the prompt after `--` as a single argv element', () => {
+    const cp = new ClaudeProvider();
+    expect(cp.commands.freshPrompt?.('/tmp/x', 'build the team')).toEqual([
+      'claude',
+      '--',
+      'build the team',
+    ]);
+    // Hostile prompt starting with `-` still lands as a positional, never a flag.
+    const evil = cp.commands.freshPrompt?.('/tmp/x', '--dangerously-skip-permissions') ?? [];
+    expect(evil[evil.length - 2]).toBe('--');
+    expect(evil[evil.length - 1]).toBe('--dangerously-skip-permissions');
+    // Multi-line prompt survives intact as one argv element.
+    const multi = 'line one\nline two';
+    expect(cp.commands.freshPrompt?.('/tmp/x', multi)).toEqual(['claude', '--', multi]);
+  });
+
+  it('codex has no freshPrompt — no evidence of a documented initial-prompt argv (hard rule 6)', () => {
+    expect(new CodexProvider().commands.freshPrompt).toBeUndefined();
+  });
+
   it('claude headlessPlan argv is read-only (--permission-mode plan) and shields the task', () => {
     const argv = new ClaudeProvider().commands.headlessPlan('/tmp/x', 'do the thing');
     expect(argv).toContain('--permission-mode');

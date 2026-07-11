@@ -7,12 +7,14 @@ import type { Project, ProviderId, SessionMeta } from '../store/scan';
 import type { SearchHit, SearchOpts } from '../store/search';
 import type { UsageSummary } from '../store/usage';
 import type { CustomizationScanners } from './customizations';
+import type { TeamInfo } from '../store/teams-store';
 
 export type { Ctx, Msg } from '../store/transcript';
 export type { Project, ProviderId, SessionMeta } from '../store/scan';
 export type { SearchHit, SearchOpts } from '../store/search';
 export type { UsageSummary } from '../store/usage';
 export type { CustomizationItem, CustomizationScanners, CustomizationScope } from './customizations';
+export type { TeamInfo, TeamMemberInfo } from '../store/teams-store';
 
 export interface DetectResult {
   found: boolean;
@@ -26,6 +28,13 @@ export interface ProviderCommands {
   continue(cwd: string): string[];
   resume(cwd: string, id: string): string[];
   plan?(cwd: string): string[];
+  // Fresh interactive session with an initial prompt already submitted — replaces the
+  // race-prone "spawn fresh() then write firstPrompt into the TUI after a settle delay"
+  // seam (a slow-booting TUI, e.g. one printing MCP setup warnings, could swallow the
+  // delayed write entirely). Optional: only implemented where the CLI has a documented
+  // positional/flag for an initial prompt; callers must fall back to the delayed-write
+  // path when a provider omits this.
+  freshPrompt?(cwd: string, prompt: string): string[];
   // Headless (non-interactive) argv for the agent bridge. Binary names + sandbox flags live
   // here (hard rule 3) — the bridge caller only does execFile/output-capture, no CLI knowledge.
   // Both put the untrusted text AFTER a `--` end-of-options separator so it can't smuggle a flag.
@@ -86,6 +95,24 @@ export interface SubagentSupport {
   detail(projectId: string, sessionId: string, agentId: string): Promise<SubagentDetail | null>;
 }
 
+// Teams v1 (native `claude-swarm` teammates). Optional/feature-tested: only providers
+// that have a documented team-roster file layout implement this — codex omits it, so
+// call sites must guard with `provider.teams?`.
+export interface TeamSupport {
+  teamRoster(teamName: string): Promise<TeamInfo | null>;
+  teamByLeadSession(leadSessionId: string): Promise<TeamInfo | null>; // for auto-name resolution
+  // Absolute path to a team's config.json (Task 4: events-hub lazy-watches this
+  // for live roster pushes). Hard rule 3: the path literal stays here, not in
+  // the hub — callers only ever get a resolved absolute path.
+  configPath(teamName: string): string;
+  // Task 5 Step 1b: the claude-swarm teammate backend, read from the SAME
+  // ~/.claude/settings.json the customizations `hooks` scanner already reads
+  // (hard rule 3 — path stays behind this provider). Only 'tmux'/'iterm2'
+  // produce attachable member jsonls; 'in-process'/'auto'/undefined do not,
+  // so the client gates the Teams entry point on this value.
+  teammateMode(): Promise<string | undefined>;
+}
+
 export interface AgentProvider {
   id: ProviderId;
   detect(): Promise<DetectResult>;
@@ -100,6 +127,7 @@ export interface AgentProvider {
   statusHooks?: StatusHookSupport;
   customizations?: CustomizationScanners;
   subagents?: SubagentSupport;
+  teams?: TeamSupport;
 }
 
 // Lazily built registry: claude is always present; codex is included only when its store

@@ -31,6 +31,14 @@ export type Tab = {
   // time of the last status transition (card "18m ago").
   ni?: 'working' | 'waiting' | 'idle';
   lastStatusTs?: number;
+  // Teams v1 (Task 6): set true the moment a term tab is KNOWN to be a claude-swarm
+  // team lead — either at fresh-start (Rail's handleStartTeam knows it explicitly)
+  // or resolved later (rehydrate/resume one-shot GET /api/teams/members?leadSession=).
+  // teamName fills in once that resolution succeeds; activeTeam() gates on
+  // isTeamLead + sessionId (not teamName) so the split layout appears immediately at
+  // fresh-start instead of jumping in once the async lookup returns.
+  isTeamLead?: boolean;
+  teamName?: string;
 };
 
 export type RailSort = 'updated' | 'created';
@@ -53,8 +61,11 @@ export type AppState = {
 
 export type Action =
   | { type: 'openSession'; sessionId: string; projectId: string; label: string; kind: 'term' | 'transcript'; provider?: ProviderId; status?: 'live' | 'waiting' | 'done' }
-  | { type: 'openTerm'; ptyId: string; projectId: string; label: string; provider?: ProviderId; branch?: string | null; linked?: boolean; linkedKind?: 'handoff' | 'review'; linkSrc?: string; sessionId?: string }
+  | { type: 'openTerm'; ptyId: string; projectId: string; label: string; provider?: ProviderId; branch?: string | null; linked?: boolean; linkedKind?: 'handoff' | 'review'; linkSrc?: string; sessionId?: string; isTeamLead?: boolean }
   | { type: 'resumeToTerm'; tabId: string; ptyId: string }
+  // Teams v1 (Task 6): a term tab's team identity resolved (fresh-start bind,
+  // rehydrate, or resume one-shot check against GET /api/teams/members?leadSession=).
+  | { type: 'setTabTeam'; tabId: string; teamName: string }
   // events-ws status (keyed by ptyId) → the matching term tab's dot.
   | { type: 'setTermStatus'; ptyId: string; status: 'live' | 'waiting' | 'done'; ni?: 'working' | 'waiting' | 'idle'; ts?: number }
   // Spec 3: mark a tab done-but-unviewed (page.tsx detects the working→idle/
@@ -141,6 +152,20 @@ export function activePair(tabs: Tab[], activeId: string | null): { source: Tab;
   return { source, linked };
 }
 
+// Teams v1 (Task 6): mirrors activePair's gate pattern — null when the active
+// tab isn't a (known) team lead, else the lead tab + its leadSessionId (== the
+// tab's own sessionId; a team's config.json is keyed by the lead's session id,
+// which survives resume). Gates on isTeamLead + sessionId, NOT teamName —
+// teamName resolves asynchronously (fresh start knows isTeamLead immediately,
+// before claude-swarm's config.json / the session's own jsonl exist yet), so
+// gating on it would flash a full-width terminal before jumping to the split.
+export function activeTeam(tabs: Tab[], activeId: string | null): { tab: Tab; leadSessionId: string } | null {
+  if (!activeId) return null;
+  const tab = tabs.find((t) => t.id === activeId);
+  if (!tab || tab.kind !== 'term' || !tab.isTeamLead || !tab.sessionId) return null;
+  return { tab, leadSessionId: tab.sessionId };
+}
+
 // Ported from mockup.html tabDrop() (~line 1438): move the block containing
 // `from` to sit where the block containing `to` is.
 function moveTabBlock(tabs: Tab[], from: string, to: string): Tab[] {
@@ -204,9 +229,17 @@ export function reducer(state: AppState, action: Action): AppState {
         linkedKind: action.linkedKind,
         linkSrc: action.linkSrc,
         sessionId: action.sessionId,
+        isTeamLead: action.isTeamLead,
       };
       return { ...state, tabs: [...state.tabs, tab], activeTab: tab.id, settingsOpen: false };
     }
+    case 'setTabTeam':
+      return {
+        ...state,
+        tabs: state.tabs.map((t) =>
+          t.id === action.tabId ? { ...t, isTeamLead: true, teamName: action.teamName } : t,
+        ),
+      };
     case 'resumeToTerm': {
       // Convert a transcript tab into a live term IN PLACE — same tab id, so it
       // keeps its DnD position and any linked-pair grouping (plan Task 14).

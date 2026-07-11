@@ -30,6 +30,11 @@ export type EventMessage =
   // Ping-only — the client refetches GET /api/subagents. Lazily watched once a
   // viewer opens the session (spec: docs/todo/2026-07-10-subagent-viewer.md).
   | { event: 'subagents'; projectId: string; sessionId: string }
+  // A team's config.json changed (member joined / isActive flipped) or the team
+  // ended (lead exited, config.json removed) — summary only, the client
+  // refetches GET /api/teams/members (Task 4). Lazily watched once a client
+  // first requests the team's roster.
+  | { event: 'team'; teamName: string; leadSessionId: string }
   // Plan-off progress (16.8). The plan RESULT comes from the blocking POST
   // /api/bridge/planoff response; these are lightweight liveness pings so the
   // Planoff tab isn't dead during the minutes-long run. No token streaming

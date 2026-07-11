@@ -24,6 +24,12 @@ describe('GET /api/env — bridge status', () => {
       expect(preview).toHaveProperty('hasPlan');
     }
     expect(Object.keys(body.commands).length).toBeGreaterThan(0);
+    // Task 5 Step 1b: claude reports its teammateMode gate value (undefined
+    // is valid — just means "not tmux/iterm2", codex omits the key entirely
+    // since it has no TeamSupport).
+    expect(body.teams).toHaveProperty('claude');
+    expect(body.teams.claude).toHaveProperty('teammateMode');
+    expect(body.teams).not.toHaveProperty('codex');
   });
 
   it('degrades to unregistered when bridgeStatus throws, never 500s', async () => {
