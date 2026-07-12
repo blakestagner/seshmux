@@ -191,23 +191,46 @@ describe('workspaces.remove', () => {
     expect(await ws.list(repo)).toHaveLength(0);
   });
 
-  it('merge: refuses to destroy an irreplaceable gitignored file (.env) the remove would delete (R6-1)', async () => {
+  it('merge: preserves gitignored FILES instead of destroying them, and never refuses over them (R6-1/R7-1/R8)', async () => {
     const ws = await freshWorkspaces();
     const { dir } = await ws.create(repo);
+    writeFileSync(join(dir, '.gitignore'), '.env\ndev.sqlite\ntsconfig.tsbuildinfo\nnode_modules/\n');
     writeFileSync(join(dir, 'feature.txt'), 'work');
-    git(dir, ['add', '.']);
+    git(dir, ['add', '.gitignore', 'feature.txt']);
     git(dir, ['commit', '-q', '-m', 'work']);
-    // .env is gitignored: in no commit, invisible to `status --porcelain`, and deleted by
-    // `worktree remove` even without --force. It is also irreplaceable.
-    writeFileSync(join(dir, '.gitignore'), '.env\nnode_modules/\n');
+    // A secret, a local DB with real data, and a rebuildable artifact — a name heuristic kept
+    // getting this split wrong (destroying dev.sqlite, then refusing over tsbuildinfo), so we
+    // preserve every ignored FILE and judge none of them.
+    writeFileSync(join(dir, '.env'), 'OPENAI_KEY=sk-live-REAL');
+    writeFileSync(join(dir, 'dev.sqlite'), 'THE ONLY COPY');
+    writeFileSync(join(dir, 'tsconfig.tsbuildinfo'), '{}');
+    mkdirSync(join(dir, 'node_modules'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules', 'big.js'), 'rebuildable');
+
+    const { leftovers } = await ws.remove(dir, { mode: 'merge' }); // must NOT refuse
+
+    expect(existsSync(join(repo, 'feature.txt'))).toBe(true); // work merged
+    expect(existsSync(dir)).toBe(false); // worktree gone
+    expect(leftovers).toBeTruthy();
+    expect(readFileSync(join(leftovers!, '.env'), 'utf8')).toBe('OPENAI_KEY=sk-live-REAL');
+    expect(readFileSync(join(leftovers!, 'dev.sqlite'), 'utf8')).toBe('THE ONLY COPY');
+    expect(existsSync(join(leftovers!, 'tsconfig.tsbuildinfo'))).toBe(true);
+    // An ignored DIRECTORY is rebuildable and expensive to copy — deliberately not preserved.
+    expect(existsSync(join(leftovers!, 'node_modules'))).toBe(false);
+  });
+
+  it('keep: also preserves gitignored files rather than deleting them (R8)', async () => {
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+    writeFileSync(join(dir, '.gitignore'), '.env\n');
     git(dir, ['add', '.gitignore']);
     git(dir, ['commit', '-q', '-m', 'ignore']);
-    writeFileSync(join(dir, '.env'), 'OPENAI_KEY=sk-live-REAL-SECRET');
+    writeFileSync(join(dir, '.env'), 'SECRET');
 
-    await expect(ws.remove(dir, { mode: 'merge' })).rejects.toThrow(/local secrets/i);
+    const { leftovers } = await ws.remove(dir, { mode: 'keep' });
 
-    expect(readFileSync(join(dir, '.env'), 'utf8')).toBe('OPENAI_KEY=sk-live-REAL-SECRET');
-    expect(await ws.list(repo)).toHaveLength(1);
+    expect(existsSync(dir)).toBe(false);
+    expect(readFileSync(join(leftovers!, '.env'), 'utf8')).toBe('SECRET');
   });
 
   it('merge: a gitignored DIRECTORY of build artifacts does not block the merge (R6-1 scoping)', async () => {

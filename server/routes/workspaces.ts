@@ -143,8 +143,10 @@ export default async function workspaceRoutes(f: FastifyInstance, deps: Workspac
       return { error: 'mode must be merge | keep | discard' };
     }
     try {
-      await doRemove(dir, { mode, force: !!force });
-      return { ok: true };
+      // leftovers = where the workspace's gitignored files were moved before removal (a .env
+      // or dev.sqlite the agent created there). null when it had none.
+      const { leftovers } = await doRemove(dir, { mode, force: !!force });
+      return { ok: true, leftovers };
     } catch (e) {
       // Distinguish by remove()'s own (stable, locally-thrown) messages so the client gets
       // the right status (R2-7): unknown dir → 404, dirty-discard-without-force → 400,
