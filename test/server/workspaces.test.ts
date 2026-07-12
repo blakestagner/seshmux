@@ -191,7 +191,7 @@ describe('workspaces.remove', () => {
     expect(await ws.list(repo)).toHaveLength(0);
   });
 
-  it('merge: refuses to destroy gitignored FILES the remove would delete (R6-1)', async () => {
+  it('merge: refuses to destroy an irreplaceable gitignored file (.env) the remove would delete (R6-1)', async () => {
     const ws = await freshWorkspaces();
     const { dir } = await ws.create(repo);
     writeFileSync(join(dir, 'feature.txt'), 'work');
@@ -204,7 +204,7 @@ describe('workspaces.remove', () => {
     git(dir, ['commit', '-q', '-m', 'ignore']);
     writeFileSync(join(dir, '.env'), 'OPENAI_KEY=sk-live-REAL-SECRET');
 
-    await expect(ws.remove(dir, { mode: 'merge' })).rejects.toThrow(/gitignored files/i);
+    await expect(ws.remove(dir, { mode: 'merge' })).rejects.toThrow(/local secrets/i);
 
     expect(readFileSync(join(dir, '.env'), 'utf8')).toBe('OPENAI_KEY=sk-live-REAL-SECRET');
     expect(await ws.list(repo)).toHaveLength(1);
@@ -224,6 +224,54 @@ describe('workspaces.remove', () => {
 
     expect(existsSync(dir)).toBe(false);
     expect(existsSync(join(repo, 'feature.txt'))).toBe(true);
+  });
+
+  it('merge + keep: ordinary build artifacts never block finishing (R7-1)', async () => {
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+    writeFileSync(join(dir, '.gitignore'), 'tsconfig.tsbuildinfo\n.DS_Store\n*.log\n');
+    writeFileSync(join(dir, 'feature.txt'), 'work');
+    git(dir, ['add', '.gitignore', 'feature.txt']);
+    git(dir, ['commit', '-q', '-m', 'work']);
+    // Exactly what this repo's own "always run typecheck" instruction leaves behind. Refusing
+    // here left `discard --force` as the only action — destroying the committed work.
+    writeFileSync(join(dir, 'tsconfig.tsbuildinfo'), '{}');
+    writeFileSync(join(dir, '.DS_Store'), 'junk');
+    writeFileSync(join(dir, 'debug.log'), 'noise');
+
+    await ws.remove(dir, { mode: 'merge' });
+
+    expect(existsSync(dir)).toBe(false);
+    expect(existsSync(join(repo, 'feature.txt'))).toBe(true);
+  });
+
+  it('merge: an ignored dir still collapses under status.showUntrackedFiles=all (R7-2)', async () => {
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+    writeFileSync(join(dir, '.gitignore'), 'node_modules/\n');
+    writeFileSync(join(dir, 'feature.txt'), 'work');
+    git(dir, ['add', '.gitignore', 'feature.txt']);
+    git(dir, ['commit', '-q', '-m', 'work']);
+    // A common global setting. Without an explicit -unormal, --ignored expands node_modules/
+    // into individual files and every workspace becomes unmergeable.
+    git(dir, ['config', 'status.showUntrackedFiles', 'all']);
+    mkdirSync(join(dir, 'node_modules', 'pkg'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules', 'pkg', 'index.js'), 'module.exports = 1');
+
+    await ws.remove(dir, { mode: 'merge' });
+
+    expect(existsSync(dir)).toBe(false);
+    expect(existsSync(join(repo, 'feature.txt'))).toBe(true);
+  });
+
+  it('keep/discard: a worktree whose dir already vanished still cleans up (R7-3)', async () => {
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+    rmSync(dir, { recursive: true, force: true }); // user deleted it by hand
+
+    await ws.remove(dir, { mode: 'keep' }); // must not throw 'spawn git ENOENT'
+
+    expect(await ws.list(repo)).toHaveLength(0);
   });
 
   it('merge: refuses when the branch has no commits, even if the only work is untracked (R5-1)', async () => {

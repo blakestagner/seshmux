@@ -117,22 +117,46 @@ async function git(cwd: string, args: string[]): Promise<string> {
 }
 
 /**
+ * Ignored paths worth REFUSING to delete. The first cut of this guard refused on ANY ignored
+ * file, on the theory that "git never copies one in, so it was put there deliberately" — which
+ * is plainly false: ignored files are overwhelmingly build artifacts (`tsconfig.tsbuildinfo`,
+ * `.DS_Store`, `*.log`). That made merge AND keep refuse on a perfectly normal workspace,
+ * leaving `discard --force` as the only remaining action — i.e. a guard written to prevent data
+ * loss funnelled the user into the one path that guarantees it (R7-1).
+ *
+ * So match the class that is actually irreplaceable — local secrets/config a rebuild cannot
+ * recreate — and let artifacts be deleted with the worktree.
+ * ponytail: a name heuristic, deliberately. The alternative (refuse on everything) is what just
+ * failed. A precious file NOT matched here is still only lost on an explicit finish action, and
+ * the list is one line to extend.
+ */
+const PRECIOUS_IGNORED = /^(\.env(\.[^/]+)?|.*\.(key|pem|p12|pfx|keystore)|id_(rsa|ed25519|ecdsa)|credentials(\.[^/]+)?|secrets?(\.[^/]+)?)$/i;
+
+function isPreciousIgnored(file: string): boolean {
+  return PRECIOUS_IGNORED.test(file.split('/').pop() ?? file);
+}
+
+/**
  * What a `git worktree remove` would destroy. THROWS if git can't answer — every destructive
  * caller must fail closed rather than read a failure as "clean" (R6-2: the old dirtyCount
  * swallowed every error and returned 0, green-lighting a force-remove).
  *
- * `--ignored` collapses an ignored DIRECTORY to one entry (`node_modules/`) while listing an
- * ignored FILE individually (`.env`) — exactly the distinction that matters: an ignored
- * directory is a rebuildable artifact; an ignored file sitting in a worktree was deliberately
- * put there (git never copies one in), is in no commit, and `worktree remove` deletes it even
- * without --force (R6-1).
+ * Returns null when the worktree dir is GONE: there is nothing left to destroy, so the guards
+ * must not fire — `git worktree remove` cleans up such a record happily, and throwing here
+ * wedged that cleanup behind a "spawn git ENOENT" 500 (R7-3).
+ *
+ * `-unormal` is passed EXPLICITLY: `--ignored` (=traditional) only collapses an ignored
+ * directory to `node_modules/` under normal untracked-mode, and a user with a global
+ * `status.showUntrackedFiles=all` would otherwise see every file inside it listed individually
+ * — making every workspace with node_modules unmergeable (R7-2).
  */
 async function worktreeState(dir: string): Promise<{
   trackedDirty: boolean;
   untracked: number;
   ignoredFiles: string[];
-}> {
-  const out = await git(dir, ['status', '--porcelain', '--ignored']);
+} | null> {
+  if (!existsSync(dir)) return null; // nothing to lose — let the caller clean up the record
+  const out = await git(dir, ['status', '--porcelain', '--ignored', '-unormal']);
   let trackedDirty = false;
   let untracked = 0;
   const ignoredFiles: string[] = [];
@@ -141,7 +165,9 @@ async function worktreeState(dir: string): Promise<{
     const code = line.slice(0, 2);
     const file = line.slice(3);
     if (code === '!!') {
-      if (!file.endsWith('/')) ignoredFiles.push(file); // a FILE, not a rebuildable dir
+      // A trailing '/' is a collapsed ignored DIR (rebuildable). Of the individual ignored
+      // files, only the irreplaceable ones are worth blocking a finish action over.
+      if (!file.endsWith('/') && isPreciousIgnored(file)) ignoredFiles.push(file);
     } else if (code === '??') {
       untracked++;
     } else {
@@ -151,16 +177,17 @@ async function worktreeState(dir: string): Promise<{
   return { trackedDirty, untracked, ignoredFiles };
 }
 
-/** Refuse to destroy a worktree holding ignored FILES (.env, config.local.json). ponytail:
- *  an ignored file nested inside an ignored DIR (dist/secret.env) collapses under the dir and
- *  isn't seen — accepted ceiling; the top-level case is the one users actually hit. */
+/** Refuse to destroy a worktree holding irreplaceable ignored files (.env, *.pem). Build
+ *  artifacts are NOT in this class and never block a finish (R7-1). ponytail: such a file
+ *  nested inside an ignored DIR (dist/.env) collapses under the dir and isn't seen — accepted
+ *  ceiling; a top-level .env is the case users actually hit. */
 function assertNoPreciousIgnored(ignoredFiles: string[]): void {
   if (ignoredFiles.length === 0) return;
   const shown = ignoredFiles.slice(0, 5).join(', ');
   const more = ignoredFiles.length > 5 ? ` (+${ignoredFiles.length - 5} more)` : '';
   throw new Error(
-    `workspace holds gitignored files that removing it would destroy: ${shown}${more} — ` +
-      `move them out of the workspace first`,
+    `workspace holds local secrets that removing it would destroy: ${shown}${more} — ` +
+      `move them out of the workspace, then finish it`,
   );
 }
 
@@ -329,15 +356,17 @@ export async function remove(dir: string, opts: { mode: RemoveMode; force?: bool
     // must not refuse a finished workspace just because a build artifact is lying around.
     // Precise guards instead of a blanket "is anything dirty" (which re-broke S4-4).
     // worktreeState THROWS if git can't answer, so a bad read refuses instead of removing.
+    // null = the worktree dir is already gone; nothing to destroy, so no guard applies and the
+    // remove below just cleans up git's record (R7-3).
     const state = await worktreeState(dir);
     //   1. Uncommitted edits to TRACKED files are real work that a merge does NOT move (it
     //      moves commits) and the force-remove below would destroy them (R5-1).
-    if (state.trackedDirty) {
+    if (state?.trackedDirty) {
       throw new Error('workspace has uncommitted changes — commit them in the workspace before merging');
     }
-    //   2. Ignored FILES (.env, config.local.json) are in no commit and are deleted by the
-    //      remove below — even a non-force one (R6-1).
-    assertNoPreciousIgnored(state.ignoredFiles);
+    //   2. Irreplaceable ignored files (.env, *.pem) are in no commit and are deleted by the
+    //      remove below — even a non-force one (R6-1). Build artifacts are not in this class.
+    if (state) assertNoPreciousIgnored(state.ignoredFiles);
     //   3. Nothing committed to merge at all: `merge --no-ff` would exit 0 ("Already up to
     //      date") and the force-remove would silently delete an untracked-but-real file the
     //      agent wrote and never staged, while reporting success (the other half of R5-1).
@@ -370,8 +399,10 @@ export async function remove(dir: string, opts: { mode: RemoveMode; force?: bool
     // merge as a 409 and wedge every retry (the re-merge is a no-op, the remove fails again).
     await git(record.project, ['worktree', 'remove', '--force', dir]);
   } else if (opts.mode === 'keep') {
-    // `worktree remove` deletes ignored files too, even without --force (R6-1).
-    assertNoPreciousIgnored((await worktreeState(dir)).ignoredFiles);
+    // `worktree remove` deletes ignored files too, even without --force (R6-1). A vanished
+    // worktree (state null) has nothing to lose — remove still cleans up the record (R7-3).
+    const state = await worktreeState(dir);
+    if (state) assertNoPreciousIgnored(state.ignoredFiles);
     await git(record.project, ['worktree', 'remove', dir]);
   } else {
     // discard is destructive BY INTENT, so ignored files are fair game once forced — but the
@@ -379,7 +410,7 @@ export async function remove(dir: string, opts: { mode: RemoveMode; force?: bool
     // rather than reporting "clean" like the old dirtyCount did (R6-2).
     if (!opts.force) {
       const state = await worktreeState(dir);
-      if (state.trackedDirty || state.untracked > 0) {
+      if (state && (state.trackedDirty || state.untracked > 0)) {
         throw new Error('workspace has uncommitted changes — discard requires force');
       }
     }
