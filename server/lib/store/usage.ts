@@ -187,12 +187,28 @@ export async function aggregateUsage(
     for (const file of files) {
       const filePath = join(dirPath, file);
       let mtime: number;
+      let touchedAt: number;
       try {
-        mtime = Math.floor((await stat(filePath)).mtimeMs);
+        const st = await stat(filePath);
+        mtime = Math.floor(st.mtimeMs);
+        // Gate on max(mtime, ctime), not mtime alone (D5-4). The gate's premise — "no turn can
+        // post-date the file's mtime" — holds for a file the agent wrote in place, but NOT for
+        // one restored by rsync / cp -p / tar / a backup: those replay an old mtime onto fresh
+        // content, so a coarse mtime gate silently dropped whole files and under-counted usage.
+        // ctime is set by the kernel when the inode is written and CANNOT be back-dated by
+        // those tools (they utimes() the mtime, which itself bumps ctime to now), so a restored
+        // file has old mtime + fresh ctime and now correctly survives the gate.
+        // Measured on the real 3,695-file store: ctime == mtime on every single file, so this
+        // passes an IDENTICAL file set (delta +0 at both the 7d and 30d windows) — the gate
+        // keeps its full benefit (dropping it costs ~5x on the 7d window: 301ms -> 1469ms).
+        // ponytail ceiling: a backwards SYSTEM CLOCK skew moves mtime and ctime together and is
+        // still undetectable from stat alone — the only fix would be parsing every file, which
+        // is exactly the cost the gate exists to avoid.
+        touchedAt = Math.max(mtime, Math.floor(st.ctimeMs));
       } catch {
         continue;
       }
-      if (mtime < cutoff) continue; // coarse pre-filter: no turn can post-date the file's mtime
+      if (touchedAt < cutoff) continue;
 
       // Per-turn window filter (S4-1): sum only turns at/after the cutoff. An undated turn
       // (no parseable timestamp — never seen on real Claude lines) is counted, since the

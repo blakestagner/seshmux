@@ -90,6 +90,25 @@ export function isSafeId(id: string): boolean {
   return !!id && !id.includes('/') && !id.includes('\\') && !id.includes('\0') && !id.includes('..');
 }
 
+// Encode an absolute cwd into the project id — the dash-encoded dirent name Claude Code
+// itself writes under ~/.claude/projects. EVERY provider must produce byte-identical ids
+// for the same repo path or routes/projects.ts merges them into separate cards and the
+// cross-agent bridge can never pair them (D5-1).
+//
+// SCHEMA DISCOVERY (hard rule 6 — derived, not guessed, from all 17 real (cwd, dirent)
+// pairs in this machine's ~/.claude/projects on 2026-07-11, by reading each dirent's own
+// recorded cwd): Claude replaces EVERY non-alphanumeric character with "-", not just "/".
+// Real pairs that prove each class:
+//   "/Users/b/Local Sites/markauthor"            -> "-Users-b-Local-Sites-markauthor"   (space)
+//   ".../seshmux/.claude/worktrees/agent-a8fd"   -> "...-seshmux--claude-worktrees-..." (dot)
+//   ".../themes/ML_Author"                       -> "...-themes-ML-Author"              (underscore)
+// A "/"-only encode mismatched 8/17; a "/"+space encode still mismatched 5/17; this
+// [^a-zA-Z0-9] encode matched 17/17. Lossy by design (decodeProjectDir cannot invert it) —
+// callers needing the true path use the cwd recorded inside the session file.
+export function encodeProjectId(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
 export function decodeProjectDir(dir: string): { path: string; name: string } {
   const path = dir.replace(/-/g, '/');
   const segments = path.split('/').filter(Boolean);
@@ -412,7 +431,7 @@ async function computeRootScan(root: string, provider: ProviderId): Promise<Root
   await Promise.all(
     out.map(async (p) => {
       if (p.isWorkspace) {
-        p.id = p.path.replace(/\//g, '-');
+        p.id = encodeProjectId(p.path);
         p.name = p.path.split('/').filter(Boolean).pop() || p.id;
       }
       // Re-stat `missing` post-merge: a workspace-only parent (brand new repo,
@@ -513,7 +532,7 @@ export async function listSessions(projectId: string, opts: ListOpts): Promise<S
   const cwdByDir = new Map(dirCwds.map(({ dirPath: d, cwd }) => [d, cwd]));
   const parentOf = await workspaceParentMap();
   const repoByEncodedId = new Map(
-    [...new Set(parentOf.values())].map((repoPath) => [repoPath.replace(/\//g, '-'), repoPath]),
+    [...new Set(parentOf.values())].map((repoPath) => [encodeProjectId(repoPath), repoPath]),
   );
   const enteredCwd = cwdByDir.get(dirPath) ?? decodeProjectDir(projectId).path;
   const parentPath = parentOf.get(enteredCwd) ?? repoByEncodedId.get(projectId) ?? enteredCwd;

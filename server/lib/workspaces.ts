@@ -10,7 +10,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, readFile, writeFile, rename, realpath } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile, rename, realpath, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
@@ -46,14 +46,25 @@ function workspacesFile(): string {
   return path.join(configDir(), 'workspaces.json');
 }
 
+/**
+ * Canonical form of a path, for use as a record KEY. git always reports realpaths in
+ * `worktree list`, so a record created from a caller's symlinked path (macOS /tmp ->
+ * /private/tmp) would never match one adopted from git's output — list()/remove() would miss
+ * adopted workspaces entirely. Canonicalize on every write and every lookup so the two agree.
+ * Falls back to the input when the path doesn't exist yet (nothing to resolve).
+ */
+async function canon(p: string): Promise<string> {
+  try {
+    return await realpath(p);
+  } catch {
+    return p;
+  }
+}
+
 function worktreesRoot(): string {
   return path.join(configDir(), 'worktrees');
 }
 
-// ponytail: plain read-modify-write with a lockfile-free tmp+rename swap. A
-// crash between calls loses at most one write; boot reconcile() fixes drift
-// against `git worktree list` anyway. Add file locking if concurrent writers
-// ever race in practice.
 async function readAll(): Promise<WorkspaceRecord[]> {
   try {
     const raw = await readFile(workspacesFile(), 'utf8');
@@ -67,14 +78,90 @@ async function readAll(): Promise<WorkspaceRecord[]> {
 async function writeAll(records: WorkspaceRecord[]): Promise<void> {
   const file = workspacesFile();
   await mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
+  // Unique tmp name per write. A name constant within the process (`.${pid}.tmp`) made two
+  // concurrent writers share one tmp file: the first rename() moved it away and the second
+  // rename() failed ENOENT — *after* its `git worktree add` had already run, orphaning the
+  // worktree. Same pattern as bridge/registry.ts and routes/scratchpad.ts (D5-2).
+  const tmp = path.join(path.dirname(file), `.${randomBytes(6).toString('hex')}.tmp`);
   await writeFile(tmp, JSON.stringify(records, null, 2));
   await rename(tmp, file);
 }
 
+// Serialized read-modify-write. The unique tmp name above stops the ENOENT crash but NOT the
+// lost update underneath it: create() did readAll() … slow `git worktree add` … writeAll(stale
+// + mine), so N concurrent creates each appended to the SAME stale snapshot and the last writer
+// won — measured 8 worktrees on disk, 1 record in json, 7 permanently orphaned. Every mutation
+// must re-read INSIDE the critical section so the mutator sees the records as they are now, not
+// as they were before the caller's slow git work (D5-2).
+// ponytail: in-process promise chain, not a lockfile — the server is the sole writer of
+// workspaces.json and is a single process. Needs a real file lock only if two seshmux servers
+// ever share one config dir.
+let writeChain: Promise<unknown> = Promise.resolve();
+function update<T>(mutate: (records: WorkspaceRecord[]) => { records: WorkspaceRecord[]; result: T }): Promise<T> {
+  const run = writeChain.then(async () => {
+    const { records, result } = mutate(await readAll());
+    await writeAll(records);
+    return result;
+  });
+  writeChain = run.catch(() => {}); // a failed mutation must not poison the chain
+  return run;
+}
+
 async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileP('git', args, { cwd });
+  // 64MB, not execFile's 1MB default: `status --porcelain` in a worktree after a big codemod
+  // (~17k modified files) exceeds 1MB and throws ENOBUFS. A dirty check that ERRORS is one a
+  // destructive path must never mistake for "clean" (R6-2) — callers below fail closed, and
+  // this keeps the common case from erroring at all.
+  const { stdout } = await execFileP('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 });
   return stdout;
+}
+
+/**
+ * What a `git worktree remove` would destroy. THROWS if git can't answer — every destructive
+ * caller must fail closed rather than read a failure as "clean" (R6-2: the old dirtyCount
+ * swallowed every error and returned 0, green-lighting a force-remove).
+ *
+ * `--ignored` collapses an ignored DIRECTORY to one entry (`node_modules/`) while listing an
+ * ignored FILE individually (`.env`) — exactly the distinction that matters: an ignored
+ * directory is a rebuildable artifact; an ignored file sitting in a worktree was deliberately
+ * put there (git never copies one in), is in no commit, and `worktree remove` deletes it even
+ * without --force (R6-1).
+ */
+async function worktreeState(dir: string): Promise<{
+  trackedDirty: boolean;
+  untracked: number;
+  ignoredFiles: string[];
+}> {
+  const out = await git(dir, ['status', '--porcelain', '--ignored']);
+  let trackedDirty = false;
+  let untracked = 0;
+  const ignoredFiles: string[] = [];
+  for (const line of out.split('\n')) {
+    if (!line.trim()) continue;
+    const code = line.slice(0, 2);
+    const file = line.slice(3);
+    if (code === '!!') {
+      if (!file.endsWith('/')) ignoredFiles.push(file); // a FILE, not a rebuildable dir
+    } else if (code === '??') {
+      untracked++;
+    } else {
+      trackedDirty = true;
+    }
+  }
+  return { trackedDirty, untracked, ignoredFiles };
+}
+
+/** Refuse to destroy a worktree holding ignored FILES (.env, config.local.json). ponytail:
+ *  an ignored file nested inside an ignored DIR (dist/secret.env) collapses under the dir and
+ *  isn't seen — accepted ceiling; the top-level case is the one users actually hit. */
+function assertNoPreciousIgnored(ignoredFiles: string[]): void {
+  if (ignoredFiles.length === 0) return;
+  const shown = ignoredFiles.slice(0, 5).join(', ');
+  const more = ignoredFiles.length > 5 ? ` (+${ignoredFiles.length - 5} more)` : '';
+  throw new Error(
+    `workspace holds gitignored files that removing it would destroy: ${shown}${more} — ` +
+      `move them out of the workspace first`,
+  );
 }
 
 // Branch names already present in the repo under our `agent/` namespace. A 'keep'-finished
@@ -155,15 +242,24 @@ export async function create(repoPath: string): Promise<{ dir: string; branch: s
   // would make scan.ts's grouping (path equality against the agent-recorded
   // cwd) and reconcile()'s `git worktree list` check silently miss.
   const realDir = await realpath(dir);
-  const record: WorkspaceRecord = { dir: realDir, branch, project: repoPath, createdAt: Date.now() };
-  await writeAll([...existing, record]);
+  // `project` is canonicalized for the same reason `dir` is: reconcile's adopt half builds
+  // records from `git worktree list`, which always reports realpaths — a raw project here
+  // would key the two kinds of record differently and list() would never return an adopted
+  // workspace (its own D5-2 test caught this).
+  const record: WorkspaceRecord = { dir: realDir, branch, project: await canon(repoPath), createdAt: Date.now() };
+  // Append under the lock against a FRESH read — `existing` above is now stale (the git work
+  // took time, and a concurrent create() may have landed its own record meanwhile).
+  await update((records) => ({ records: [...records, record], result: undefined }));
   return { dir: realDir, branch };
 }
 
 /** All workspace records for a given parent repo path. */
 export async function list(repoPath: string): Promise<WorkspaceRecord[]> {
   const all = await readAll();
-  return all.filter((r) => r.project === repoPath);
+  // Match either form: records written before project paths were canonicalized hold the raw
+  // caller path, new + adopted ones hold the realpath.
+  const real = await canon(repoPath);
+  return all.filter((r) => r.project === repoPath || r.project === real);
 }
 
 /** All workspace records, regardless of parent (scan.ts grouping lookup). */
@@ -231,22 +327,25 @@ export async function remove(dir: string, opts: { mode: RemoveMode; force?: bool
   if (opts.mode === 'merge') {
     // Merge is the mode users pick to KEEP work, so it must never destroy any — but it also
     // must not refuse a finished workspace just because a build artifact is lying around.
-    // Two precise guards instead of a blanket "is anything dirty" (which re-broke S4-4):
-    //
+    // Precise guards instead of a blanket "is anything dirty" (which re-broke S4-4).
+    // worktreeState THROWS if git can't answer, so a bad read refuses instead of removing.
+    const state = await worktreeState(dir);
     //   1. Uncommitted edits to TRACKED files are real work that a merge does NOT move (it
     //      moves commits) and the force-remove below would destroy them (R5-1).
-    if (!(await isTrackedClean(dir))) {
+    if (state.trackedDirty) {
       throw new Error('workspace has uncommitted changes — commit them in the workspace before merging');
     }
-    //   2. Nothing committed to merge at all: `merge --no-ff` would exit 0 ("Already up to
+    //   2. Ignored FILES (.env, config.local.json) are in no commit and are deleted by the
+    //      remove below — even a non-force one (R6-1).
+    assertNoPreciousIgnored(state.ignoredFiles);
+    //   3. Nothing committed to merge at all: `merge --no-ff` would exit 0 ("Already up to
     //      date") and the force-remove would silently delete an untracked-but-real file the
     //      agent wrote and never staged, while reporting success (the other half of R5-1).
     if ((await commitsAhead(record.project, record.branch)) === 0) {
       throw new Error('workspace has no commits to merge — commit the work in the workspace first');
     }
-    // Past both guards the worktree holds only untracked leftovers (build artifacts) and the
-    // branch has real commits, so the merge genuinely moves the work and the leftovers are
-    // disposable — that's the S4-4 case, and the force-remove below is safe.
+    // Past the guards the worktree holds only untracked leftovers inside rebuildable dirs and
+    // the branch has real commits, so the merge genuinely moves the work.
     // Was the PARENT already mid-merge (the user's own conflict, maybe hand-resolved) before
     // we touched it? If so our merge refuses to start ("You have not concluded your merge"),
     // and aborting on the way out would destroy THEIR work (R5-2). Only abort a mid-merge we
@@ -271,23 +370,101 @@ export async function remove(dir: string, opts: { mode: RemoveMode; force?: bool
     // merge as a 409 and wedge every retry (the re-merge is a no-op, the remove fails again).
     await git(record.project, ['worktree', 'remove', '--force', dir]);
   } else if (opts.mode === 'keep') {
+    // `worktree remove` deletes ignored files too, even without --force (R6-1).
+    assertNoPreciousIgnored((await worktreeState(dir)).ignoredFiles);
     await git(record.project, ['worktree', 'remove', dir]);
   } else {
-    if (!opts.force && (await dirtyCount(dir)) > 0) {
-      throw new Error('workspace has uncommitted changes — discard requires force');
+    // discard is destructive BY INTENT, so ignored files are fair game once forced — but the
+    // dirty guard itself must fail closed: worktreeState throws on an unreadable git state
+    // rather than reporting "clean" like the old dirtyCount did (R6-2).
+    if (!opts.force) {
+      const state = await worktreeState(dir);
+      if (state.trackedDirty || state.untracked > 0) {
+        throw new Error('workspace has uncommitted changes — discard requires force');
+      }
     }
     await git(record.project, ['worktree', 'remove', '--force', dir]);
     await git(record.project, ['branch', '-D', record.branch]);
   }
 
-  await writeAll(all.filter((r) => r.dir !== dir));
+  await update((records) => ({ records: records.filter((r) => r.dir !== dir), result: undefined }));
+}
+
+// The ADOPT half of reconcile: find worktrees that exist on disk with no record.
+//
+// Scoped deliberately to worktreesRoot() — the directory WE create workspaces in
+// (<configDir>/worktrees/<repo-base>/<slug-n>). We never walk the user's repos looking for
+// worktrees to claim, so a worktree they made by hand can't be swallowed; and we only adopt a
+// branch in our own `agent/` namespace. The parent repo is asked of git itself (the main
+// worktree in `git worktree list`), because the record that would have told us is exactly the
+// thing that went missing.
+async function findOrphanWorktrees(known: Set<string>): Promise<WorkspaceRecord[]> {
+  const root = worktreesRoot();
+  const found: WorkspaceRecord[] = [];
+  let repoDirs: string[];
+  try {
+    repoDirs = (await readdir(root, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    return []; // no worktrees root yet — nothing to adopt
+  }
+  for (const repoDir of repoDirs) {
+    let slugDirs: string[];
+    try {
+      slugDirs = (await readdir(path.join(root, repoDir), { withFileTypes: true }))
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name);
+    } catch {
+      continue;
+    }
+    for (const slug of slugDirs) {
+      const dir = path.join(root, repoDir, slug);
+      let real: string;
+      try {
+        real = await realpath(dir);
+      } catch {
+        continue;
+      }
+      if (known.has(real)) continue; // already recorded — not an orphan
+
+      try {
+        // `git worktree list` run FROM the worktree lists the whole set, main tree first.
+        const out = await git(real, ['worktree', 'list', '--porcelain']);
+        const dirs = out
+          .split('\n')
+          .filter((l) => l.startsWith('worktree '))
+          .map((l) => l.slice('worktree '.length).trim());
+        const project = dirs[0];
+        // A worktree git no longer tracks (its admin data was pruned) isn't adoptable — the
+        // dir is just leftover files. Leave it; only git can tell us it's still a worktree.
+        if (!project || project === real || !dirs.includes(real)) continue;
+
+        const branch = (await git(real, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+        if (!branch.startsWith('agent/')) continue; // not ours — never claim it
+
+        let createdAt = Date.now();
+        try {
+          createdAt = Math.floor((await stat(real)).birthtimeMs || Date.now());
+        } catch {
+          /* keep now() */
+        }
+        found.push({ dir: real, branch, project, createdAt });
+      } catch {
+        continue; // not a git worktree / git unreachable — leave it alone
+      }
+    }
+  }
+  return found;
 }
 
 /**
- * Boot reconcile: cross-check workspaces.json against `git worktree list` per
- * parent repo, and prune records whose dir is gone from disk. A crash between
- * `git worktree add` and the json write (or vice versa) can orphan either
- * side — this fixes both directions without touching the git state itself.
+ * Boot reconcile, BOTH directions:
+ *  - prune: a record whose worktree is gone from disk (or that git no longer tracks).
+ *  - adopt: a worktree on disk under our worktrees root with NO record — re-create the record.
+ *
+ * The adopt half used to be missing while the docstring claimed both, so a lost record (crash
+ * between `git worktree add` and the json write, or the concurrent-write lost update fixed
+ * above) left a worktree that the UI could not see and remove() refused to touch ("unknown
+ * workspace dir") — invisible, permanent, and consuming a branch name. D5-2.
  */
 export async function reconcile(): Promise<void> {
   const all = await readAll();
@@ -311,5 +488,17 @@ export async function reconcile(): Promise<void> {
     }
     kept.push(record);
   }
-  if (kept.length !== all.length) await writeAll(kept);
+
+  const adopted = await findOrphanWorktrees(new Set(kept.map((r) => r.dir)));
+  if (kept.length === all.length && adopted.length === 0) return; // nothing drifted
+
+  // Apply under the lock: reconcile runs at boot, but a create() from an early request must
+  // not be clobbered by a snapshot taken before it landed. Re-derive from the CURRENT records:
+  // keep only those we validated, and add adopted ones that still have no record.
+  const keptDirs = new Set(kept.map((r) => r.dir));
+  await update((records) => {
+    const surviving = records.filter((r) => keptDirs.has(r.dir) || !all.some((a) => a.dir === r.dir));
+    const have = new Set(surviving.map((r) => r.dir));
+    return { records: [...surviving, ...adopted.filter((a) => !have.has(a.dir))], result: undefined };
+  });
 }

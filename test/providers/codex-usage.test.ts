@@ -33,12 +33,12 @@ describe('CodexProvider.usage', () => {
     root = mkdtempSync(join(tmpdir(), 'seshmux-codex-usage-'));
     const dir = join(root, '2026', '07', '02');
     mkdirSync(dir, { recursive: true });
-    const file = join(dir, 'rollout-2026-07-02-cccc-3333.jsonl');
+    const file = join(dir, 'rollout-2026-07-02T09-00-00-019aebe9-51ba-7810-959a-6b8c07979e40.jsonl');
     const lines = [
       {
         timestamp: '2026-07-02T12:00:00.000Z',
         type: 'session_meta',
-        payload: { session_id: 'cccc-3333', cwd: '/Users/demo/github/myrepo', git: { branch: 'main' } },
+        payload: { id: '019aebe9-51ba-7810-959a-6b8c07979e40', cwd: '/Users/demo/github/myrepo', git: { branch: 'main' } },
       },
       {
         timestamp: '2026-07-02T12:00:01.000Z',

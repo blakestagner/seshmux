@@ -5,13 +5,16 @@
 // CLI versions 0.122.0-alpha.1 … 0.143.0 — schema drifts across versions, handled below):
 //
 // Store layout: ~/.codex/sessions/YYYY/MM/DD/rollout-<ISO-ts>-<uuid>.jsonl
-//   Session id = the trailing uuid in the filename (also session_meta.payload.session_id).
+//   Session id = session_meta.payload.id (the same uuid also trails the filename, used only
+//   as a fallback). RE-VERIFIED 2026-07-11 against all 8 real rollouts on this machine
+//   (CLI 0.65.0-alpha.11 … 0.142.0-alpha.6): 8/8 carry `payload.id`; NONE carries
+//   `payload.session_id` — that field was never real, at any version (D5-3).
 //
 // Every line: { timestamp, type, payload }. Relevant (type, payload.type):
-//   ("session_meta", -)     payload: { session_id, cwd, cli_version, context_window,
+//   ("session_meta", -)     payload: { id, cwd, cli_version, originator, model_provider,
 //                                       git: { branch, commit_hash, repository_url } | null,
 //                                       timestamp }
-//                           -> cwd = project grouping; git.branch = branch (null on old CLIs).
+//                           -> cwd = project grouping; git.branch = branch (absent on old CLIs).
 //   ("event_msg","task_started")  payload.model_context_window = ctx window (e.g. 258400).
 //   ("turn_context", -)     payload.model (e.g. "gpt-5.4", "gpt-5.4-mini"), effort.
 //   ("event_msg","user_message")  payload.message = clean user text -> TITLE + user Msg.
@@ -33,7 +36,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { decodeProjectDir, storeBytes } from '../store/scan';
+import { decodeProjectDir, encodeProjectId, storeBytes } from '../store/scan';
 import type { SearchHit, SearchOpts } from '../store/search';
 import { pricingFor, type UsageSummary } from '../store/usage';
 import type { Ctx, Msg, ToolCall } from '../store/transcript';
@@ -67,19 +70,24 @@ function codexStoreRoot(): string {
   return join(homedir(), '.codex', 'sessions');
 }
 
-// Encode an absolute cwd back into the dash-encoded project id (matches claude scheme so
-// the same repo path merges across providers). `/Users/demo/github/myrepo` -> `-Users-demo-github-myrepo`.
-function encodeProjectId(cwd: string): string {
-  return cwd.replace(/\//g, '-');
-}
+// Project id = the shared dash-encoding from the store seam (store/scan.ts), NOT a
+// codex-local scheme: claude's id is its on-disk dirent name, and the two must be
+// byte-identical or the same repo splits into two cards (D5-1).
+
+// Filename fallback for the session id (used only when session_meta.payload.id is absent —
+// a torn/headless-truncated file). Real name: rollout-<ISO-date>T<HH-MM-SS>-<uuid>.jsonl.
+// The timestamp is a FIXED shape (T + 2-2-2), so anchor it exactly rather than with a
+// greedy [\d-]+ — that older pattern ate into an all-digit uuid and returned only its last
+// group (`...T12-00-00-01234567-1234-1234-1234-123456789012` -> "123456789012"), yielding a
+// wrong id and a broken resume/transcript. Capture the uuid by its shape, not its charset.
+const ROLLOUT_RE = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i;
 
 function sessionIdFromFile(file: string): string {
-  // rollout-2026-07-01T12-00-00-<uuid>.jsonl -> <uuid>
   const stem = basename(file).replace(/\.jsonl$/, '');
-  const m = stem.match(/^rollout-\d{4}-\d{2}-\d{2}T[\d-]+-([0-9a-f-]+)$/i);
+  const m = stem.match(ROLLOUT_RE);
   if (m) return m[1];
-  // Fixture / fallback form rollout-2026-07-01-<id>: take everything after the date.
-  const alt = stem.replace(/^rollout-\d{4}-\d{2}-\d{2}-?/, '');
+  // Non-uuid / legacy form: take everything after the leading date (and optional T-time).
+  const alt = stem.replace(/^rollout-\d{4}-\d{2}-\d{2}(T\d{2}-\d{2}-\d{2})?-?/, '');
   return alt || stem;
 }
 
@@ -173,7 +181,11 @@ async function readSummary(filePath: string, mtime: number): Promise<RolloutSumm
       if (obj.type === 'session_meta' && p) {
         if (typeof p.cwd === 'string') summary.cwd = p.cwd;
         if (p.git && typeof p.git.branch === 'string') summary.branch = p.git.branch;
-        if (typeof p.session_id === 'string') summary.sessionId = p.session_id;
+        // Real rollouts carry the session id as `payload.id` — verified against all 8 real
+        // files in ~/.codex/sessions (CLI 0.65.0-alpha.11 … 0.142.0-alpha.6): 8/8 have `id`,
+        // 0/8 have `session_id`. The old `session_id` read was dead on every real file, so the
+        // id silently came from the filename fallback above (D5-3).
+        if (typeof p.id === 'string') summary.sessionId = p.id;
         if (summary.startedAt === null && typeof p.timestamp === 'string') {
           summary.startedAt = Date.parse(p.timestamp);
         }
@@ -280,13 +292,19 @@ export class CodexProvider implements AgentProvider {
     this.root = opts.root ?? (opts.homeDir ? join(opts.homeDir, '.codex', 'sessions') : codexStoreRoot());
   }
 
-  private async allSummaries(): Promise<{ file: string; mtime: number; s: RolloutSummary }[]> {
+  private async allSummaries(): Promise<{ file: string; mtime: number; touchedAt: number; s: RolloutSummary }[]> {
     const files = await findRolloutFiles(this.root);
     const results = [];
     for (const file of files) {
       let mtime: number;
+      let touchedAt: number;
       try {
-        mtime = Math.floor((await stat(file)).mtimeMs);
+        const st = await stat(file);
+        mtime = Math.floor(st.mtimeMs);
+        // See store/usage.ts: gate on max(mtime, ctime) so an rsync/cp -p/tar-restored rollout
+        // (old mtime replayed onto fresh content) isn't silently dropped from usage (D5-4).
+        // mtime alone stays the cache key everywhere else — it identifies the CONTENT.
+        touchedAt = Math.max(mtime, Math.floor(st.ctimeMs));
       } catch {
         continue;
       }
@@ -296,7 +314,7 @@ export class CodexProvider implements AgentProvider {
       } catch {
         continue; // unreadable/vanished file — skip, don't fail the whole scan
       }
-      results.push({ file, mtime, s });
+      results.push({ file, mtime, touchedAt, s });
     }
     return results;
   }
@@ -511,7 +529,7 @@ export class CodexProvider implements AgentProvider {
   async usage(days: number): Promise<UsageSummary> {
     const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
     const all = await this.allSummaries();
-    const inWindow = all.filter(({ mtime }) => mtime >= cutoff);
+    const inWindow = all.filter(({ touchedAt }) => touchedAt >= cutoff);
 
     let totalTokens = 0;
     let cacheReads = 0;

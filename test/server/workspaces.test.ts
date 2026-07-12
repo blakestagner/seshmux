@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as ws from '../../server/lib/workspaces';
@@ -53,7 +53,9 @@ describe('workspaces.create', () => {
     // Recorded in workspaces.json.
     const records = await ws.list(repo);
     expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ dir, branch, project: repo });
+    // Both paths are canonicalized: git reports realpaths, so records built from `git worktree
+    // list` (reconcile's adopt half) must key identically to ones create() writes.
+    expect(records[0]).toMatchObject({ dir, branch, project: realpathSync(repo) });
   });
 
   it('rejects a non-git directory', async () => {
@@ -189,6 +191,41 @@ describe('workspaces.remove', () => {
     expect(await ws.list(repo)).toHaveLength(0);
   });
 
+  it('merge: refuses to destroy gitignored FILES the remove would delete (R6-1)', async () => {
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+    writeFileSync(join(dir, 'feature.txt'), 'work');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'work']);
+    // .env is gitignored: in no commit, invisible to `status --porcelain`, and deleted by
+    // `worktree remove` even without --force. It is also irreplaceable.
+    writeFileSync(join(dir, '.gitignore'), '.env\nnode_modules/\n');
+    git(dir, ['add', '.gitignore']);
+    git(dir, ['commit', '-q', '-m', 'ignore']);
+    writeFileSync(join(dir, '.env'), 'OPENAI_KEY=sk-live-REAL-SECRET');
+
+    await expect(ws.remove(dir, { mode: 'merge' })).rejects.toThrow(/gitignored files/i);
+
+    expect(readFileSync(join(dir, '.env'), 'utf8')).toBe('OPENAI_KEY=sk-live-REAL-SECRET');
+    expect(await ws.list(repo)).toHaveLength(1);
+  });
+
+  it('merge: a gitignored DIRECTORY of build artifacts does not block the merge (R6-1 scoping)', async () => {
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+    writeFileSync(join(dir, '.gitignore'), 'dist/\n');
+    writeFileSync(join(dir, 'feature.txt'), 'work');
+    git(dir, ['add', '.gitignore', 'feature.txt']);
+    git(dir, ['commit', '-q', '-m', 'work']);
+    mkdirSync(join(dir, 'dist'));
+    writeFileSync(join(dir, 'dist', 'out.js'), 'rebuildable');
+
+    await ws.remove(dir, { mode: 'merge' }); // rebuildable artifacts are disposable
+
+    expect(existsSync(dir)).toBe(false);
+    expect(existsSync(join(repo, 'feature.txt'))).toBe(true);
+  });
+
   it('merge: refuses when the branch has no commits, even if the only work is untracked (R5-1)', async () => {
     const ws = await freshWorkspaces();
     const { dir } = await ws.create(repo);
@@ -303,6 +340,61 @@ describe('workspaces.remove', () => {
     expect(existsSync(dir)).toBe(false);
     const branches = git(repo, ['branch', '--list', branch]);
     expect(branches.trim()).toBe('');
+    expect(await ws.list(repo)).toHaveLength(0);
+  });
+});
+
+describe('concurrent workspace create + orphan adoption (D5-2)', () => {
+  // 4 concurrent writers, not 8: the lost-update/ENOENT bug reproduces with 2+, and each
+  // create() is a real `git worktree add` — 8 of them under full-suite parallel load took
+  // ~25s and flaked. Explicit timeout because this test is genuinely I/O-heavy.
+  it('concurrent creates on the same repo all land: zero rejections, one worktree + one record each, no orphan', { timeout: 60_000 }, async () => {
+    const ws = await freshWorkspaces();
+    const N = 4;
+
+    const results = await Promise.allSettled(Array.from({ length: N }, () => ws.create(repo)));
+
+    expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+
+    const gitList = git(repo, ['worktree', 'list', '--porcelain']);
+    const worktreeDirs = gitList
+      .split('\n')
+      .filter((l) => l.startsWith('worktree '))
+      .map((l) => l.slice('worktree '.length).trim())
+      .filter((d) => d !== realpathSync(repo)); // exclude the main tree (git reports realpaths)
+
+    expect(worktreeDirs).toHaveLength(N);
+
+    const records = await ws.list(repo);
+    expect(records).toHaveLength(N);
+
+    // No orphan: every worktree dir on disk has a matching record, and vice versa.
+    const recordDirs = new Set(records.map((r) => r.dir));
+    for (const d of worktreeDirs) expect(recordDirs.has(d)).toBe(true);
+  });
+
+  it('reconcile() adopts a worktree whose record was lost (crash window), and it becomes removable', async () => {
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+    expect(await ws.list(repo)).toHaveLength(1);
+
+    // Simulate the crash window: the worktree was created on disk but the json write for it
+    // never landed / was lost. Hand-edit workspaces.json to drop the record while the worktree
+    // dir + git registration stay intact.
+    const wsFile = join(configDir, 'workspaces.json');
+    writeFileSync(wsFile, JSON.stringify([]));
+    expect(await ws.list(repo)).toHaveLength(0);
+
+    await ws.reconcile();
+
+    const recovered = await ws.list(repo);
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0].dir).toBe(dir);
+
+    // Before D5-2 this threw 'unknown workspace dir' — the adopted record must be a real,
+    // removable workspace, not a decoration.
+    await ws.remove(dir, { mode: 'discard', force: true });
+    expect(existsSync(dir)).toBe(false);
     expect(await ws.list(repo)).toHaveLength(0);
   });
 });

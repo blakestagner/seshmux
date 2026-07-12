@@ -3,6 +3,7 @@
 // the claude provider). composeTeamPrompt turns a template + task into the prose
 // firstPrompt the lead session receives — data → text, unit-testable, no I/O.
 import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { configDir } from '../daemon-client';
 
@@ -38,17 +39,32 @@ async function readAll(): Promise<TeamTemplate[]> {
 }
 async function writeAll(list: TeamTemplate[]): Promise<void> {
   await mkdir(configDir(), { recursive: true });
-  const tmp = file() + '.tmp';
+  // Unique tmp name: a static `teams.json.tmp` is shared by every concurrent writer, so the
+  // first rename() moves it away and the second fails ENOENT. Same pattern as
+  // bridge/registry.ts and routes/scratchpad.ts (D5-2, sibling of workspaces.ts).
+  const tmp = path.join(configDir(), `.${randomBytes(6).toString('hex')}.tmp`);
   await writeFile(tmp, JSON.stringify(list, null, 2), 'utf8');
   await rename(tmp, file());
 }
+
+// Serialized read-modify-write — same reason as workspaces.ts: two templates saved at once
+// each read the same snapshot and the last write dropped the other. In-process chain; the
+// server is the only writer of teams.json.
+let writeChain: Promise<unknown> = Promise.resolve();
+function update(mutate: (list: TeamTemplate[]) => TeamTemplate[]): Promise<void> {
+  const run = writeChain.then(async () => {
+    await writeAll(mutate(await readAll()));
+  });
+  writeChain = run.catch(() => {}); // a failed mutation must not poison the chain
+  return run;
+}
+
 export const listTemplates = readAll;
 export async function saveTemplate(t: Omit<TeamTemplate, 'createdAt'>): Promise<TeamTemplate> {
-  const list = (await readAll()).filter((x) => x.name !== t.name);
   const rec: TeamTemplate = { ...t, createdAt: Date.now() };
-  await writeAll([...list, rec]);
+  await update((list) => [...list.filter((x) => x.name !== rec.name), rec]);
   return rec;
 }
 export async function deleteTemplate(name: string): Promise<void> {
-  await writeAll((await readAll()).filter((x) => x.name !== name));
+  await update((list) => list.filter((x) => x.name !== name));
 }
