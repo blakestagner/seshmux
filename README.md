@@ -52,6 +52,22 @@ npx seshmux
 
 Opens `http://127.0.0.1:4700` in your browser. No account, no config, no server to host.
 
+### Commands
+
+```bash
+seshmux                    # start (reuses a running instance if there is one)
+seshmux --port 4800        # bind a different port ($PORT works too)
+seshmux --no-open          # don't open a browser
+
+seshmux update             # check npm for a newer release and install it
+seshmux update --check     # just tell me, don't install
+seshmux --version
+
+seshmux --restart-daemon   # replace the session daemon (see below)
+```
+
+Updating also upgrades the session daemon, but only when nothing would be lost — see [Updates that never kill a session](#updates-that-never-kill-a-session).
+
 ### Requirements
 
 | Dependency | Required? | What it unlocks |
