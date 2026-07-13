@@ -69,24 +69,52 @@ function versionLess(a, b) {
 // (ensureDaemon reuses any daemon that answers hello). Upgrade it here — but ONLY when no live
 // session would die: tmux-tier PTYs rehydrate in the fresh daemon, plain-tier PTYs do not.
 // Unreachable daemon / unknown versions (dev) → do nothing.
-async function autoUpgradeDaemon(ourVersion) {
+// Returns 'upgraded' | 'blocked' | 'noop'. quiet=true suppresses the blocked log (the retry
+// loop below would otherwise repeat it forever).
+async function autoUpgradeDaemon(ourVersion, quiet) {
   const info = await daemonInfo(paths(configDir()).sock).catch(() => null);
-  if (!info || !info.version || !ourVersion || ourVersion === '0.0.0') return;
-  if (!versionLess(info.version, ourVersion)) return;
+  if (!info || !info.version || !ourVersion || ourVersion === '0.0.0') return 'noop';
+  if (!versionLess(info.version, ourVersion)) return 'noop';
 
   const { safe, plainCount } = canSafelyRestartDaemon(info.ptys);
   if (!safe) {
-    console.log(
-      `[seshmux] daemon stays on v${info.version} — ${plainCount} session(s) are not tmux-backed and would be killed ` +
-        '(install tmux, or run `seshmux --restart-daemon` once they finish)',
-    );
-    return;
+    if (!quiet) {
+      console.log(
+        `[seshmux] daemon stays on v${info.version} for now — ${plainCount} running session(s) are not tmux-backed ` +
+          'and a restart would end them. It will upgrade itself as soon as they finish.',
+      );
+    }
+    return 'blocked';
   }
   const tmuxCount = info.ptys.filter((p) => p.tmuxName && p.alive !== false).length;
   console.log(
-    `[seshmux] upgrading daemon v${info.version} -> v${ourVersion} (${tmuxCount} tmux session(s) will re-attach)`,
+    `[seshmux] upgrading daemon v${info.version} -> v${ourVersion}` +
+      (tmuxCount ? ` (${tmuxCount} tmux session(s) will re-attach)` : ''),
   );
   await restartDaemon();
+  return 'upgraded';
+}
+
+// A blocked upgrade must not stay blocked forever. Without tmux a PTY simply cannot outlive the
+// daemon that owns its master fd — that is the OS, not a bug we can fix — so the answer is NOT to
+// demand the user install tmux, it is to never need the restart at a bad moment. The daemon is
+// harmless while stale (protocol frozen at 1; newer RPCs degrade, they don't fail), so it can
+// simply WAIT for a safe moment: every live session ended, or all remaining ones are tmux-backed.
+// Then it upgrades itself, with nothing killed and nothing for the user to type.
+const UPGRADE_RETRY_MS = Number(process.env.SESHMUX_UPGRADE_RETRY_MS) || 60_000;
+function scheduleDaemonUpgrade(getVersion) {
+  let announced = false;
+  const tick = async () => {
+    const result = await autoUpgradeDaemon(getVersion(), announced).catch(() => 'noop');
+    if (result === 'blocked') {
+      announced = true; // say it once, then wait quietly
+      return;
+    }
+    clearInterval(timer); // upgraded, or nothing to do — stop checking
+  };
+  const timer = setInterval(tick, UPGRADE_RETRY_MS);
+  if (timer.unref) timer.unref(); // never hold the process open on this alone
+  tick();
 }
 
 // Absolute path to THIS cli entry, inherited by the server child. The MCP
@@ -319,6 +347,11 @@ async function main() {
   let child = spawnServer();
   if (!args.noOpen) setTimeout(() => openBrowser(url), 1500);
 
+  // Also on plain startup, not just after an update: a previous run may have deferred the upgrade
+  // (sessions were running), or the user updated and quit before it could finish. Without this, a
+  // daemon that was stale once could stay stale forever.
+  scheduleDaemonUpgrade(currentVersion);
+
   // NOTE: shutdown kills the SERVER child only — never the daemon. The daemon is
   // detached and holds live PTYs across this process's death (update-safety).
   let shuttingDown = false;
@@ -353,10 +386,9 @@ async function main() {
       }
       console.log('[seshmux] server restarting for update (session-safe)…');
       // One-click means one click: the new package is on disk now, so upgrade the daemon too —
-      // but only if every live PTY is tmux-backed (it re-attaches). Otherwise leave it alone.
-      await autoUpgradeDaemon(currentVersion()).catch((e) =>
-        console.error(`[seshmux] daemon upgrade skipped (${e.message}) — sessions unaffected`),
-      );
+      // but only if every live PTY is tmux-backed (it re-attaches). If a plain session would die,
+      // this defers and the retry loop finishes the job the moment that session ends.
+      scheduleDaemonUpgrade(currentVersion);
       child = spawnServer();
       child.on('exit', onExit);
       return;
