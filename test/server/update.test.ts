@@ -143,3 +143,49 @@ describe('detectInstallMethod — symlinked global prefix', () => {
     ).toBe('global');
   });
 });
+
+// The button announced an update and then reliably failed to install it. checkUpdate fetches the
+// registry directly and saw 0.1.1; `npm i -g seshmux@latest` re-resolved through npm's CACHED
+// packument and died with "ETARGET: No matching version found for seshmux@0.1.1". Everyone whose
+// cache predates the release — i.e. every existing user, the only people who can click it — hit
+// this. Fix: install the exact version check resolved, with fresh metadata.
+describe('applyUpdate — pins the resolved version (ETARGET regression)', () => {
+  it('installs the exact target with fresh metadata, not the @latest tag', async () => {
+    const calls: string[][] = [];
+    await applyUpdate({
+      installMethod: 'global',
+      current: '0.1.0',
+      target: '0.1.1',
+      exec: async (cmd, args) => {
+        calls.push([cmd, ...args]);
+        return { stdout: 'ok' };
+      },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('seshmux@0.1.1');
+    expect(calls[0]).not.toContain('seshmux@latest');
+    expect(calls[0]).toContain('--prefer-online');
+  });
+
+  it('falls back to the tag when no target was resolved', async () => {
+    const calls: string[][] = [];
+    await applyUpdate({
+      installMethod: 'global',
+      current: '0.1.0',
+      exec: async (cmd, args) => { calls.push([cmd, ...args]); return { stdout: 'ok' }; },
+    });
+    expect(calls[0]).toContain('seshmux@latest');
+  });
+
+  it('refuses a target that is not a plain semver — it comes off an HTTP response', async () => {
+    const calls: string[][] = [];
+    await applyUpdate({
+      installMethod: 'global',
+      current: '0.1.0',
+      target: '--registry=http://evil.example',
+      exec: async (cmd, args) => { calls.push([cmd, ...args]); return { stdout: 'ok' }; },
+    });
+    expect(calls[0]).toContain('seshmux@latest'); // fell back, did not pin the junk
+    expect(calls[0].join(' ')).not.toContain('evil.example');
+  });
+});

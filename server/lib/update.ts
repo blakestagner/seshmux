@@ -165,6 +165,9 @@ export function _resetUpdateCache(): void {
 export interface ApplyUpdateDeps {
   installMethod: InstallMethod;
   current: string; // captured BEFORE install so rollback text names the previous version
+  // The exact version checkUpdate resolved. Installing THIS instead of re-resolving `@latest`
+  // is what makes apply agree with check — see the note on applyUpdate.
+  target?: string;
   exec?: ExecLike;
 }
 
@@ -174,17 +177,33 @@ export interface ApplyUpdateResult {
   previous: string; // the version to roll back to: `npm i -g seshmux@<previous>`
 }
 
-// Runs `npm i -g seshmux@latest`. Rejects for npx installs (cache is per-invocation, no
-// self-update possible). Never touches the running server — the caller decides restart.
+// Installs the version checkUpdate resolved. Rejects for npx installs (cache is per-invocation,
+// no self-update possible). Never touches the running server — the caller decides restart.
+//
+// Why not `seshmux@latest`: checkUpdate fetches the registry directly, but `npm i` resolves
+// through npm's CACHED packument. Anyone whose cache predates the release — i.e. every existing
+// user, the only people who can click this — gets `latest -> 0.1.1` from the network and then
+// "ETARGET: No matching version found for seshmux@0.1.1" from the cache. The button announced an
+// update and then reliably failed to install it. Verified: `npm i -g seshmux@latest` fails while
+// `--prefer-online` and an exact pin both succeed, same machine, same moment.
+//
+// So: pin the exact target, and force fresh metadata. Falls back to `@latest` only if the caller
+// somehow has no resolved version.
 export async function applyUpdate(deps: ApplyUpdateDeps): Promise<ApplyUpdateResult> {
   if (deps.installMethod === 'npx') {
     throw new Error('cannot self-update an npx invocation — run `npx seshmux@latest` next time');
   }
   const exec = deps.exec ?? defaultExec;
   const previous = deps.current; // capture BEFORE install
+  // target came off a registry HTTP response. defaultExec is execFile with an argv array (no
+  // shell), so this can't be command injection, but an unvalidated string still reaches npm's
+  // arg parser — a value like "--registry=…" or "../evil" has no business being there. Only a
+  // plain semver may be pinned; anything else falls back to the tag.
+  const version = /^\d+\.\d+\.\d+[A-Za-z0-9.\-+]*$/.test(deps.target ?? '') ? deps.target : null;
+  const spec = `seshmux@${version ?? 'latest'}`;
 
   try {
-    const { stdout, stderr } = await exec('npm', ['i', '-g', 'seshmux@latest']);
+    const { stdout, stderr } = await exec('npm', ['i', '-g', spec, '--prefer-online']);
     // TODO(wire): after ok, the server must broadcast {event:'server-restarting'} on the
     // events ws and exit 75 so bin/seshmux.js's relaunch loop starts the new version. That
     // choreography lives in the server/bin layer, not here — this fn only ran the install.
