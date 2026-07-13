@@ -50,8 +50,23 @@ export function detectInstallMethod(opts: {
 }): InstallMethod {
   const p = opts.argvRealPath;
   if (p.includes('/_npx/') || p.includes('\\_npx\\')) return 'npx';
-  if (opts.globalPrefix && p.startsWith(opts.globalPrefix)) return 'global';
+  // Both sides must be realpath'd or neither. argvRealPath is resolved; `npm prefix -g` is
+  // NOT, so a symlinked prefix (macOS /tmp -> /private/tmp, homebrew /usr/local, some nvm
+  // layouts) made startsWith fail and reported a global install as 'local' — which hides the
+  // update button entirely, since we refuse to run `npm i -g` for a non-global install.
+  const prefix = realpath(opts.globalPrefix);
+  if (prefix && realpath(p).startsWith(prefix)) return 'global';
   return 'local';
+}
+
+// realpathSync throws on a path that doesn't exist — fall back to the raw string.
+function realpath(p: string): string {
+  if (!p) return '';
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
 }
 
 // Default resolution of the current process's real argv path (realpath resolves npm's bin
@@ -98,7 +113,10 @@ export interface CheckUpdateDeps {
 }
 
 export async function checkUpdate(deps: CheckUpdateDeps = {}): Promise<UpdateStatus> {
-  const current = deps.current ?? process.env.npm_package_version ?? '0.0.0';
+  // SESHMUX_VERSION is stamped by bin/seshmux.js (which can always read its own package.json).
+  // npm_package_version only exists under `npm run …` — it is undefined for `npx seshmux` and
+  // for the global bin, so it must not be the primary source (see the note in bin/seshmux.js).
+  const current = deps.current ?? process.env.SESHMUX_VERSION ?? process.env.npm_package_version ?? '0.0.0';
   const fetchFn = deps.fetchFn ?? defaultFetch;
   const exec = deps.exec ?? defaultExec;
   const argvRealPath = deps.argvRealPath ?? resolveArgvRealPath();
