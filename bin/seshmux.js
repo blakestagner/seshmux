@@ -195,11 +195,25 @@ async function main() {
     ...process.env,
     PORT: String(port),
     SESHMUX_TOKEN: token,
-    SESHMUX_VERSION: require('../package.json').version,
   };
   if (isProd) env.NODE_ENV = 'production';
 
+  // Read the version FRESH on every spawn, never once. `require` caches, and this supervisor
+  // deliberately survives a self-update (it is what relaunches the server child) — so a cached
+  // read meant the updated server was told it was still the OLD version. The user updated, the
+  // new code ran, and the "update available" banner stayed up forever because current never
+  // moved. Re-reading the file each spawn means the relaunch after an update sees the new
+  // version. readFileSync, not require, precisely to dodge the module cache.
+  function currentVersion() {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
+    } catch {
+      return '0.0.0';
+    }
+  }
+
   function spawnServer() {
+    env.SESHMUX_VERSION = currentVersion();
     return isProd
       ? spawn(process.execPath, [standalone], { cwd: path.dirname(standalone), stdio: 'inherit', env })
       : spawn(
