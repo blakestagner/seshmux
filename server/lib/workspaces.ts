@@ -234,7 +234,27 @@ async function defaultBranch(repoPath: string): Promise<string> {
  * couples to session spawn — callers spawn separately via the shared
  * startSession() (hard rule: one spawn path).
  */
-export async function create(repoPath: string): Promise<{ dir: string; branch: string }> {
+// Serialize creates. Two concurrent create()s on the same repo scan for a free branch/dir,
+// then both race into `git worktree add` — and git itself takes repo-wide locks (index.lock,
+// .git/worktrees), so one of them loses and rejects. The old comment below called this TOCTOU
+// "not worth a retry loop"; it is real, and CI caught it on Linux (4 concurrent creates, one
+// rejection, every run — macOS wins the race even at 16, which is why it hid for so long).
+//
+// A queue, not a retry loop: creates are user-initiated and rare (a click), git worktree add
+// is ~200ms, and serializing removes BOTH the name TOCTOU and git's lock contention instead of
+// papering over the symptom. In-process is sufficient — one server owns the records file.
+let createQueue: Promise<unknown> = Promise.resolve();
+
+export function create(repoPath: string): Promise<{ dir: string; branch: string }> {
+  const run = createQueue.then(
+    () => createOne(repoPath),
+    () => createOne(repoPath), // a previous create's failure must not poison the queue
+  );
+  createQueue = run.catch(() => {});
+  return run;
+}
+
+async function createOne(repoPath: string): Promise<{ dir: string; branch: string }> {
   if (!(await isGitRepo(repoPath))) {
     throw new Error(`not a git repo: ${repoPath}`);
   }
@@ -252,8 +272,9 @@ export async function create(repoPath: string): Promise<{ dir: string; branch: s
   let branch = `agent/${slug}-${n}`;
   let dir = path.join(worktreesRoot(), repoBase, `${slug}-${n}`);
   // Bump -n (never -f) on any collision — recorded branch, kept git branch, dir, OR an
-  // existing dir on disk. ponytail: a branch created between this scan and `worktree add`
-  // (TOCTOU) would still fail raw; not worth a retry loop for a single-user local tool.
+  // existing dir on disk. The scan-then-add TOCTOU this used to wave off is now closed by the
+  // createQueue above: only one create is in flight at a time, so nothing can take the name
+  // between this scan and `worktree add`.
   while (takenBranches.has(branch) || takenDirs.has(dir) || existsSync(dir)) {
     n++;
     branch = `agent/${slug}-${n}`;
