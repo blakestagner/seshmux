@@ -23,6 +23,7 @@ import AgentsView from '../components/AgentsView';
 import TeamPanel from '../components/TeamPanel';
 import EmptyComposer from '../components/EmptyComposer';
 import type { ProviderId } from '../lib/client/types';
+import { DetectedProvidersProvider, providersFromEnv } from '../lib/client/providers';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import { clampSize, readPersistedSize, clampSplit } from '../lib/client/drag-resize';
@@ -45,7 +46,14 @@ const DEFAULT_RATIO = 0.5;
 // client never imports server/ code, so this is an independent local mirror,
 // same pattern as lib/client/types.ts mirroring server Project/SessionMeta).
 type AgentEnv = { found: boolean; path?: string; version?: string; store: { found: boolean; projects: number; bytes: number } };
-type EnvResponse = { claude: AgentEnv; codex: AgentEnv; tmux: { found: boolean }; rg: { found: boolean } };
+// `commands` keys = the providers the server actually detected (see lib/client/providers).
+type EnvResponse = {
+  claude: AgentEnv;
+  codex: AgentEnv;
+  tmux: { found: boolean };
+  rg: { found: boolean };
+  commands?: Record<string, unknown>;
+};
 
 function SetupGate({ onRescan }: { onRescan: () => void }) {
   return (
@@ -98,6 +106,11 @@ function AppShell() {
   // (Task 4's session-touch, not a bespoke poller).
   const [teamPings, setTeamPings] = useState<Record<string, number>>({});
   const [touchPings, setTouchPings] = useState<Record<string, number>>({});
+  const [scratchpadPings, setScratchpadPings] = useState<Record<string, number>>({});
+  // BUG-3: true from {event:'server-restarting'} until the first event after
+  // auto-reconnect (the server replays events on reconnect, so the next
+  // message proves the server is back) — no timer, no fake progress.
+  const [restarting, setRestarting] = useState(false);
   const activeTab = state.tabs.find((t) => t.id === state.activeTab);
 
   // Mirrors Rail's handleTogglePin: optimistic dispatch + persist. Lives here
@@ -285,7 +298,7 @@ function AppShell() {
           if (s.sessionId) {
             const tabId = 'term-' + s.ptyId;
             getTeamMembers(s.sessionId)
-              .then((info) => dispatch({ type: 'setTabTeam', tabId, teamName: info.teamName }))
+              .then((info) => info && dispatch({ type: 'setTabTeam', tabId, teamName: info.teamName }))
               .catch(() => {});
           }
         }
@@ -310,6 +323,7 @@ function AppShell() {
       idle: 'live',
     };
     const client = openEventsSocket((e) => {
+      setRestarting(e.event === 'server-restarting');
       switch (e.event) {
         case 'status': {
           dispatch({ type: 'setTermStatus', ptyId: e.ptyId, status: WS_STATUS[e.status], ni: e.status, ts: Date.now() });
@@ -378,7 +392,10 @@ function AppShell() {
         case 'team':
           setTeamPings((prev) => ({ ...prev, [e.leadSessionId]: (prev[e.leadSessionId] ?? 0) + 1 }));
           break;
-        // server-restarting is consumed by the Updates banner in its own component.
+        case 'scratchpad':
+          setScratchpadPings((prev) => ({ ...prev, [e.projectId]: (prev[e.projectId] ?? 0) + 1 }));
+          break;
+        // server-restarting is handled above (top of this callback), before the switch.
         default:
           break;
       }
@@ -470,7 +487,9 @@ function AppShell() {
       );
     }
     if (tab.kind === 'scratchpad' && tab.projectId) {
-      return <Scratchpad key={tab.id} projectId={tab.projectId} path={tab.label} />;
+      return (
+        <Scratchpad key={tab.id} projectId={tab.projectId} path={tab.label} refreshKey={scratchpadPings[tab.projectId]} />
+      );
     }
     if (tab.kind === 'planoff' && tab.projectId) {
       return (
@@ -511,6 +530,7 @@ function AppShell() {
 
   return (
     <div className={styles.shell}>
+      {restarting ? <div className={styles.restartBanner}>Updating — reconnecting…</div> : null}
       <TopNav onPickHit={handlePickHit} onOpenCustomizations={() => setCustOpen({})} />
       <div className={styles.app}>
         {/* Settings is a full-page overlay: hide the rail so it reads as its own
@@ -722,9 +742,14 @@ export default function Page() {
   const noAgentFound = env ? !env.claude.found && !env.codex.found : false;
   if (noAgentFound) return <SetupGate onRescan={rescan} />;
 
+  // env is resolved here (the `checking` gate above guarantees it) — thread the
+  // detected-provider set down once so no component re-fetches /api/env and no
+  // cross-agent button renders before detection is known.
   return (
-    <AppStateProvider>
-      <AppShell />
-    </AppStateProvider>
+    <DetectedProvidersProvider value={providersFromEnv(env)}>
+      <AppStateProvider>
+        <AppShell />
+      </AppStateProvider>
+    </DetectedProvidersProvider>
   );
 }

@@ -9,6 +9,7 @@ import { getTranscript, startSession, bridgeHandoff, bridgeReview, getTeamMember
 import type { Msg, Ctx, BridgeStart } from '../lib/client/api';
 import type { ProviderId } from '../lib/client/types';
 import { useAppState } from '../lib/client/store';
+import { useDetectedProviders, bridgeTarget } from '../lib/client/providers';
 import styles from './Transcript.module.scss';
 
 // Ported from mockup.html renderTranscript() (~1624). Header: title, meta
@@ -101,18 +102,22 @@ export default function Transcript({ projectId, sessionId, title, provider }: Tr
   const { state, dispatch } = useAppState();
   const [msgs, setMsgs] = useState<Msg[] | null>(null);
   const [ctx, setCtx] = useState<Ctx>(null);
+  const [truncated, setTruncated] = useState(false);
   const [visible, setVisible] = useState(WINDOW_SIZE);
   const [copied, setCopied] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [bridging, setBridging] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const project = state.projects.find((p) => p.id === projectId);
-  // The bridge always targets the OPPOSITE provider (mockup: labels flip by
-  // source provider). Buttons say "Continue in ⬡ Codex" from a claude session.
-  const sourceProvider = provider ?? project?.provider ?? 'claude';
-  const otherProvider: ProviderId = sourceProvider === 'codex' ? 'claude' : 'codex';
-  const other = PROV[otherProvider];
+  // The bridge targets the opposite DETECTED provider (mockup: labels flip by
+  // source provider). Buttons say "Continue in ⬡ codex" from a claude session —
+  // and don't render at all on a single-agent machine (null target).
+  const sourceProvider: ProviderId = provider ?? project?.provider ?? 'claude';
+  const otherProvider = bridgeTarget(sourceProvider, useDetectedProviders());
+  const other = otherProvider ? PROV[otherProvider] : null;
 
   async function handleResume() {
     if (!project) return;
@@ -132,10 +137,10 @@ export default function Transcript({ projectId, sessionId, title, provider }: Tr
       // team dir (keyed by the lead's session id, which survives resume) — the
       // resumed tab carries no isTeamLead marker of its own (it was opened as a
       // plain transcript tab, not via the team-start flow), so do a one-shot
-      // check here. 404 (not a team, or the team dir was already cleaned up) is
-      // silently ignored — the tab just stays a normal terminal.
+      // check here. null (not a team, or the team dir was already cleaned up)
+      // just leaves it a normal terminal.
       getTeamMembers(sessionId)
-        .then((info) => dispatch({ type: 'setTabTeam', tabId, teamName: info.teamName }))
+        .then((info) => info && dispatch({ type: 'setTabTeam', tabId, teamName: info.teamName }))
         .catch(() => {});
     } catch (e) {
       setResuming(false); // stay on the transcript on failure
@@ -171,12 +176,16 @@ export default function Transcript({ projectId, sessionId, title, provider }: Tr
 
   useEffect(() => {
     setMsgs(null);
+    setLoadError(null);
     setVisible(WINDOW_SIZE);
-    getTranscript(projectId, sessionId).then((data) => {
-      setMsgs(data.msgs);
-      setCtx(data.ctx);
-    });
-  }, [projectId, sessionId]);
+    getTranscript(projectId, sessionId)
+      .then((data) => {
+        setMsgs(data.msgs);
+        setCtx(data.ctx);
+        setTruncated(!!data.truncated);
+      })
+      .catch((e) => setLoadError((e as Error).message || 'failed to load transcript'));
+  }, [projectId, sessionId, reloadKey]);
 
   const shown = useMemo(() => (msgs ? msgs.slice(Math.max(0, msgs.length - visible)) : []), [msgs, visible]);
   const hiddenCount = msgs ? msgs.length - shown.length : 0;
@@ -201,25 +210,37 @@ export default function Transcript({ projectId, sessionId, title, provider }: Tr
             <Button variant="primary" disabled={resuming || !project} onClick={handleResume}>
               ↻ Resume session
             </Button>
-            {!state.tabs.some((t) => t.linked && t.linkedKind === 'handoff' && t.linkSrc === sessionId) ? (
+            {other && !state.tabs.some((t) => t.linked && t.linkedKind === 'handoff' && t.linkSrc === sessionId) ? (
               <Button disabled={bridging || !project} onClick={() => runBridge(bridgeHandoff)}>
                 ⇄ Continue in {other.glyph} {otherProvider}
               </Button>
             ) : null}
-            <Button disabled={bridging || !project} onClick={() => runBridge(bridgeReview)}>
-              ⊙ Review with {other.glyph} {otherProvider}
-            </Button>
+            {other ? (
+              <Button disabled={bridging || !project} onClick={() => runBridge(bridgeReview)}>
+                ⊙ Review with {other.glyph} {otherProvider}
+              </Button>
+            ) : null}
             <Button onClick={copySessionId}>{copied ? 'Copied' : 'Copy session id'}</Button>
           </div>
           {actionError ? <div className={styles.actionError}>{actionError}</div> : null}
         </div>
 
-        {msgs === null ? (
+        {loadError ? (
+          <div className={styles.loading}>
+            Failed to load transcript: {loadError}
+            <Button onClick={() => setReloadKey((k) => k + 1)}>Retry</Button>
+          </div>
+        ) : msgs === null ? (
           <div className={styles.loading}>Loading transcript…</div>
         ) : msgs.length === 0 ? (
           <div className={styles.loading}>No messages in this transcript.</div>
         ) : (
           <>
+            {truncated ? (
+              <div className={styles.loadMore}>
+                Older history truncated — this session is too large to load in full. Showing the most recent messages.
+              </div>
+            ) : null}
             {hiddenCount > 0 ? (
               <button type="button" className={styles.loadMore} onClick={() => setVisible((v) => v + WINDOW_SIZE)}>
                 Load {Math.min(WINDOW_SIZE, hiddenCount)} earlier messages ({hiddenCount} hidden)

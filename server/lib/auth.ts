@@ -1,7 +1,8 @@
 // Local security boundary. This app spawns shells, so localhost binding alone is NOT a
 // boundary (DNS-rebinding + cross-site POST can reach 127.0.0.1). Two mandatory layers:
 //   1. Origin/Referer check on every mutating request (non-GET) and every WS upgrade.
-//   2. Per-process random token on ALL /api/* requests + WS upgrades (query param).
+//   2. Per-process random token: `x-seshmux-token` header on /api/* requests,
+//      `?token=` query param on WS upgrades.
 // Both are enforced by a single Fastify onRequest hook (server/index.ts) via requireAuth.
 
 import { timingSafeEqual } from 'node:crypto';
@@ -33,6 +34,17 @@ function header(headers: ReqLike['headers'], name: string): string | undefined {
   return Array.isArray(v) ? v[0] : v;
 }
 
+// Accept only a Host header naming our own loopback interface (any port). Defeats
+// DNS-rebinding: a rebound page resolves attacker.com -> 127.0.0.1 but the browser
+// still sends `Host: attacker.com`, which fails here. Applied to ALL guarded
+// requests (GET included) since that's the read-only exfiltration vector.
+export function checkHost(host: string | undefined): boolean {
+  if (!host) return false;
+  // Strip the port. IPv6 literals are bracketed: [::1]:port.
+  const hostname = host.startsWith('[') ? host.slice(1, host.indexOf(']')) : host.split(':')[0];
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+}
+
 // Accept only http origins pointing at our own loopback host:port.
 export function checkOrigin(
   headers: { origin?: string; referer?: string },
@@ -59,6 +71,13 @@ export function checkToken(provided: string | undefined, expected: string): bool
 // request and WS upgrade. Order: Origin first (cheap, blocks cross-site), then token.
 export function requireAuth(req: ReqLike, ctx: AuthCtx): void {
   const isMutating = req.method !== 'GET' && req.method !== 'HEAD';
+
+  // Layer 0 — Host allowlist on every guarded request (GET included). Blocks
+  // DNS-rebinding read-only exfiltration that the Origin check (mutating/WS only)
+  // and localhost binding alone don't cover.
+  if (!checkHost(header(req.headers, 'host'))) {
+    throw new AuthError(403, 'host not allowed');
+  }
 
   // Layer 1 — Origin/Referer for mutating requests and WS upgrades.
   if (isMutating || ctx.isWebSocket) {

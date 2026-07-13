@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { useAppState } from '../lib/client/store';
+import { useDetectedProviders } from '../lib/client/providers';
 import {
   getEnv,
   getHooksStatus,
@@ -148,10 +149,12 @@ export default function Settings() {
 
   function rescan() {
     setRescanning(true);
-    (getEnv() as Promise<EnvResponse>).then((e) => {
-      setEnv(e);
-      setRescanning(false);
-    });
+    (getEnv() as Promise<EnvResponse>)
+      .then((e) => {
+        setEnv(e);
+        setRescanning(false);
+      })
+      .catch(() => setRescanning(false));
   }
 
   function handleRegister() {
@@ -168,6 +171,9 @@ export default function Settings() {
   // Derive which provider(s) support status hooks from GET /api/hooks/status
   // itself (hard rule 3 — no hardcoded provider id here; if codex gains
   // statusHooks the toggle picks it up with zero client changes).
+  // Two or more detected agents = the cross-agent bridge is live UI; one = dead.
+  const crossAgent = useDetectedProviders().length > 1;
+
   const hookProviders = Object.entries(hooks ?? {})
     .filter(([, st]) => st.available)
     .map(([id]) => id as ProviderId);
@@ -353,6 +359,9 @@ export default function Settings() {
           </div>
         </Card>
 
+        {/* The bridge only exists between two agents — a single-agent machine has
+            nothing to register, approve, or hop to, so the whole section is hidden. */}
+        {crossAgent ? (
         <Section title="Agent bridge" note="MCP — agents call each other as tools">
           <EnvRow name="Bridge registration" sub="writes seshmux-bridge into each agent’s MCP config" subMono={false}>
             <Button onClick={handleRegister} disabled={registering}>
@@ -392,6 +401,7 @@ export default function Settings() {
             />
           </EnvRow>
         </Section>
+        ) : null}
 
         <Section title="Appearance">
           <EnvRow name="Theme">

@@ -4,7 +4,7 @@
 // would make the rail count right but hide the actual sessions.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { scanProjects, listSessions } from '../../server/lib/store/scan';
@@ -46,7 +46,10 @@ function writeSessionFile(dirPath: string, sessionId: string, cwd: string, branc
 beforeEach(() => {
   configDir = mkdtempSync(join(tmpdir(), 'seshmux-cfg-'));
   process.env.SESHMUX_CONFIG_DIR = configDir;
-  repo = mkdtempSync(join(tmpdir(), 'seshmux-repo-'));
+  // realpath: a real agent's jsonl records getcwd(), which is always canonical (macOS
+  // /tmp -> /private/tmp). Writing the raw path here would be an unrealistic fixture — and
+  // it silently masked whether grouping survives a symlinked repo root.
+  repo = realpathSync(mkdtempSync(join(tmpdir(), 'seshmux-repo-')));
   initRepo(repo);
   storeRoot = mkdtempSync(join(tmpdir(), 'seshmux-store-'));
 });

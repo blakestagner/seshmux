@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
-import { listSubagentNodes, parseSubagentDetail } from '../../server/lib/store/subagents';
+import { listSubagentNodes, nodeFromSources, parseSubagentDetail } from '../../server/lib/store/subagents';
 import { ClaudeProvider } from '../../server/lib/providers/claude';
 import { CodexProvider } from '../../server/lib/providers/codex';
 import type { AgentProvider } from '../../server/lib/providers/types';
@@ -20,6 +20,14 @@ describe('listSubagentNodes', () => {
   it('marks stoppedByUser agents as error', async () => {
     const nodes = await listSubagentNodes(join(FIX, 'plain-explore-interrupted/session'));
     expect(nodes[0].status).toBe('error');
+  });
+
+  it('nulls a self-referential parentAgentId so the node renders as a root, not its own child (S4-2)', () => {
+    const node = nodeFromSources('a1', { meta: { parentAgentId: 'a1' }, workflowProgress: null, jsonlPath: '/x' });
+    expect(node.parentId).toBeNull();
+    // A genuine parent is still preserved.
+    const child = nodeFromSources('a2', { meta: { parentAgentId: 'a1' }, workflowProgress: null, jsonlPath: '/x' });
+    expect(child.parentId).toBe('a1');
   });
 
   it('nests fork agents via parentAgentId', async () => {
@@ -83,5 +91,17 @@ describe('provider subagents capability', () => {
   it('CodexProvider omits the subagents capability (chip never shows)', () => {
     const codex: AgentProvider = new CodexProvider();
     expect(codex.subagents).toBeUndefined();
+  });
+
+  // SEC-3: projectId is gated against the scanned project list and sessionId is
+  // separator-checked before the absolute ~/.claude join — a traversal or unknown
+  // project reads nothing.
+  it('refuses a traversal / unknown projectId and a traversal sessionId (SEC-3)', async () => {
+    const claude = new ClaudeProvider({ root: FIX });
+    expect(await claude.subagents!.list('../plain-general', 'session')).toEqual([]);
+    expect(await claude.subagents!.list('not-a-real-project', 'session')).toEqual([]);
+    expect(await claude.subagents!.list('plain-general', '../session')).toEqual([]);
+    expect(await claude.subagents!.detail('../plain-general', 'session', 'x')).toBeNull();
+    expect(await claude.subagents!.detail('plain-general', '../session', 'x')).toBeNull();
   });
 });

@@ -53,7 +53,9 @@ async function startDaemon(opts = {}) {
   const sockPath = opts.sockPath || path.join(configDir, 'seshmuxd.sock');
   const pidPath = opts.pidPath || path.join(configDir, 'seshmuxd.pid');
 
-  fs.mkdirSync(path.dirname(sockPath), { recursive: true });
+  // mode 0o700: the config dir holds the control socket — anyone who can reach
+  // it can spawn arbitrary argv as this user. Only affects dirs we create.
+  fs.mkdirSync(path.dirname(sockPath), { recursive: true, mode: 0o700 });
 
   // Unlink a stale socket file so listen() doesn't EADDRINUSE. (Stale-vs-live
   // pid detection is the server launcher's job in Task 13; here we just clear
@@ -198,6 +200,7 @@ async function startDaemon(opts = {}) {
 
   function close() {
     return new Promise((resolve) => {
+      ptyManager.close();
       for (const sock of subscribers) {
         try {
           sock.destroy();
@@ -229,6 +232,14 @@ async function startDaemon(opts = {}) {
       resolve();
     });
   });
+
+  // 0o600: the socket is created world-reachable-by-mode by default; lock it to
+  // the owner so only this user's processes can drive the daemon.
+  try {
+    fs.chmodSync(sockPath, 0o600);
+  } catch {
+    // Non-POSIX FS (Windows) — best effort; the dir mode still constrains access.
+  }
 
   fs.writeFileSync(pidPath, String(process.pid));
 

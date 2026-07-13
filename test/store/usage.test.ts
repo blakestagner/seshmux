@@ -71,6 +71,64 @@ describe('aggregateUsage', () => {
     expect(result.byProvider).toEqual([]);
   });
 
+  it('counts only turns within the window, not the whole file, for a recently-touched old session (S4-1)', async () => {
+    // A file with a recent mtime (resumed today) but whose turns span old + new. A 3-day
+    // window must exclude the weeks-old turns and count ONLY the fresh one.
+    const isoRoot = mkdtempSync(join(tmpdir(), 'seshmux-usage-window-'));
+    const isoProj = join(isoRoot, '-Users-demo-github-myrepo');
+    mkdirSync(isoProj);
+    const mkLine = (iso: string, out: number) =>
+      JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', model: 'claude-opus-4-8', usage: { input_tokens: 0, output_tokens: out } },
+        timestamp: iso,
+      });
+    const now = new Date();
+    const old1 = new Date(now.getTime() - 20 * 24 * 60 * 60 * 1000).toISOString(); // 20d ago
+    const old2 = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000).toISOString(); // 10d ago
+    const fresh = new Date(now.getTime() - 1 * 60 * 60 * 1000).toISOString(); // 1h ago
+    const file = join(isoProj, 'resumed.jsonl');
+    writeFileSync(file, [mkLine(old1, 111), mkLine(old2, 222), mkLine(fresh, 7)].join('\n') + '\n');
+    utimesSync(file, now, now); // mtime = now, so the file passes the coarse mtime gate
+
+    try {
+      const result = await aggregateUsage(3, isoRoot, 'claude'); // 3-day window
+      expect(result.sessions).toBe(1);
+      expect(result.totalTokens).toBe(7); // only the fresh turn, not 111+222+7
+    } finally {
+      rmSync(isoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not corrupt a wider window from a narrower cached read (window-independent cache, S4-1)', async () => {
+    // Read a 3-day window first (caches the parsed turns), then a 30-day window against the
+    // SAME file+mtime — the wider window must still see the old turns, proving the cache
+    // holds all turns and the cutoff is applied post-cache, not baked into the cache key.
+    const isoRoot = mkdtempSync(join(tmpdir(), 'seshmux-usage-cachekey-'));
+    const isoProj = join(isoRoot, '-Users-demo-github-myrepo');
+    mkdirSync(isoProj);
+    const now = new Date();
+    const old = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000).toISOString();
+    const fresh = new Date(now.getTime() - 1 * 60 * 60 * 1000).toISOString();
+    const line = (iso: string, out: number) =>
+      JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', model: 'claude-opus-4-8', usage: { input_tokens: 0, output_tokens: out } },
+        timestamp: iso,
+      });
+    const file = join(isoProj, 's.jsonl');
+    writeFileSync(file, [line(old, 500), line(fresh, 5)].join('\n') + '\n');
+    utimesSync(file, now, now);
+    try {
+      const narrow = await aggregateUsage(3, isoRoot, 'claude'); // caches turns
+      expect(narrow.totalTokens).toBe(5);
+      const wide = await aggregateUsage(30, isoRoot, 'claude'); // same file+mtime, wider window
+      expect(wide.totalTokens).toBe(505); // old turn re-included, cache not poisoned
+    } finally {
+      rmSync(isoRoot, { recursive: true, force: true });
+    }
+  });
+
   it('returns all zeros for a nonexistent root without throwing', async () => {
     const result = await aggregateUsage(30, join(root, 'does-not-exist'), 'claude');
     expect(result).toEqual({

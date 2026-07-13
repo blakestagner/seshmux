@@ -4,10 +4,9 @@
 // number or a model→number resolver function supplied by the provider (Claude's window
 // varies by model family; codex supplies a fixed number derived from its rollout files).
 
-import { createReadStream } from 'node:fs';
 import { open, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createInterface } from 'node:readline';
+import { isSafeId } from './scan';
 
 export interface ToolCall {
   name: string;
@@ -33,6 +32,14 @@ export interface Ctx {
 // always supplies its own window, either as a number or a model→number resolver. Claude
 // passes a resolver (window varies by model family), codex passes a fixed 258_400.
 const TAIL_BYTES = 64 * 1024;
+
+// Cap how much of a session we parse+return so a runaway-agent transcript (325MB
+// observed → ~1.4GB stringify spike, BUG-C2) can't OOM the server on open. We tail-read
+// the LAST N bytes (humans read transcripts newest-first; the ctx `usage` line also lives
+// at the end) so the cut loses only the oldest history, and the response is bounded.
+// ponytail: 8MB tail keeps the whole file for any normal session (start=0 → identical
+// behavior); only pathological giants get truncated. `truncated` flag lets the client say so.
+const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 
 // Transcript display skips only command/framing noise — a `<teammate-message>` is real
 // conversation content and stays visible (scan.ts skips it for TITLE selection only).
@@ -74,19 +81,39 @@ export async function parseTranscript(
   sessionId: string,
   root: string,
   window: number | ((model: string) => number),
-): Promise<{ msgs: Msg[]; ctx: Ctx | null }> {
+): Promise<{ msgs: Msg[]; ctx: Ctx | null; truncated: boolean }> {
+  // Traversal guard (SEC-4): both ids are path-joined below — refuse "../" in either.
+  if (!isSafeId(projectId) || !isSafeId(sessionId)) return { msgs: [], ctx: null, truncated: false };
   const filePath = join(root, projectId, `${sessionId}.jsonl`);
   const msgs: Msg[] = [];
   const toolById = new Map<string, ToolCall>();
   let lastUsage: any = null;
   let lastModel = '';
 
-  const rl = createInterface({
-    input: createReadStream(filePath, { encoding: 'utf8' }),
-    crlfDelay: Infinity,
-  });
+  // Bounded tail-read (BUG-C2): read at most the last MAX_TRANSCRIPT_BYTES so a giant
+  // session can't be buffered whole. Same discipline as readCtx below.
+  let size: number;
+  try {
+    size = (await stat(filePath)).size;
+  } catch {
+    return { msgs: [], ctx: null, truncated: false };
+  }
+  const start = Math.max(0, size - MAX_TRANSCRIPT_BYTES);
+  const truncated = start > 0;
+  let chunk: string;
+  const fh = await open(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(size - start);
+    await fh.read(buf, 0, buf.length, start);
+    chunk = buf.toString('utf8');
+  } finally {
+    await fh.close();
+  }
+  const lines = chunk.split('\n');
+  // If we started mid-file, the first line is almost certainly a partial — drop it.
+  if (start > 0) lines.shift();
 
-  for await (const line of rl) {
+  for (const line of lines) {
     if (!line.trim()) continue;
     let obj: any;
     try {
@@ -160,7 +187,7 @@ export async function parseTranscript(
       })()
     : null;
 
-  return { msgs, ctx };
+  return { msgs, ctx, truncated };
 }
 
 // Tail-read only the last 64KB of a session file and scan backwards for the last

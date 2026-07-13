@@ -76,7 +76,7 @@ export type Ctx = { tokens: number; window: number; pct: number; model: string }
 export function getTranscript(
   projectId: string,
   sessionId: string,
-): Promise<{ msgs: Msg[]; ctx: Ctx; meta: SessionMeta }> {
+): Promise<{ msgs: Msg[]; ctx: Ctx; meta: SessionMeta; truncated?: boolean }> {
   return req(`/api/transcript/${projectId}/${sessionId}`);
 }
 
@@ -349,9 +349,10 @@ export type TeamInfo = {
 };
 
 // GET /api/teams/members?leadSession=<id> — resolves + arms the live roster watch
-// (Task 4) on first call for this team. 404 (thrown by `req`) means either "not a
-// team lead" or "team dir gone" — callers distinguish by whether they'd resolved
-// before.
-export function getTeamMembers(leadSessionId: string): Promise<TeamInfo> {
+// (Task 4) on first call for this team. Resolves to null when the session isn't a
+// team lead (or its team dir is gone). That's the normal answer for nearly every
+// session — it's a probe, not a resource fetch — so the server answers 200 + null
+// rather than 404, which used to log a failed request on every page load.
+export function getTeamMembers(leadSessionId: string): Promise<TeamInfo | null> {
   return req(`/api/teams/members?leadSession=${encodeURIComponent(leadSessionId)}`);
 }

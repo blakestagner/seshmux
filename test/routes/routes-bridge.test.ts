@@ -99,6 +99,31 @@ describe('POST /api/bridge/planoff', () => {
     expect(body.codex.plan).toBe('plan B');
   });
 
+  it('404s (not 500, no internals echoed) on a missing or unknown sessionId (R4-1)', async () => {
+    // Unknown session: prod compose throws 'session not found' — inject the same.
+    const { f } = makeApp({
+      composeBrief: async () => { throw new Error('session not found: demo/nope'); },
+    });
+    for (const payload of [{ projectId: 'demo' }, { projectId: 'demo', sessionId: 'nope' }]) {
+      const res = await f.inject({
+        method: 'POST', url: '/api/bridge/handoff', headers: { origin },
+        payload,
+      });
+      expect(res.statusCode).toBe(404);
+      expect(res.body).not.toContain('undefined'); // no internal error echo
+      expect(res.body).not.toContain('demo/nope'); // compose message not leaked
+    }
+  });
+
+  it('404s (not 500) when projectId is entirely missing from the body', async () => {
+    const { f } = makeApp();
+    const res = await f.inject({
+      method: 'POST', url: '/api/bridge/planoff', headers: { origin },
+      payload: { task: 'do a thing' },
+    });
+    expect(res.statusCode).toBe(404); // repoOrNull null-guards a missing projectId
+  });
+
   it('rejects a task starting with "-" (argument-injection guard)', async () => {
     const { f } = makeApp();
     const res = await f.inject({
@@ -130,6 +155,50 @@ describe('POST /api/bridge/planoff/pick', () => {
     // execution session started with the winning provider
     expect(calls[0].provider).toBe('claude');
     expect(calls[0].firstPrompt.toLowerCase()).toContain('execute');
+  });
+
+  // R2-3: validate BEFORE indexing — an invalid provider or malformed body used to index to
+  // undefined and 500 with a TypeError; a failed/empty winner used to seed an empty execution.
+  it('400s an invalid provider (no 500 TypeError)', async () => {
+    const { f, calls } = makeApp();
+    const res = await f.inject({
+      method: 'POST', url: '/api/bridge/planoff/pick', headers: { origin },
+      payload: {
+        projectId: 'demo', provider: 'gpt', task: 't',
+        planoff: {
+          claude: { provider: 'claude', ok: true, plan: 'p', durationMs: 1 },
+          codex: { provider: 'codex', ok: true, plan: 'q', durationMs: 1 },
+        },
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(calls.length).toBe(0); // never seeded an execution session
+  });
+
+  it('400s a malformed planoff body', async () => {
+    const { f, calls } = makeApp();
+    const res = await f.inject({
+      method: 'POST', url: '/api/bridge/planoff/pick', headers: { origin },
+      payload: { projectId: 'demo', provider: 'claude', task: 't', planoff: { claude: {} } },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(calls.length).toBe(0);
+  });
+
+  it('400s when the winning plan failed or is empty (never seeds an empty execution)', async () => {
+    const { f, calls } = makeApp();
+    const res = await f.inject({
+      method: 'POST', url: '/api/bridge/planoff/pick', headers: { origin },
+      payload: {
+        projectId: 'demo', provider: 'claude', task: 't',
+        planoff: {
+          claude: { provider: 'claude', ok: false, plan: '', error: 'timeout', durationMs: 1 },
+          codex: { provider: 'codex', ok: true, plan: 'q', durationMs: 1 },
+        },
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(calls.length).toBe(0);
   });
 });
 

@@ -112,6 +112,45 @@ describe('startWatching', () => {
     expect(emit).toHaveBeenCalledTimes(2); // one session-touch + one ctx, not doubled
   });
 
+  it('coalesces an add+change within the debounce window into session-new, not session-touch (S4-9)', async () => {
+    const { factory, watchers } = makeFakeChokidar();
+    const emit = vi.fn();
+    const readCtx = vi.fn(async () => FAKE_CTX);
+
+    startWatching({
+      watchTargets: [{ root: '/fake/claude/root', provider: 'claude' }],
+      emit,
+      readCtx,
+      chokidarFactory: factory,
+    });
+
+    const [fake] = watchers;
+    const filePath = '/fake/claude/root/-Users-demo-myrepo/aaaa-1111.jsonl';
+    fake.emit('add', filePath); // new file created
+    await vi.advanceTimersByTimeAsync(100);
+    fake.emit('change', filePath); // first write lands <300ms later — must NOT downgrade
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(readCtx).toHaveBeenCalledTimes(1); // single coalesced handling
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ event: 'session-new', sessionId: 'aaaa-1111' }));
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ event: 'session-touch' }));
+  });
+
+  it('a watcher "error" event does not throw / crash the process', async () => {
+    const { factory, watchers } = makeFakeChokidar();
+    const watcher = startWatching({
+      watchTargets: [{ root: '/fake/claude/root', provider: 'claude' }],
+      emit: vi.fn(),
+      readCtx: vi.fn(async () => FAKE_CTX),
+      chokidarFactory: factory,
+    });
+    const [fake] = watchers;
+    // An unhandled 'error' on an EventEmitter throws synchronously — the guard listener
+    // added by startWatching must absorb it.
+    expect(() => fake.emit('error', new Error('EMFILE'))).not.toThrow();
+    watcher.close();
+  });
+
   it('derives codex sessionId from the rollout filename uuid', async () => {
     const { factory, watchers } = makeFakeChokidar();
     const emit = vi.fn();

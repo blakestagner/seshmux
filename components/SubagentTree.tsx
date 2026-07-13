@@ -90,6 +90,7 @@ function TreeNode({
   node,
   depth,
   childrenByParent,
+  ancestors,
   selectedId,
   collapsedIds,
   onSelect,
@@ -98,13 +99,20 @@ function TreeNode({
   node: SubagentNode;
   depth: number;
   childrenByParent: Map<string | null, SubagentNode[]>;
+  ancestors: Set<string>; // ids on the path from root to this node (excludes this node)
   selectedId: string | null;
   collapsedIds: Set<string>;
   onSelect: (id: string) => void;
   onToggleCollapse: (id: string) => void;
 }) {
-  const children = childrenByParent.get(node.id) ?? [];
+  // Cycle guard (S4-2): drop any child that revisits an ancestor (or this node itself) so a
+  // malformed parentId cycle can't infinitely recurse into a stack overflow. Such a child
+  // renders flat wherever it first legitimately appears; the back-edge is simply not drawn.
+  const children = (childrenByParent.get(node.id) ?? []).filter(
+    (c) => c.id !== node.id && !ancestors.has(c.id),
+  );
   const hasChildren = children.length > 0;
+  const childAncestors = new Set(ancestors).add(node.id);
   const collapsed = collapsedIds.has(node.id);
 
   return (
@@ -125,6 +133,7 @@ function TreeNode({
               node={child}
               depth={depth + 1}
               childrenByParent={childrenByParent}
+              ancestors={childAncestors}
               selectedId={selectedId}
               collapsedIds={collapsedIds}
               onSelect={onSelect}
@@ -174,6 +183,7 @@ export default function SubagentTree({ nodes, selectedId, onSelect, collapsedIds
               node={node}
               depth={0}
               childrenByParent={childrenByParent}
+              ancestors={new Set()}
               selectedId={selectedId}
               collapsedIds={collapsedIds}
               onSelect={onSelect}

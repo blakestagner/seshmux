@@ -19,7 +19,23 @@ const pty = require('@homebridge/node-pty-prebuilt-multiarch');
 const { execFile } = require('node:child_process');
 const path = require('node:path');
 const os = require('node:os');
-const { TMUX_PREFIX, RING_BUFFER_LINES } = require('./protocol');
+const { TMUX_PREFIX, RING_BUFFER_LINES, RING_BUFFER_BYTES } = require('./protocol');
+
+// Dead PTY entries (alive=false) linger so a recently-exited session can still
+// be re-attached / rehydrated, then get swept once past this grace window —
+// without it the _ptys Map (each entry holding its full ring) grows forever.
+const DEAD_GRACE_MS = 10 * 60 * 1000;
+const SWEEP_INTERVAL_MS = 60 * 1000;
+
+// tmux-tier reconcile (BUG-11): when a tmux-tier PTY's node-pty client exits
+// (e.g. `tmux detach-client`, or the user's default tmux server dropping the
+// client) but the tmux SESSION itself survives, the agent is still running —
+// so re-attach a fresh client instead of declaring the session dead. Before
+// reviving, wait this long and re-check `has-session`: a genuinely-exiting
+// agent tears its session down at almost the same instant its client exits, so
+// the delay lets that teardown settle and keeps a dying session from flapping.
+const RECONCILE_DELAY_MS = 300;
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Env for tmux child processes: strip $TMUX/$TMUX_PANE so tmux talks to its
@@ -88,6 +104,20 @@ function markTmuxConfig(fullTmuxName, tag, attempt = 0) {
   );
 }
 
+/** True iff a tmux session by this exact name still exists on the shared
+ *  (default) server. False on any tmux error/absence — a missing `tmux` binary
+ *  or dead server means there is nothing to revive. */
+function tmuxHasSession(sessionName) {
+  return new Promise((resolve) => {
+    execFile(
+      'tmux',
+      ['has-session', '-t', sessionName],
+      { timeout: 2000, env: tmuxEnv() },
+      (err) => resolve(!err)
+    );
+  });
+}
+
 /** Read a session's @seshmux-config stamp. '' if unset or tmux errors. */
 function tmuxConfigTag(sessionName) {
   return new Promise((resolve) => {
@@ -112,6 +142,33 @@ class PtyManager {
     /** listeners: (event) => void, where event is a {event,...} object */
     this._onEvent = null;
     this._configTag = opts.configDir || defaultConfigDirTag();
+    // Unref'd so it never keeps the daemon process alive on its own.
+    this._sweepTimer = setInterval(() => void this._sweepDead(), SWEEP_INTERVAL_MS);
+    this._sweepTimer.unref();
+  }
+
+  /**
+   * Drop dead entries whose grace window has elapsed. Live entries and
+   * recently-exited ones (still re-attachable) are always kept.
+   *
+   * Backstop for BUG-11: a dead tmux-tier entry whose tmux session is still
+   * alive gets revived here (same ptyId) rather than swept — covers the rare
+   * case where the on-exit reconcile missed (transient `has-session` error, a
+   * spontaneously-dropped client). A genuinely-gone or foreign session revives
+   * false and sweeps normally once past grace.
+   */
+  async _sweepDead() {
+    const cutoff = Date.now() - DEAD_GRACE_MS;
+    for (const [id, e] of this._ptys) {
+      if (e.alive) continue;
+      if (e.tmuxName && !e.noRevive && (await this._reviveTmuxNow(e))) continue;
+      if (e.deadAt != null && e.deadAt <= cutoff) this._ptys.delete(id);
+    }
+  }
+
+  /** Stop the background sweep. Called by the daemon on close(). */
+  close() {
+    clearInterval(this._sweepTimer);
   }
 
   /** Register the sink that receives {event:'data'|'exit', ...} objects. */
@@ -135,10 +192,97 @@ class PtyManager {
   _appendRing(entry, chunk) {
     entry.ring.push(chunk);
     entry.ringLines += countNewlines(chunk);
-    while (entry.ringLines > RING_BUFFER_LINES && entry.ring.length > 1) {
+    entry.ringBytes += chunk.length;
+    // Evict oldest while EITHER cap is exceeded — the byte cap catches
+    // newline-free growth (spinners, one giant line) the line cap misses.
+    while (
+      entry.ring.length > 1 &&
+      (entry.ringLines > RING_BUFFER_LINES || entry.ringBytes > RING_BUFFER_BYTES)
+    ) {
       const dropped = entry.ring.shift();
       entry.ringLines -= countNewlines(dropped);
+      entry.ringBytes -= dropped.length;
     }
+  }
+
+  /**
+   * Wire a freshly-spawned node-pty into an entry: fan its data into the ring +
+   * event sink, and route its exit through _onProcExit. Shared by spawn(),
+   * rehydrateTmux(), and tmux revival so all three behave identically (and a
+   * change to the entry event shape can't miss a construction site).
+   */
+  _wireProc(entry) {
+    const { proc, ptyId } = entry;
+    proc.onData((data) => {
+      this._appendRing(entry, data);
+      this._emit({ event: 'data', ptyId, data });
+    });
+    proc.onExit(({ exitCode }) => this._onProcExit(entry, exitCode));
+  }
+
+  /**
+   * A node-pty exited. For a tmux-tier entry whose tmux session still exists,
+   * this is a client detach — revive silently (re-attach a fresh client under
+   * the SAME ptyId, no 'exit' emitted) so the server/UI never see the session
+   * go dead. Only when the session is genuinely gone (or a plain PTY exits) do
+   * we flip alive=false and emit 'exit'.
+   */
+  _onProcExit(entry, exitCode) {
+    const die = () => {
+      entry.alive = false;
+      entry.deadAt = Date.now();
+      this._emit({ event: 'exit', ptyId: entry.ptyId, code: exitCode });
+    };
+    // An explicit kill()/killAll() means the caller wants this entry GONE — never
+    // resurrect it, even though its tmux session detaches-but-survives by design.
+    if (entry.noRevive || !entry.tmuxName) {
+      die();
+      return;
+    }
+    // Keep alive=true across the reconcile window so list()/`/api/sessions/live`
+    // don't flicker the session away for a client detach we're about to heal.
+    void this._maybeReviveTmux(entry).then((revived) => {
+      if (!revived) die();
+    });
+  }
+
+  /** Wait out the flap window, then try to revive. */
+  async _maybeReviveTmux(entry) {
+    await wait(RECONCILE_DELAY_MS);
+    return this._reviveTmuxNow(entry);
+  }
+
+  /**
+   * If entry's tmux session still exists AND is ours (ownership stamp), attach a
+   * fresh node-pty to it under the SAME ptyId and mark it alive again. Returns
+   * true on revive, false if the session is gone / foreign / attach failed (the
+   * caller then declares the entry dead). No 'exit'/'spawn' event is emitted —
+   * to every subscriber the revived PTY just keeps producing data on its ptyId.
+   */
+  async _reviveTmuxNow(entry) {
+    if (!entry.tmuxName) return false;
+    if (!(await tmuxHasSession(entry.tmuxName))) return false;
+    // Never claim a session stamped by a DIFFERENT config dir (foreign daemon).
+    const tag = await tmuxConfigTag(entry.tmuxName);
+    if (tag && tag !== this._configTag) return false;
+    let proc;
+    try {
+      proc = pty.spawn('tmux', ['attach-session', '-t', entry.tmuxName], {
+        name: 'xterm-256color',
+        cols: entry.cols,
+        rows: entry.rows,
+        cwd: process.env.HOME || process.cwd(),
+        env: tmuxEnv(),
+      });
+    } catch {
+      return false;
+    }
+    entry.proc = proc;
+    entry.alive = true;
+    entry.deadAt = null;
+    hideTmuxStatus(entry.tmuxName);
+    this._wireProc(entry);
+    return true;
   }
 
   /**
@@ -219,19 +363,13 @@ class PtyManager {
       cols: columns,
       rows: lines,
       alive: true,
+      deadAt: null,
       ring: [],
       ringLines: 0,
+      ringBytes: 0,
     };
     this._ptys.set(ptyId, entry);
-
-    proc.onData((data) => {
-      this._appendRing(entry, data);
-      this._emit({ event: 'data', ptyId, data });
-    });
-    proc.onExit(({ exitCode }) => {
-      entry.alive = false;
-      this._emit({ event: 'exit', ptyId, code: exitCode });
-    });
+    this._wireProc(entry);
 
     return { ptyId };
   }
@@ -302,6 +440,7 @@ class PtyManager {
   kill({ ptyId } = {}) {
     const entry = this._ptys.get(ptyId);
     if (!entry) throw new Error('unknown ptyId: ' + ptyId);
+    entry.noRevive = true; // intent: stay dead, don't reconcile-revive (BUG-11 guard)
     try {
       entry.proc.kill();
     } catch {
@@ -343,6 +482,7 @@ class PtyManager {
   /** Kill every PTY (used by shutdown({force:true})). tmux sessions detach, not die. */
   killAll() {
     for (const e of this._ptys.values()) {
+      e.noRevive = true; // forced shutdown: no revival racing daemon teardown (BUG-11 guard)
       try {
         e.proc.kill();
       } catch {
@@ -401,18 +541,13 @@ class PtyManager {
         cols: 80,
         rows: 24,
         alive: true,
+        deadAt: null,
         ring: [],
         ringLines: 0,
+        ringBytes: 0,
       };
       this._ptys.set(ptyId, entry);
-      proc.onData((data) => {
-        this._appendRing(entry, data);
-        this._emit({ event: 'data', ptyId, data });
-      });
-      proc.onExit(({ exitCode }) => {
-        entry.alive = false;
-        this._emit({ event: 'exit', ptyId, code: exitCode });
-      });
+      this._wireProc(entry);
     }
     return this.count();
   }

@@ -8,6 +8,7 @@ import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { scanProjects, type ProviderId } from './scan';
+import { Lru } from './lru';
 
 export interface UsageSummary {
   sessions: number;
@@ -89,23 +90,29 @@ export type { Rate };
 // Definition (documented per task spec):
 //   totalTokens = sum(output_tokens) + sum(input_tokens + cache_creation_input_tokens)
 //   cacheReads  = sum(cache_read_input_tokens)   -- tracked separately, NOT in totalTokens
-interface FileUsageTotals {
+// One parsed assistant turn. `ts` is the line's own timestamp (ms) so a "last N days"
+// window filters per TURN, not per file — a resumed old session with one new turn must
+// contribute only that turn, not the whole file (S4-1).
+interface Turn {
+  ts: number; // Date.parse(line.timestamp); NaN if absent/unparseable
   tokens: number;
   cacheReads: number;
   costUsd: number;
 }
 
-// Cache parsed per-file usage totals keyed by (file, mtime), like scan.ts's headCache.
-const usageCache = new Map<string, FileUsageTotals>();
+// Cache the parsed per-turn array keyed by (file, mtime), like scan.ts's headCache. The
+// cache is deliberately window-INDEPENDENT: it holds every turn, and aggregateUsage()
+// applies the days cutoff after the cache read — so the same cached parse serves a 7-day
+// and a 30-day query without cross-window corruption. LRU-bounded (sessions × recency):
+// each append bumps mtime and orphans the old key, so an unbounded Map grew forever.
+const usageCache = new Lru<Turn[]>(2000);
 
-async function readFileUsage(filePath: string, mtime: number): Promise<FileUsageTotals> {
-  const cacheKey = `${filePath}:${mtime}`;
-  const cached = usageCache.get(cacheKey);
-  if (cached) return cached;
+async function readFileTurns(filePath: string, mtime: number): Promise<Turn[]> {
+  return usageCache.get(`${filePath}:${mtime}`, () => computeFileTurns(filePath));
+}
 
-  let tokens = 0;
-  let cacheReads = 0;
-  let costUsd = 0;
+async function computeFileTurns(filePath: string): Promise<Turn[]> {
+  const turns: Turn[] = [];
 
   const rl = createInterface({
     input: createReadStream(filePath, { encoding: 'utf8' }),
@@ -130,24 +137,22 @@ async function readFileUsage(filePath: string, mtime: number): Promise<FileUsage
       const cacheRead = usage.cache_read_input_tokens ?? 0;
       const output = usage.output_tokens ?? 0;
 
-      tokens += input + cacheCreate + output;
-      cacheReads += cacheRead;
-
       const model = typeof obj.message.model === 'string' ? obj.message.model : '';
       const r = pricingFor(model);
-      costUsd +=
+      const costUsd =
         (input / 1_000_000) * r.input +
         (cacheCreate / 1_000_000) * r.cacheWrite +
         (cacheRead / 1_000_000) * r.cacheRead +
         (output / 1_000_000) * r.output;
+
+      const ts = typeof obj.timestamp === 'string' ? Date.parse(obj.timestamp) : NaN;
+      turns.push({ ts, tokens: input + cacheCreate + output, cacheReads: cacheRead, costUsd });
     }
   } finally {
     rl.close();
   }
 
-  const totals: FileUsageTotals = { tokens, cacheReads, costUsd };
-  usageCache.set(cacheKey, totals);
-  return totals;
+  return turns;
 }
 
 // ponytail: parses Claude-shaped `type:assistant / message.usage` lines only. Codex
@@ -182,19 +187,44 @@ export async function aggregateUsage(
     for (const file of files) {
       const filePath = join(dirPath, file);
       let mtime: number;
+      let touchedAt: number;
       try {
-        mtime = Math.floor((await stat(filePath)).mtimeMs);
+        const st = await stat(filePath);
+        mtime = Math.floor(st.mtimeMs);
+        // Gate on max(mtime, ctime), not mtime alone (D5-4). The gate's premise — "no turn can
+        // post-date the file's mtime" — holds for a file the agent wrote in place, but NOT for
+        // one restored by rsync / cp -p / tar / a backup: those replay an old mtime onto fresh
+        // content, so a coarse mtime gate silently dropped whole files and under-counted usage.
+        // ctime is set by the kernel when the inode is written and CANNOT be back-dated by
+        // those tools (they utimes() the mtime, which itself bumps ctime to now), so a restored
+        // file has old mtime + fresh ctime and now correctly survives the gate.
+        // Measured on the real 3,695-file store: ctime == mtime on every single file, so this
+        // passes an IDENTICAL file set (delta +0 at both the 7d and 30d windows) — the gate
+        // keeps its full benefit (dropping it costs ~5x on the 7d window: 301ms -> 1469ms).
+        // ponytail ceiling: a backwards SYSTEM CLOCK skew moves mtime and ctime together and is
+        // still undetectable from stat alone — the only fix would be parsing every file, which
+        // is exactly the cost the gate exists to avoid.
+        touchedAt = Math.max(mtime, Math.floor(st.ctimeMs));
       } catch {
         continue;
       }
-      if (mtime < cutoff) continue;
+      if (touchedAt < cutoff) continue;
 
-      const usage = await readFileUsage(filePath, mtime);
+      // Per-turn window filter (S4-1): sum only turns at/after the cutoff. An undated turn
+      // (no parseable timestamp — never seen on real Claude lines) is counted, since the
+      // file already passed the mtime gate so its turns are recent. sessions counts every
+      // in-window file, matching the pre-fix "active sessions in this window" metric.
+      const turns = await readFileTurns(filePath, mtime);
+      let fileTokens = 0;
+      for (const t of turns) {
+        if (!Number.isNaN(t.ts) && t.ts < cutoff) continue;
+        fileTokens += t.tokens;
+        cacheReads += t.cacheReads;
+        estCostUsd += t.costUsd;
+      }
       sessions += 1;
-      totalTokens += usage.tokens;
-      cacheReads += usage.cacheReads;
-      estCostUsd += usage.costUsd;
-      perProjectTokens.set(project.name, (perProjectTokens.get(project.name) ?? 0) + usage.tokens);
+      totalTokens += fileTokens;
+      perProjectTokens.set(project.name, (perProjectTokens.get(project.name) ?? 0) + fileTokens);
     }
   }
 

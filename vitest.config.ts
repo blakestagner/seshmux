@@ -20,6 +20,14 @@ export default defineConfig({
   test: {
     globalSetup: './test/global-tmux-isolation.ts',
     env: { TMUX_TMPDIR: tmuxDir },
+    // This suite is integration-heavy: real `git worktree add`, real tmux sessions, real
+    // PTYs, real chokidar watchers. vitest's defaults (5s test / 10s hook) are a fine budget
+    // for unit tests but too tight for those under parallel file execution — the suite failed
+    // ~half of runs with "Test timed out in 5000ms" on a rotating cast of the git/tmux/watcher
+    // tests, every one of which passes in isolation. Raise the budget rather than sprinkle
+    // per-test timeouts; still bounded, so a genuine hang is still caught.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     // Agent worktrees carry a full copy of test/ — without this exclude a
     // bare `npm test` runs both copies concurrently against the shared real
     // ~/.config/seshmux and they clobber each other.

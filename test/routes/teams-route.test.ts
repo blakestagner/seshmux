@@ -181,6 +181,24 @@ describe('GET /api/teams/members', () => {
     expect(res.json().teamName).toBe('Recon');
   });
 
+  // The ?leadSession= probe fires for EVERY rehydrated/resumed session, and "not a team
+  // lead" is the answer for nearly all of them. A 404 there painted the devtools console
+  // red on every page load (the browser logs the failed request even though the client
+  // catches it). It's a question, not a resource fetch — answer it with 200 + null.
+  it('answers 200 + null (not 404) when the session simply is not a team lead', async () => {
+    const { f } = makeApp({ teamByLeadSession: async () => null });
+    const res = await f.inject({ method: 'GET', url: '/api/teams/members?leadSession=not-a-lead', headers: { origin } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toBeNull();
+  });
+
+  // ...but ?teamName= DOES name a resource, so a miss there is still a genuine 404.
+  it('still 404s an unknown teamName — that one names a resource', async () => {
+    const { f } = makeApp({ teamRoster: async () => null });
+    const res = await f.inject({ method: 'GET', url: '/api/teams/members?teamName=ghost', headers: { origin } });
+    expect(res.statusCode).toBe(404);
+  });
+
   it('arms the events-hub team watch (Task 4) with the resolved config path, once per request', async () => {
     const info = { teamName: 'Recon', leadSessionId: 'lead-1', createdAt: 1, members: [] };
     const armed: any[] = [];

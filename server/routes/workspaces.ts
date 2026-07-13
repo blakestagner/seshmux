@@ -143,13 +143,20 @@ export default async function workspaceRoutes(f: FastifyInstance, deps: Workspac
       return { error: 'mode must be merge | keep | discard' };
     }
     try {
-      await doRemove(dir, { mode, force: !!force });
-      return { ok: true };
+      // leftovers = where the workspace's gitignored files were moved before removal (a .env
+      // or dev.sqlite the agent created there). null when it had none.
+      const { leftovers } = await doRemove(dir, { mode, force: !!force });
+      return { ok: true, leftovers };
     } catch (e) {
-      // merge conflicts, worktree-remove-on-dirty, etc: surface stderr, do
-      // nothing else — worktree/branch/record all survive for a retry.
-      reply.code(409);
-      return { error: (e as Error).message };
+      // Distinguish by remove()'s own (stable, locally-thrown) messages so the client gets
+      // the right status (R2-7): unknown dir → 404, dirty-discard-without-force → 400,
+      // everything else (merge conflict, git failure) → 409, worktree/branch/record intact.
+      // ponytail: message-match on our own strings; upgrade to typed errors if they multiply.
+      const msg = (e as Error).message;
+      if (/unknown workspace/i.test(msg)) reply.code(404);
+      else if (/requires force/i.test(msg)) reply.code(400);
+      else reply.code(409);
+      return { error: msg };
     }
   });
 }

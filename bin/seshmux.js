@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 'use strict';
 
+// Runtime backstop for package.json engines (npm doesn't enforce it). ES5-only syntax.
+var _nodeMajor = parseInt(process.versions.node.split('.')[0], 10);
+if (_nodeMajor < 20) { console.error('seshmux requires Node.js >= 20 (found ' + process.versions.node + '). Please upgrade.'); process.exit(1); }
+
 // seshmux CLI entry. Ensures a responsive seshmuxd daemon, picks a free port
 // (reusing an already-running seshmux if one answers), starts the Fastify
 // server, and opens the browser to the chosen port.
@@ -49,12 +53,14 @@ function probeHealth(port, timeoutMs = 800) {
 
 const net = require('node:net');
 
-// Is a TCP port free to bind on 127.0.0.1?
+// Is a TCP port free to bind on 127.0.0.1? EACCES (privileged/blocked port) is reported
+// distinctly so resolvePort can explain why a low port failed rather than masking it as
+// "busy" (R2-5) — a plain busy port is EADDRINUSE.
 function portFree(port) {
   return new Promise((resolve) => {
     const srv = net.createServer();
-    srv.once('error', () => resolve(false));
-    srv.once('listening', () => srv.close(() => resolve(true)));
+    srv.once('error', (err) => resolve({ free: false, code: err.code }));
+    srv.once('listening', () => srv.close(() => resolve({ free: true })));
     srv.listen(port, '127.0.0.1');
   });
 }
@@ -63,15 +69,19 @@ function portFree(port) {
 //  - existing:true  → a healthy seshmux already owns this port; just open browser.
 //  - existing:false → a free port to bind our new server to.
 async function resolvePort(start, span = 10) {
+  let sawEacces = false;
   for (let port = start; port < start + span; port++) {
     const health = await probeHealth(port);
     if (health) return { port, existing: true }; // reuse the running seshmux
-    if (await portFree(port)) return { port, existing: false };
+    const bind = await portFree(port);
+    if (bind.free) return { port, existing: false };
+    if (bind.code === 'EACCES') sawEacces = true;
     // Port held by something else (not a seshmux) — try the next one.
   }
   // Every port in range busy and none is a seshmux: fail loudly rather than
   // return a known-busy port (which would EADDRINUSE-crash the server child).
-  throw new Error(`no free port in ${start}-${start + span - 1}`);
+  const hint = sawEacces ? ' (some required elevated privileges — EACCES; try a higher --port)' : '';
+  throw new Error(`no free port in ${start}-${start + span - 1}${hint}`);
 }
 
 function parseArgs(argv) {
@@ -231,4 +241,10 @@ async function main() {
   child.on('exit', onExit);
 }
 
-main();
+// Guard the whole flow: resolvePort() throws when every port in range is busy (R2-5) —
+// without this the first call site's rejection was unhandled (a bare stack trace, no exit
+// code). Fail loudly with the reason and a non-zero exit.
+main().catch((err) => {
+  console.error(`[seshmux] ${err.message}`);
+  process.exit(1);
+});

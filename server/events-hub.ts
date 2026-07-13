@@ -26,6 +26,7 @@ import {
   type NIStatus,
 } from './lib/needs-input';
 import { startWatching, type WatchEvent, type Watcher } from './lib/store/watch';
+import { invalidateScanCache } from './lib/store/scan';
 import { getProviders } from './lib/providers/types';
 import { claudeStoreRoot, claudeSubagentWatchConfig } from './lib/providers/claude';
 import chokidar from 'chokidar';
@@ -34,6 +35,25 @@ import path from 'node:path';
 import os from 'node:os';
 
 const TICK_MS = 4000; // empty-tick cadence for idle/waiting-persist transitions
+
+// Resolve a fresh hook status against the heuristic (R2-4). A fresh hook normally WINS
+// (that's Spec 2 — hooks give higher-confidence prompt detection than the regex). The one
+// exception: a 'waiting' hook can pin the UI to 'waiting' for up to 30s after the agent
+// resumes, because no hook fires on resume. So if the heuristic sees a GENUINE working
+// signal — a MATCHED working pattern (the "esc to interrupt" footer the agent redraws on
+// resume), not mere output arrival — let 'working' override the stale 'waiting' hook.
+//   • Only 'waiting' hooks are overridable; an 'idle' Stop-hook still wins (its design).
+//   • Only a matched-pattern 'working' overrides; bare output/echo (matchedPattern null)
+//     does NOT — that's exactly the miss the waiting hook exists to cover (keeps the
+//     Spec 2 "regex broken on purpose" tests green: plain cat output has no match).
+function resolveHookVsHeuristic(
+  hookStatus: NIStatus,
+  heuristicStatus: NIStatus,
+  matchedPattern: string | null,
+): NIStatus {
+  if (hookStatus === 'waiting' && heuristicStatus === 'working' && matchedPattern) return 'working';
+  return hookStatus;
+}
 
 function configDir(): string {
   return process.env.SESHMUX_CONFIG_DIR || path.join(os.homedir(), '.config', 'seshmux');
@@ -64,6 +84,13 @@ export interface EventsHub {
    * Idempotent per projectId. Called by the scratchpad GET route.
    */
   watchScratchpad(projectId: string, repoPath: string): void;
+  /**
+   * Close scratchpad + subagent watchers idle past the cutoff (default: last touched
+   * over 15min ago); returns how many were closed. Runs automatically on a background
+   * interval — exposed for tests and manual memory-pressure shedding. Re-opening a tab
+   * re-arms its watcher transparently.
+   */
+  sweepIdleWatchers(cutoff?: number): Promise<number>;
   /**
    * Watch a claude session's subagents/ dir (incl. workflows/<wf>/) for a session
    * with an open subagent viewer → emit {event:'subagents', projectId, sessionId}
@@ -254,9 +281,14 @@ export async function createEventsHub(): Promise<EventsHub> {
         const chunk = e.data;
         void readHookStatusDetail(statusDir(), ptyId).then((detail) => {
           if (!attached.has(ptyId)) return;
-          const finalStatus = detail.fresh && detail.status ? detail.status : heuristic;
+          const hookWon = detail.fresh && detail.status
+            ? resolveHookVsHeuristic(detail.status, heuristic, result.matchedPattern)
+            : heuristic;
+          const finalStatus = hookWon;
+          // override reflects the ACTUAL winner: null when the heuristic overrode a stale
+          // waiting hook (R2-4), so status-explain doesn't claim the hook decided it.
           const override =
-            detail.fresh && detail.status
+            detail.fresh && detail.status && finalStatus === detail.status
               ? { path: detail.path, ageMs: detail.ageMs, hookStatus: detail.status }
               : null;
           recordExplain(ptyId, finalStatus, result, chunk, override);
@@ -327,9 +359,14 @@ export async function createEventsHub(): Promise<EventsHub> {
       // Optional Notification-hook file is a higher-confidence override.
       void readHookStatusDetail(statusDir(), ptyId).then((detail) => {
         if (!attached.has(ptyId)) return; // exited between tick fire and resolve
-        const finalStatus = detail.fresh && detail.status ? detail.status : heuristic;
+        // Empty-tick: result.matchedPattern is always null, so resolveHookVsHeuristic never
+        // overrides here (a genuine resume only shows up as a matched footer on the data
+        // path) — a fresh hook still wins, same as before. Shared for shape consistency.
+        const finalStatus = detail.fresh && detail.status
+          ? resolveHookVsHeuristic(detail.status, heuristic, result.matchedPattern)
+          : heuristic;
         const override =
-          detail.fresh && detail.status
+          detail.fresh && detail.status && finalStatus === detail.status
             ? { path: detail.path, ageMs: detail.ageMs, hookStatus: detail.status }
             : null;
         recordExplain(ptyId, finalStatus, result, '', override);
@@ -342,7 +379,14 @@ export async function createEventsHub(): Promise<EventsHub> {
   let watcher: Watcher | null = null;
   try {
     watcher = startWatching({
-      emit: (ev: WatchEvent) => broadcast(ev),
+      emit: (ev: WatchEvent) => {
+        // A new/touched session file changes the store scan (new dir, bumped
+        // mtime → rail sort). Drop that provider's cached scan so the next read
+        // re-walks; staleness is now bounded by the watcher debounce, not the
+        // TTL floor. ctx-only events don't affect the scan.
+        if (ev.event === 'session-new' || ev.event === 'session-touch') invalidateScanCache(ev.provider);
+        broadcast(ev);
+      },
     });
   } catch {
     watcher = null; // stores absent — degrade quietly
@@ -399,7 +443,12 @@ export async function createEventsHub(): Promise<EventsHub> {
   // ── Scratchpad watch (plan 16.6): live-refresh the tab when either agent writes
   //    <repo>/.seshmux/handoff.md. One chokidar watcher per project, lazily added.
   const scratchpadWatched = new Map<string, { close(): Promise<void> }>();
+  // Last-touched ms per watcher key, so the idle sweep (MEM-5/MEM-6) can evict
+  // watchers no tab has re-opened in a while. A re-open transparently re-arms via
+  // the existing lazy-create path below.
+  const scratchpadTouched = new Map<string, number>();
   function watchScratchpad(projectId: string, repoPath: string) {
+    scratchpadTouched.set(projectId, Date.now());
     if (scratchpadWatched.has(projectId)) return;
     const file = path.join(repoPath, '.seshmux', 'handoff.md');
     try {
@@ -422,8 +471,10 @@ export async function createEventsHub(): Promise<EventsHub> {
   //    rewrite in bursts) so a rewrite storm collapses to one ping.
   const subagentWatched = new Map<string, { close(): Promise<void> }>();
   const subagentDebounce = new Map<string, NodeJS.Timeout>();
+  const subagentTouched = new Map<string, number>();
   function watchSubagents(projectId: string, sessionId: string) {
     const key = `${projectId}:${sessionId}`;
+    subagentTouched.set(key, Date.now());
     if (subagentWatched.has(key)) return;
     // The subagents/ layout stays in the provider (hard rule 3) — resolve the dir there.
     const dir = claudeSubagentWatchConfig.sessionDir(claudeStoreRoot(), projectId, sessionId);
@@ -452,6 +503,53 @@ export async function createEventsHub(): Promise<EventsHub> {
     }
   }
 
+  // ── Idle watcher eviction (MEM-5/MEM-6): scratchpad + subagent watchers were armed
+  //    on first open and only released at hub close — an fd leak per tab ever opened
+  //    over server uptime. Close any watcher not touched (re/opened) in IDLE_MS; a
+  //    later re-open re-arms it transparently via the lazy-create guards above.
+  const WATCHER_IDLE_MS = 15 * 60_000;
+  // Close every watcher last touched before `cutoff` (default: idle > WATCHER_IDLE_MS).
+  // Returns the count of watchers closed — exposed so tests can force a sweep and so a
+  // caller could shed watchers under memory pressure.
+  async function sweepIdleWatchers(cutoff = Date.now() - WATCHER_IDLE_MS): Promise<number> {
+    let evicted = 0;
+    for (const [projectId, at] of scratchpadTouched) {
+      if (at > cutoff) continue;
+      scratchpadTouched.delete(projectId);
+      const w = scratchpadWatched.get(projectId);
+      if (w) {
+        scratchpadWatched.delete(projectId);
+        await w.close().catch(() => {});
+        evicted++;
+      }
+    }
+    for (const [key, at] of subagentTouched) {
+      if (at > cutoff) continue;
+      subagentTouched.delete(key);
+      const t = subagentDebounce.get(key);
+      if (t) {
+        clearTimeout(t);
+        subagentDebounce.delete(key);
+      }
+      const w = subagentWatched.get(key);
+      if (w) {
+        subagentWatched.delete(key);
+        await w.close().catch(() => {});
+        evicted++;
+      }
+    }
+    // Team watchers are deliberately NOT swept (R5-5). Unlike scratchpad/subagent watchers —
+    // which re-arm on the next tab open — a team watcher is armed only by a /api/teams/members
+    // request, and the ONLY thing that triggers a refetch is the `team` event that this very
+    // watcher emits. Sweeping it is therefore self-defeating: the roster would silently stop
+    // updating forever. It already self-prunes on config.json unlink (its normal end of life);
+    // an abrupt lead-session death leaks one watcher, bounded by team churn — a far smaller
+    // cost than a dead roster panel.
+    return evicted;
+  }
+  const watcherSweep = setInterval(() => void sweepIdleWatchers(), 5 * 60_000);
+  watcherSweep.unref?.(); // never keep the process alive for the sweep alone
+
   // ── Team watch (Task 4): live-refresh the roster panel when a team's
   //    config.json changes (member join / isActive flip). One chokidar watcher
   //    per teamName, lazily added on first /api/teams/members request. Unlike
@@ -460,16 +558,27 @@ export async function createEventsHub(): Promise<EventsHub> {
   //    we broadcast one final event and dispose right away instead of leaving
   //    a dead watcher around or treating ENOENT as an error to retry.
   const teamWatched = new Map<string, { close(): Promise<void> }>();
+  // The CURRENT lead session per team, read by the watcher's ping at emit time rather than
+  // captured in its closure. A team name can be reused by a NEW lead (the old lead died
+  // abruptly, so config.json was never unlinked and its watcher was never disposed); the
+  // has(teamName) early-return then reuses that watcher, and a closed-over leadSessionId
+  // would keep pinging the DEAD lead's id forever — the client keys its refresh by lead id,
+  // so the new team's roster would never live-update again (R6-3). Refreshing this map on
+  // every watchTeam call is what actually heals a reused team; an idle sweep only papered
+  // over it by forcing a re-arm.
+  const teamLead = new Map<string, string>();
   function watchTeam(teamName: string, leadSessionId: string, configPath: string) {
+    teamLead.set(teamName, leadSessionId);
     if (teamWatched.has(teamName)) return;
     try {
       const w = chokidar.watch(configPath, { ignoreInitial: true });
-      const ping = () => broadcast({ event: 'team', teamName, leadSessionId });
+      const ping = () => broadcast({ event: 'team', teamName, leadSessionId: teamLead.get(teamName) ?? leadSessionId });
       w.on('add', ping);
       w.on('change', ping);
       w.on('unlink', () => {
         ping(); // one final event: the roster panel refetches and sees the team is gone
         teamWatched.delete(teamName);
+        teamLead.delete(teamName);
         void w.close().catch(() => {});
       });
       teamWatched.set(teamName, w);
@@ -498,6 +607,16 @@ export async function createEventsHub(): Promise<EventsHub> {
       // Broadcast carries expiresAt so the UI toast can show a countdown +
       // auto-dismiss. The listener still owns the hard 120s deny.
       broadcast({ event: 'approval', ...info });
+      // Self-expire at expiresAt so a late UI approve can't find a stale entry
+      // and report false "approved" for a request the listener already denied.
+      const ttl = Math.max(0, info.expiresAt - Date.now());
+      const expiry = setTimeout(() => {
+        if (pendingApprovals.get(info.requestId) === resolve) {
+          pendingApprovals.delete(info.requestId);
+          resolve(false); // self-expire matches the listener's timeout deny
+        }
+      }, ttl);
+      if (typeof expiry.unref === 'function') expiry.unref();
     });
   }
   function resolveApproval(requestId: string, approved: boolean): boolean {
@@ -515,14 +634,17 @@ export async function createEventsHub(): Promise<EventsHub> {
   async function close() {
     closing = true;
     clearInterval(timer);
+    clearInterval(watcherSweep);
     if (watcher) await watcher.close().catch(() => {});
     if (statusWatcher) await statusWatcher.close().catch(() => {});
     for (const w of scratchpadWatched.values()) await w.close().catch(() => {});
     scratchpadWatched.clear();
+    scratchpadTouched.clear();
     for (const t of subagentDebounce.values()) clearTimeout(t);
     subagentDebounce.clear();
     for (const w of subagentWatched.values()) await w.close().catch(() => {});
     subagentWatched.clear();
+    subagentTouched.clear();
     for (const w of teamWatched.values()) await w.close().catch(() => {});
     teamWatched.clear();
     if (monitor) monitor.close();
@@ -549,6 +671,7 @@ export async function createEventsHub(): Promise<EventsHub> {
     watchScratchpad,
     watchSubagents,
     watchTeam,
+    sweepIdleWatchers,
     emit: (event) => broadcast(event),
     requestApproval,
     resolveApproval,

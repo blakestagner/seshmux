@@ -70,4 +70,34 @@ describe('watchSubagents', () => {
       await hub.close();
     }
   });
+
+  // MEM-5/MEM-6: idle scratchpad + subagent watchers are evicted, and a re-open
+  // transparently re-arms the watch (no UX/protocol change).
+  it('evicts idle watchers and transparently re-watches on re-open', async () => {
+    const { createEventsHub } = await import('../../server/events-hub');
+    const hub = await createEventsHub();
+    const ws = new FakeWS();
+    try {
+      hub.addClient(ws as any);
+      hub.watchScratchpad(project, home); // repo path only needs to exist
+      hub.watchSubagents(project, session);
+
+      // A default-cutoff sweep must NOT touch just-armed watchers.
+      expect(await hub.sweepIdleWatchers()).toBe(0);
+
+      // Force eviction (future cutoff = everything is "idle") — both watchers close.
+      expect(await hub.sweepIdleWatchers(Date.now() + 1_000)).toBe(2);
+
+      // Re-open re-arms transparently: a subsequent file change still pings.
+      hub.watchSubagents(project, session);
+      await new Promise((r) => setTimeout(r, 300));
+      const before = ws.frames.filter((f) => f.event === 'subagents').length;
+      writeFileSync(path.join(subagentsDir, 'agent-b2.meta.json'), '{"agentType":"y"}');
+      await new Promise((r) => setTimeout(r, 800));
+      const after = ws.frames.filter((f) => f.event === 'subagents').length;
+      expect(after).toBeGreaterThan(before);
+    } finally {
+      await hub.close();
+    }
+  });
 });

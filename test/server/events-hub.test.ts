@@ -107,6 +107,57 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     }
   }, 10000);
 
+  it('a fresh waiting hook YIELDS to a genuine working footer — agent visibly resumed (R2-4)', async () => {
+    // The waiting-hook exists to catch prompts the heuristic MISSES, but with no resume-hook
+    // it would pin 'waiting' for up to 30s after the agent resumes. A matched working
+    // PATTERN ("esc to interrupt", the footer redrawn on resume) is a high-confidence resume
+    // signal, so it overrides a stale waiting hook — unlike plain output (see the test above,
+    // which stays 'waiting' because no pattern matched).
+    const { createEventsHub } = await import('../../server/events-hub');
+    const hub = await createEventsHub();
+    try {
+      const { dial } = await import('../../server/daemon-client');
+      const spawnConn = await dial();
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      spawnConn.close();
+
+      const statusDir = path.join(configDir, 'status');
+      mkdirSync(statusDir, { recursive: true });
+      // FRESH waiting hook (unlike the stale-fallback test) — the precedence tweak, not
+      // staleness, is what lets working win here.
+      writeFileSync(
+        path.join(statusDir, `${ptyId}.json`),
+        JSON.stringify({ status: 'waiting', ts: Date.now(), source: 'hook' }),
+      );
+
+      hub.trackPty(ptyId);
+      await new Promise((r) => setTimeout(r, 200));
+
+      const writeConn = await dial();
+      await writeConn.write(ptyId, 'esc to interrupt\n'); // matched working pattern = genuine resume
+      writeConn.close();
+
+      await new Promise((r) => setTimeout(r, 300));
+      const seen: any[] = [];
+      const fakeWs = {
+        readyState: 1, OPEN: 1,
+        send: (frame: string) => seen.push(JSON.parse(frame)),
+        on: () => {}, close: () => {},
+      } as any;
+      hub.addClient(fakeWs);
+      const status = seen.find((e) => e.event === 'status' && e.ptyId === ptyId);
+      expect(status?.status).toBe('working');
+      // status-explain: the hook did NOT win, so no hookOverride is claimed.
+      expect(hub.getStatusExplain(ptyId)?.hookOverride).toBeNull();
+
+      const killConn = await dial();
+      await killConn.kill(ptyId);
+      killConn.close();
+    } finally {
+      await hub.close();
+    }
+  }, 10000);
+
   it('falls back to heuristic classification once the hook file goes stale', async () => {
     const { createEventsHub } = await import('../../server/events-hub');
     const hub = await createEventsHub();
@@ -295,6 +346,36 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       // Last status seen for this ptyId must be 'idle' (from exit) — never
       // resurrected to 'waiting'/'working' by the late-resolving hook read.
       expect(statusEvents[statusEvents.length - 1]?.status).toBe('idle');
+    } finally {
+      await hub.close();
+    }
+  }, 10000);
+
+  // BUG-8: requestApproval must self-expire at expiresAt so a stale pendingApprovals
+  // entry can't be resolved late (after the listener's own 120s timeout deny) and
+  // report a false "approved" success.
+  it('requestApproval self-expires at expiresAt — a late resolveApproval finds nothing and reports false', async () => {
+    const { createEventsHub } = await import('../../server/events-hub');
+    const hub = await createEventsHub();
+    try {
+      const expiresAt = Date.now() + 100;
+      const approvalPromise = hub.requestApproval({
+        requestId: 'bug8-req-1',
+        tool: 'test-tool',
+        question: 'proceed?',
+        cwd: os.tmpdir(),
+        hop: 0,
+        expiresAt,
+      });
+
+      // Wait past expiresAt so the self-expire timer fires.
+      await new Promise((r) => setTimeout(r, 200));
+      const resolved = await approvalPromise;
+      expect(resolved).toBe(false); // self-expired, matches the listener's timeout deny
+
+      // A late UI approve after expiry must find the entry already evicted.
+      const lateResult = hub.resolveApproval('bug8-req-1', true);
+      expect(lateResult).toBe(false); // no false "approved" success
     } finally {
       await hub.close();
     }

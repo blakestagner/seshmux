@@ -7,6 +7,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readDirSessions } from './scan';
+import { Lru } from './lru';
 
 export interface TeamMemberInfo {
   name: string;
@@ -50,10 +51,11 @@ async function readJson<T>(filePath: string): Promise<T | null> {
   }
 }
 
-// Memoize resolved TeamInfo keyed by (config.json path, config.json mtime) — a fresh
-// mtime (a join/leave rewrites config.json) always forces re-resolve; unchanged reads
-// are served from cache instead of re-running the per-member dir-scan below.
-const rosterCache = new Map<string, { mtime: number; info: TeamInfo }>();
+// Memoize resolved TeamInfo keyed by (config.json path, config.json mtime) — a fresh mtime
+// (a join/leave rewrites config.json) is a new key that re-resolves; the stale key ages out.
+// LRU-bounded (S4-8): a plain Map grew one entry per (team × config revision) forever over
+// server uptime. 200 covers far more live teams than any local session realistically has.
+const rosterCache = new Lru<TeamInfo | null>(200);
 
 // Which project dir under `projectsRoot` holds `<leadSessionId>.jsonl`. Bounded: one
 // readdir of the top-level project dirs + one stat per dir (existence check only, no
@@ -106,37 +108,34 @@ export async function teamRoster(teamsRoot: string, projectsRoot: string, teamNa
     return null; // no such team
   }
 
-  const cached = rosterCache.get(configPath);
-  if (cached && cached.mtime === mtime) return cached.info;
+  return rosterCache.get(`${configPath}:${mtime}`, async () => {
+    const cfg = await readJson<RawTeamConfig>(configPath);
+    if (!cfg) return null;
+    const leadName = cfg.members.find((m) => m.agentType === 'team-lead')?.name;
 
-  const cfg = await readJson<RawTeamConfig>(configPath);
-  if (!cfg) return null;
-  const leadName = cfg.members.find((m) => m.agentType === 'team-lead')?.name;
+    const members: TeamMemberInfo[] = [];
+    for (const m of cfg.members) {
+      const sessionId =
+        m.name === leadName
+          ? cfg.leadSessionId
+          : m.backendType === 'tmux'
+            ? await findMemberSession(projectsRoot, cfg.leadSessionId, teamName, m.name)
+            : null; // in-process member: no own jsonl
+      members.push({
+        name: m.name,
+        agentType: m.agentType,
+        model: m.model,
+        color: m.color,
+        role: m.prompt,
+        backendType: m.backendType,
+        isActive: m.isActive,
+        joinedAt: m.joinedAt,
+        sessionId,
+      });
+    }
 
-  const members: TeamMemberInfo[] = [];
-  for (const m of cfg.members) {
-    const sessionId =
-      m.name === leadName
-        ? cfg.leadSessionId
-        : m.backendType === 'tmux'
-          ? await findMemberSession(projectsRoot, cfg.leadSessionId, teamName, m.name)
-          : null; // in-process member: no own jsonl
-    members.push({
-      name: m.name,
-      agentType: m.agentType,
-      model: m.model,
-      color: m.color,
-      role: m.prompt,
-      backendType: m.backendType,
-      isActive: m.isActive,
-      joinedAt: m.joinedAt,
-      sessionId,
-    });
-  }
-
-  const info: TeamInfo = { teamName, leadSessionId: cfg.leadSessionId, createdAt: cfg.createdAt, members };
-  rosterCache.set(configPath, { mtime, info });
-  return info;
+    return { teamName, leadSessionId: cfg.leadSessionId, createdAt: cfg.createdAt, members };
+  });
 }
 
 // Bound the `teams/*/config.json` glob to the most mtime-recent team dirs, not an

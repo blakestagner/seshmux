@@ -14,9 +14,24 @@ export interface CustomizationsRouteOpts {
 
 const SECTIONS = ['agents', 'skills', 'instructions', 'hooks', 'mcpServers'] as const;
 
+// Resolve a projectId to a repo path ONLY when it's a real scanned project (SEC-3/4 gate,
+// same as scratchpad/subagents). Never falls back to dash-decoding an arbitrary id into a
+// path: the project scope reads CLAUDE.md/.mcp.json/settings.json, so a crafted id could
+// otherwise pull config (possible secrets) from any directory. A hyphenated repo that
+// actually scans is still matched here by its exact scanned id.
+async function scannedResolveRepo(id: string): Promise<string | null> {
+  const providers = await getProviders();
+  for (const p of providers) {
+    const projects = await p.scanProjects().catch(() => []);
+    const hit = projects.find((pr) => pr.id === id);
+    if (hit) return hit.path;
+  }
+  return null;
+}
+
 export default async function customizationsRoutes(f: FastifyInstance, opts: CustomizationsRouteOpts = {}) {
   const listProviders = opts.listProviders ?? getProviders;
-  const resolveRepo = opts.resolveRepo ?? (await import('./bridge')).defaultResolveRepo;
+  const resolveRepo = opts.resolveRepo ?? scannedResolveRepo;
 
   f.get<{ Querystring: { scope?: string; project?: string } }>('/api/customizations', async (req, reply) => {
     let scope: CustomizationScope;

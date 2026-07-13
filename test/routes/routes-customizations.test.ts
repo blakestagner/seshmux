@@ -46,6 +46,21 @@ describe('GET /api/customizations', () => {
     expect(res.statusCode).toBe(404);
   });
 
+  it('DEFAULT resolver (no injection) refuses a non-scanned project id — no dash-decode read (S4-7)', async () => {
+    // Mount WITHOUT resolveRepo so the real scanned-project gate runs. A random id is not a
+    // scanned project, so it must 404 rather than dash-decode into an arbitrary dir and read
+    // CLAUDE.md/.mcp.json/settings.json from it.
+    const f = Fastify();
+    f.register(customizationsRoutes, {
+      listProviders: async () => [{ id: 'claude', customizations: { agents: async () => [] } }] as any,
+    });
+    const res = await f.inject({
+      method: 'GET',
+      url: '/api/customizations?scope=project&project=-etc-secrets-not-a-real-project-9f3a',
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
   it('a scanner that throws drops to [] for that provider, not a 500', async () => {
     const f = app({
       listProviders: async () => [

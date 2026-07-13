@@ -27,6 +27,7 @@ import {
   type WorkspaceFinishMode,
 } from '../lib/client/api';
 import { useAppState } from '../lib/client/store';
+import { useDetectedProviders, bridgeTarget } from '../lib/client/providers';
 import { retryRepaintUntilReady } from '../lib/client/repaint-retry';
 import StatusDot from './ui/StatusDot';
 import ProviderBadge, { PROV } from './ui/ProviderBadge';
@@ -116,6 +117,7 @@ export default function TerminalPane({
     let socket: TermSocket | null = null;
     let ro: ResizeObserver | null = null;
     let onFocus: (() => void) | null = null;
+    let themeObserver: MutationObserver | null = null;
 
     (async () => {
       const [{ Terminal }, { FitAddon }] = await Promise.all([
@@ -289,6 +291,22 @@ export default function TerminalPane({
       // window, grid pane) may have resized the shared PTY smaller while this
       // pane sat unchanged — the container never resizes, so the ResizeObserver
       // stays silent and the terminal paints narrow until the user pokes it.
+      // Live theme/accent toggle (BUG-5): xterm's theme is read once at
+      // creation and never told about data-theme/data-accent flipping on
+      // <html> afterward — re-read the same CSS vars and reassign on change.
+      themeObserver = new MutationObserver(() => {
+        if (disposed || !term) return;
+        term.options.theme = {
+          background: readVar('--term-bg', '#0a0d11'),
+          foreground: readVar('--term-text', '#c9d3dc'),
+          cursor: readVar('--accent', '#2dd4bf'),
+        };
+      });
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-theme', 'data-accent'],
+      });
+
       onFocus = () => pushSize();
       window.addEventListener('focus', onFocus);
       // …and on clicking INTO the terminal (focusin bubbles from xterm's
@@ -302,6 +320,7 @@ export default function TerminalPane({
       disposed = true;
       pushSizeRef.current = null;
       ro?.disconnect();
+      themeObserver?.disconnect();
       if (onFocus) {
         window.removeEventListener('focus', onFocus);
         mountRef.current?.removeEventListener('focusin', onFocus);
@@ -320,13 +339,14 @@ export default function TerminalPane({
   // the common case. Require a REAL matched project (rehydrated PTYs can carry
   // a raw-cwd fallback projectId that no session store knows → guaranteed 404).
   const project = state.projects.find((p) => p.id === projectId);
-  const canBridge = !!project;
   const bridgeSessionId = sessionId ?? 'latest';
-  // Bridge always targets the OPPOSITE provider (mirrors Transcript). Label flips
-  // by source provider — from a codex session the buttons say ✳ claude.
+  // Bridge targets the opposite DETECTED provider (mirrors Transcript). Label flips
+  // by source provider — from a codex session the buttons say ✳ claude. No other
+  // provider on this machine → no bridge actions at all.
   const sourceProvider: ProviderId = provider ?? project?.provider ?? 'claude';
-  const otherProvider: ProviderId = sourceProvider === 'codex' ? 'claude' : 'codex';
-  const other = PROV[otherProvider];
+  const otherProvider = bridgeTarget(sourceProvider, useDetectedProviders());
+  const other = otherProvider ? PROV[otherProvider] : null;
+  const canBridge = !!project && !!other;
 
   // Workspace chip + finish flow (Spec 1). The naming convention (agent/<slug>-<n>,
   // see server/lib/workspaces.ts) IS the marker — no separate tab flag needed.

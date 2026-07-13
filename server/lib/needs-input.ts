@@ -36,16 +36,32 @@ export function initState(startTs = 0): NIState {
   return { lastActivityTs: startTs, lastFrameWaiting: false, now: () => startTs };
 }
 
-// Strip ANSI CSI/OSC/charset escapes + control bytes, collapse whitespace. After this the
-// working footer / prompt chrome are contiguous and matchable.
+// Strip ANSI CSI/OSC/charset escapes + control bytes, collapse HORIZONTAL whitespace but
+// KEEP row boundaries as newlines (S4-5). Preserving row structure stops a `\s`-bearing
+// pattern (e.g. `1\.\s*Yes`) from bridging content that sits on two separate screen rows —
+// an agent that prints "step 1." at a row end and "Yes" at the next row start must not read
+// as the "1. Yes" option-list chrome. Matching is done per row (see lastMatchIndex).
+//
+// A TUI does not emit LF to move down: Claude's renderer emits ZERO newlines, positioning
+// every row with CR / cursor-down (`ESC[1B`) / absolute-position (`ESC[H`, `ESC[30;1H`)
+// escapes (R5-3 — the first cut of this stripped those to nothing, flattening the frame to
+// one row and making per-row matching inert on the exact agent it mattered for). So convert
+// every row-advancing control into a newline BEFORE dropping the rest.
 export function stripAnsi(raw: string): string {
   return raw
-    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '') // CSI
+    // Two straight passes, NOT one pass with a replacement callback: classify() runs on every
+    // PTY chunk of every live session, and a callback fires per escape (hundreds of SGR codes
+    // per repaint), which measured net-slower than the whole-frame matching it replaced (R6-4).
+    // Cursor-down (B), next/prev-line (E/F), absolute position (H/f) and vertical-position (d)
+    // land the cursor on a different row — a row break. Every other CSI is chrome.
+    .replace(/\x1b\[[0-9;?]*[ -/]*[BEFHfd]/g, '\n')
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC
     .replace(/\x1b[()][0-9A-B]/g, '') // charset select
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '') // stray control bytes
-    .replace(/[^\x20-\x7e]/g, '') // non-ascii (box-drawing, spinner glyphs)
-    .replace(/\s+/g, ' ');
+    .replace(/[\r\x0b\x0c]/g, '\n') // CR / VT / FF also start a new row
+    .replace(/[^\x20-\x7e\n\t]/g, '') // control bytes + non-ascii (box-drawing, spinners) — KEEP \n, \t
+    .replace(/[ \t]+/g, ' ') // collapse horizontal whitespace only
+    .replace(/ ?\n[\s]*/g, '\n'); // trim space around a row break and collapse a repositioning burst
 }
 
 // Working signals — a live agent turn. Matched on the stripped LATEST frame.
@@ -62,16 +78,30 @@ const FRAME_TAIL = 4096;
 
 // Index of the LAST occurrence of any pattern in text, or -1. Position matters: within a
 // frame, the signal drawn last is what's currently on screen — a permission prompt drawn
-// after the spinner stops sits later in the buffer than the stale spinner text.
+// after the spinner stops sits later in the buffer than the stale spinner text. Matching is
+// PER LINE (S4-5): a pattern can only match within a single screen row, so a `\s`-bearing
+// pattern can't span a newline; the returned index is the position in the full frame so the
+// waiting-vs-working ordering comparison stays meaningful across lines.
+// Compile once per call, not once per (pattern × row): classify() runs on every PTY chunk of
+// every live session, and recompiling inside the row loop cost 177x on a real frame (R5-4).
+function globalize(patterns: RegExp[]): RegExp[] {
+  return patterns.map((re) => new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g'));
+}
+
 function lastMatchIndex(text: string, patterns: RegExp[]): number {
   let best = -1;
-  for (const re of patterns) {
-    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
-    let m: RegExpExecArray | null;
-    while ((m = g.exec(text)) !== null) {
-      if (m.index > best) best = m.index;
-      if (m.index === g.lastIndex) g.lastIndex++; // avoid zero-width loop
+  let offset = 0;
+  const globals = globalize(patterns);
+  for (const line of text.split('\n')) {
+    for (const g of globals) {
+      g.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = g.exec(line)) !== null) {
+        if (offset + m.index > best) best = offset + m.index;
+        if (m.index === g.lastIndex) g.lastIndex++; // avoid zero-width loop
+      }
     }
+    offset += line.length + 1; // +1 for the split-out '\n'
   }
   return best;
 }
@@ -117,7 +147,10 @@ export function classify(chunk: string, state: NIState, waitingPatterns: RegExp[
     // flips it to working" bug: TerminalPane's jiggle-resize triggers a SIGWINCH repaint of a
     // finished screen). A genuine resumption always redraws the working footer, so workAt >= 0
     // correctly falls through to re-arm and resurrect below.
-    if (wasIdle && workAt < 0) return 'idle';
+    if (wasIdle && workAt < 0) {
+      state.lastFrameWaiting = false;
+      return 'idle';
+    }
 
     // Working signal present, or non-prompt output still arriving.
     state.lastActivityTs = now;
@@ -219,16 +252,22 @@ export function classifyExplain(
 function lastMatchDetail(text: string, patterns: RegExp[]): { index: number; source: string | null } {
   let best = -1;
   let bestSource: string | null = null;
-  for (const re of patterns) {
-    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
-    let m: RegExpExecArray | null;
-    while ((m = g.exec(text)) !== null) {
-      if (m.index > best) {
-        best = m.index;
-        bestSource = re.source;
+  let offset = 0;
+  const globals = globalize(patterns);
+  for (const line of text.split('\n')) {
+    for (let i = 0; i < globals.length; i++) {
+      const g = globals[i];
+      g.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = g.exec(line)) !== null) {
+        if (offset + m.index > best) {
+          best = offset + m.index;
+          bestSource = patterns[i].source;
+        }
+        if (m.index === g.lastIndex) g.lastIndex++;
       }
-      if (m.index === g.lastIndex) g.lastIndex++;
     }
+    offset += line.length + 1;
   }
   return { index: best, source: bestSource };
 }

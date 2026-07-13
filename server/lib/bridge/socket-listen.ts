@@ -7,7 +7,7 @@
 // a dead one refuses (or it's not a socket at all) → unlink and listen again.
 
 import { connect, type Server } from 'node:net';
-import { unlinkSync } from 'node:fs';
+import { unlinkSync, chmodSync } from 'node:fs';
 
 function tryListen(server: Server, socketPath: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -47,5 +47,12 @@ export async function listenWithStaleRecovery(server: Server, socketPath: string
       /* raced another cleanup — the retry below decides */
     }
     await tryListen(server, socketPath);
+  }
+  // Lock the socket to the owner: these bridge sockets carry MCP approval + wait
+  // traffic and must not be drivable by other local users. Best effort off-POSIX.
+  try {
+    chmodSync(socketPath, 0o600);
+  } catch {
+    /* non-POSIX FS — best effort */
   }
 }

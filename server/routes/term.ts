@@ -10,7 +10,7 @@
 // agent binary names here.
 
 import path from 'node:path';
-import fs from 'node:fs';
+import { stat } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
 import type { WebSocket } from '@fastify/websocket';
 import { DaemonConnection, dial, withTimeout } from '../daemon-client';
@@ -72,11 +72,11 @@ interface StartBody {
 // (a mid-string `-x` stays a harmless positional). Reject it at this boundary; the `--`
 // end-of-options shield is defense-in-depth and belongs in provider.commands (providers/),
 // not here (hard rule 3). Pure + unit-tested (mirrors ensure.classify).
-export function validateStart(body: {
+export async function validateStart(body: {
   projectPath?: unknown;
   provider?: unknown;
   resumeId?: unknown;
-}): { ok: true } | { ok: false; error: string } {
+}): Promise<{ ok: true } | { ok: false; error: string }> {
   const { projectPath, provider, resumeId } = body;
   if (typeof provider !== 'string' || !provider) return { ok: false, error: 'provider is required' };
   if (typeof projectPath !== 'string' || !projectPath) {
@@ -87,13 +87,13 @@ export function validateStart(body: {
   if (!path.isAbsolute(projectPath)) {
     return { ok: false, error: 'projectPath must be an absolute path' };
   }
-  let stat: fs.Stats;
+  let st;
   try {
-    stat = fs.statSync(projectPath);
+    st = await stat(projectPath);
   } catch {
     return { ok: false, error: `repo folder no longer exists: ${projectPath}` };
   }
-  if (!stat.isDirectory()) return { ok: false, error: 'projectPath must be a directory' };
+  if (!st.isDirectory()) return { ok: false, error: 'projectPath must be a directory' };
   if (resumeId !== undefined) {
     if (typeof resumeId !== 'string') return { ok: false, error: 'resumeId must be a string' };
     if (/^-/.test(resumeId)) return { ok: false, error: 'resumeId may not start with "-"' };
@@ -105,7 +105,7 @@ export default async function termRoutes(f: FastifyInstance, deps: TermRouteDeps
   // POST /api/sessions/start
   f.post('/api/sessions/start', async (req, reply) => {
     const body = (req.body ?? {}) as Partial<StartBody>;
-    const valid = validateStart(body);
+    const valid = await validateStart(body);
     if (!valid.ok) return reply.code(400).send({ error: valid.error });
     // validateStart guarantees these are non-empty strings.
     const projectPath = body.projectPath as string;

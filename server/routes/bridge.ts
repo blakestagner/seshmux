@@ -152,8 +152,15 @@ export async function defaultListLivePtys(): Promise<{ ptyId: string; cwd: strin
 export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRouteDeps) {
   const resolveRepo = deps.resolveRepo ?? defaultResolveRepo;
   const resolveProvider = deps.resolveSessionProvider ?? defaultResolveProvider;
-  const brief = deps.composeBrief ?? ((p: string, s: string) => realBrief(p, s));
-  const review = deps.composeDiffReview ?? ((p: string, s: string) => realReview(p, s));
+  // Both composers accept the route's resolved repo as a 3rd arg; only the real review
+  // composer uses it (to run git diff against the true cwd — R2-1). Injected test composers
+  // keep their (projectId, sessionId) shape; the repo arg is simply not forwarded to them.
+  const brief: (p: string, s: string, repo: string) => Promise<string> = deps.composeBrief
+    ? (p, s) => deps.composeBrief!(p, s)
+    : (p, s) => realBrief(p, s);
+  const review: (p: string, s: string, repo: string) => Promise<string> = deps.composeDiffReview
+    ? (p, s) => deps.composeDiffReview!(p, s)
+    : (p, s, repo) => realReview(p, s, {}, repo);
   const planoff = deps.runPlanoff ?? ((path: string, task: string) => realPlanoff(path, task));
   const registerBridge = deps.registerBridge ?? (() => realRegister());
   const bridgeStatus = deps.bridgeStatus ?? (() => realBridgeStatus());
@@ -162,6 +169,9 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
   const peekTerminal = deps.peekTerminal ?? ((ptyId: string, lines?: number) => realPeekTerminal(ptyId, lines));
 
   async function repoOrNull(projectId: string): Promise<string | null> {
+    // A missing/non-string projectId (empty request body) must land on the routes'
+    // existing null → 404 branch, not throw inside resolveRepo → 500 (round-3 residual).
+    if (typeof projectId !== 'string' || !projectId) return null;
     const repo = await resolveRepo(projectId);
     return repo && (await isDir(repo)) ? repo : null;
   }
@@ -187,7 +197,7 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
     projectId: string,
     sessionId: string,
     kind: 'handoff' | 'review',
-    compose: (p: string, s: string) => Promise<string>,
+    compose: (p: string, s: string, repo: string) => Promise<string>,
     filename: string,
   ) {
     const repo = await repoOrNull(projectId);
@@ -205,9 +215,22 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
       }
       sessionId = resolved;
     }
+    // Missing/non-string sessionId is a client error, and an unknown one surfaces as
+    // compose's 'session not found' throw — both are 404s, not 500s echoing internals
+    // (R4-1, sibling of 2c13d70's projectId guard).
+    if (typeof sessionId !== 'string' || !sessionId) {
+      reply.code(404);
+      return { error: 'session not found' };
+    }
     const source = await resolveProvider(projectId, sessionId);
     const target = OTHER[source];
-    const md = await compose(projectId, sessionId);
+    let md: string;
+    try {
+      md = await compose(projectId, sessionId, repo);
+    } catch {
+      reply.code(404);
+      return { error: 'session not found' };
+    }
     await atomicWrite(join(repo, '.seshmux', filename), md);
     // Post a scratchpad entry so cross-review is visible in the shared handoff log from the
     // moment it's requested (the reviewing agent fills in its verdict below, per its prompt).
@@ -264,8 +287,27 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
       reply.code(404);
       return { error: 'project not found' };
     }
-    const winner = pickWinner(req.body.planoff, req.body.provider);
-    const loser = pickWinner(req.body.planoff, OTHER[req.body.provider]);
+    // Validate provider + planoff shape BEFORE indexing (an invalid provider or a
+    // malformed planoff body used to index to undefined → 500 TypeError; R2-3).
+    const provider = req.body.provider;
+    if (provider !== 'claude' && provider !== 'codex') {
+      reply.code(400);
+      return { error: 'provider must be claude or codex' };
+    }
+    const po = req.body.planoff;
+    const isPlan = (v: unknown): v is { ok: boolean; plan: string } =>
+      !!v && typeof v === 'object' && typeof (v as any).plan === 'string';
+    if (!po || typeof po !== 'object' || !isPlan(po.claude) || !isPlan(po.codex)) {
+      reply.code(400);
+      return { error: 'planoff result is missing or malformed' };
+    }
+    const winner = pickWinner(po, provider);
+    const loser = pickWinner(po, OTHER[provider]);
+    // Never seed an execution session with a failed/timed-out or empty plan (R2-3).
+    if (!winner.ok || !winner.plan.trim()) {
+      reply.code(400);
+      return { error: 'winning plan is empty or the planner failed — nothing to execute' };
+    }
 
     await atomicWrite(join(repo, '.seshmux', 'planoff-winner.md'), winnerMarkdown(winner, req.body.task));
     if (loser?.plan) {
@@ -274,16 +316,23 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
 
     const { ptyId, tabMeta } = await deps.startSession({
       projectPath: repo,
-      provider: req.body.provider,
+      provider,
       firstPrompt: `Execute the approved plan:\n\n${winner.plan}`,
     });
-    return { ptyId, tabMeta, provider: req.body.provider };
+    return { ptyId, tabMeta, provider };
   });
 
   // Explicit MCP-bridge registration (Settings "Agent bridge" card Register button).
   // Writes seshmux-bridge into both agents' configs, then reports the resulting status.
-  f.post('/api/bridge/register', async () => {
-    await registerBridge();
+  f.post('/api/bridge/register', async (_req, reply) => {
+    try {
+      await registerBridge();
+    } catch (e) {
+      // e.g. an existing but unparseable ~/.claude.json — abort with the reason, never
+      // clobber the user's config (R2-2). 409: the on-disk config blocks a safe write.
+      reply.code(409);
+      return { error: (e as Error).message };
+    }
     return bridgeStatus();
   });
 

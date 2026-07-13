@@ -26,6 +26,14 @@ describe('listenWithStaleRecovery', () => {
     expect(fs.existsSync(sock('fresh.sock'))).toBe(true);
   });
 
+  it('locks the socket to 0600 (SEC-2)', async () => {
+    if (process.platform === 'win32') return;
+    const s = createServer();
+    servers.push(s);
+    await listenWithStaleRecovery(s, sock('perm.sock'));
+    expect(fs.statSync(sock('perm.sock')).mode & 0o777).toBe(0o600);
+  });
+
   it('recovers a stale socket file left by a dead server (the kill -9 case)', async () => {
     const p = sock('stale.sock');
     // A dead server's leftover: a socket FILE with no listener. Create one by

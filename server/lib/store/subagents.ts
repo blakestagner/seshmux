@@ -89,9 +89,14 @@ function deriveStatus(
 
 export function nodeFromSources(agentId: string, s: RawNodeSources): SubagentNode {
   const { meta, workflowProgress, jsonlPath } = s;
+  // Drop a self-referential parent (parentAgentId === own id): it can never be a real
+  // parent, and left in place it makes the node a non-root child of itself — invisible in
+  // the tree. Nulling it renders the node as a root instead (S4-2). Multi-node cycles are
+  // caught downstream by SubagentTree's visited guard.
+  const parentId = meta?.parentAgentId && meta.parentAgentId !== agentId ? meta.parentAgentId : null;
   return {
     id: agentId,
-    parentId: meta?.parentAgentId ?? null,
+    parentId,
     label: meta?.description ?? workflowProgress?.label ?? meta?.agentType ?? agentId,
     agentType: meta?.agentType ?? null,
     group: workflowProgress?.phaseTitle ?? null,

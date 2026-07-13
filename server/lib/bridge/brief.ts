@@ -14,8 +14,10 @@ export interface BriefTranscript {
 export interface BriefDeps {
   // Resolve a session's transcript + meta. Default hits the providers registry.
   loadTranscript?: (projectId: string, sessionId: string) => Promise<BriefTranscript>;
-  // git diff (staged+unstaged) in the session's cwd. Default shells out.
-  gitDiff?: (cwd: string) => Promise<string>;
+  // git diff (staged+unstaged) in the session's cwd. Default shells out. Returns null when
+  // the git command itself FAILED (not a git repo, bad cwd) so the review can say "diff
+  // unavailable" instead of lying "no changes" — an empty string means a clean tree.
+  gitDiff?: (cwd: string) => Promise<string | null>;
 }
 
 const RECENT_MSG_COUNT = 15;
@@ -40,14 +42,15 @@ async function defaultLoadTranscript(
   throw new Error(`session not found: ${projectId}/${sessionId}`);
 }
 
-function defaultGitDiff(cwd: string): Promise<string> {
+function defaultGitDiff(cwd: string): Promise<string | null> {
   return new Promise((resolve) => {
-    // HEAD diff captures staged+unstaged tracked changes; empty string on any failure.
+    // HEAD diff captures staged+unstaged tracked changes. null on command failure
+    // (bad cwd / not a repo) so the review distinguishes it from a clean tree ('').
     execFile(
       'git',
       ['-C', cwd, 'diff', 'HEAD'],
       { timeout: 5000, maxBuffer: 8 * 1024 * 1024 },
-      (err, stdout) => resolve(err ? '' : stdout),
+      (err, stdout) => resolve(err ? null : stdout),
     );
   });
 }
@@ -148,14 +151,16 @@ export async function composeDiffReview(
   projectId: string,
   sessionId: string,
   deps: BriefDeps = {},
+  repo?: string,
 ): Promise<string> {
   const load = deps.loadTranscript ?? defaultLoadTranscript;
   const gitDiff = deps.gitDiff ?? defaultGitDiff;
   const { meta } = await load(projectId, sessionId);
 
-  // meta has no cwd; the projectId decodes to it, but we don't need the path for tests.
-  // The default gitDiff resolves cwd from the decoded projectId at the route layer.
-  const cwd = projectId.replace(/-/g, '/');
+  // Use the route's already-resolved repo (reads the real cwd from the session store) —
+  // the dash-decode fallback mangles any hyphenated repo path (wp-foo-org), which used to
+  // point git at a nonexistent dir → empty diff → a review of "no changes" (R2-1).
+  const cwd = repo ?? projectId.replace(/-/g, '/');
   const diff = await gitDiff(cwd);
 
   const lines: string[] = [];
@@ -173,7 +178,9 @@ export async function composeDiffReview(
   );
   lines.push('');
   lines.push(`## Diff`);
-  if (diff.trim()) {
+  if (diff === null) {
+    lines.push('_Diff unavailable — `git diff` failed in this repo (not a git repo, or the working tree is missing). Review the recent activity above instead._');
+  } else if (diff.trim()) {
     lines.push('```diff');
     lines.push(diff);
     lines.push('```');
