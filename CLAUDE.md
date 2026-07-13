@@ -39,7 +39,7 @@ Sessions from `~/.claude` and `~/.codex` are merged by repo cwd into Projects; e
 - vitest · chokidar · Node ≥20, npm only
 
 ## Commands
-- `npm run dev` — dev server (`tsx server/index.ts`; server ONLY — start the daemon separately, see CLAUDE.local.md)
+- `npm run dev` — dev server on **:4800** (`PORT=4900 npm run dev` to override). NOT 4700: that belongs to the installed `seshmux`, and `bin/seshmux.js` treats a healthy server on its port as "already running" and just opens a browser at it — so a dev server squatting on 4700 silently hijacks the real app (and you end up debugging a stale dev bundle thinking it's the release).
 - `npm test` — `lint:styles` gate then `vitest run`
 - `npm run lint:styles` — `scripts/lint-styles.sh` (bans raw font props in all `components/**/*.module.scss`, ui/ included)
 - `npm run build` — `scripts/build-standalone.sh` (Next standalone) · `npm start` / `node bin/seshmux.js` — full app

@@ -10,7 +10,7 @@
   },
   "scripts": {
     "predev": "node -e \"require('./daemon/ensure').ensureDaemon()\"",
-    "dev": "tsx server/index.ts",
+    "dev": "PORT=${PORT:-4800} tsx server/index.ts",
     "build": "bash scripts/build-standalone.sh",
     "start": "node bin/seshmux.js",
     "lint:styles": "bash scripts/lint-styles.sh",
