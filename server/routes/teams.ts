@@ -221,8 +221,16 @@ export default async function teamRoutes(f: FastifyInstance, deps: TeamRouteDeps
       }
       const info = teamName ? await doTeamRoster(teamName) : await doTeamByLeadSession(leadSession as string);
       if (!info) {
-        reply.code(404);
-        return { error: 'team not found' };
+        // ?teamName= names a resource: not finding it IS an error -> 404.
+        // ?leadSession= is a QUESTION ("is this session a team lead?"), asked once per
+        // rehydrated/resumed session. "No" is the normal answer for almost every session,
+        // so answering 404 painted the console red on the happy path even though the client
+        // catches it (the browser logs a failed request regardless). Answer 200 + null.
+        if (teamName) {
+          reply.code(404);
+          return { error: 'team not found' };
+        }
+        return null;
       }
       // Task 4: arm the live-roster watch on first request for this team —
       // idempotent on the hub side, so every subsequent /members poll is a no-op here.

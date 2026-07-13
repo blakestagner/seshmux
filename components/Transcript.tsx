@@ -137,10 +137,10 @@ export default function Transcript({ projectId, sessionId, title, provider }: Tr
       // team dir (keyed by the lead's session id, which survives resume) — the
       // resumed tab carries no isTeamLead marker of its own (it was opened as a
       // plain transcript tab, not via the team-start flow), so do a one-shot
-      // check here. 404 (not a team, or the team dir was already cleaned up) is
-      // silently ignored — the tab just stays a normal terminal.
+      // check here. null (not a team, or the team dir was already cleaned up)
+      // just leaves it a normal terminal.
       getTeamMembers(sessionId)
-        .then((info) => dispatch({ type: 'setTabTeam', tabId, teamName: info.teamName }))
+        .then((info) => info && dispatch({ type: 'setTabTeam', tabId, teamName: info.teamName }))
         .catch(() => {});
     } catch (e) {
       setResuming(false); // stay on the transcript on failure

@@ -67,29 +67,36 @@ export default function TeamPanel({
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     function attempt(retry: number) {
+      // "No team for this lead" now arrives as a 200 + null instead of a 404 (the probe is
+      // a question, not a resource fetch). Both of this panel's no-team cases still land
+      // here: the fresh-start race (Rail marks the lead tab isTeamLead before the lead has
+      // written its team dir — retry until it appears) and team-dir-gone. A transport error
+      // is treated the same, so the retry/gone logic lives in one place.
+      const miss = () => {
+        if (cancelled) return;
+        if (everResolvedRef.current) {
+          // Team dir gone (lead exited, config.json removed) — final rollup off
+          // the LAST known roster, stop refreshing. Distinct from "members
+          // present but inactive": member transcripts stay viewable either way.
+          setStatus('gone');
+          return;
+        }
+        if (retry < RETRY_DELAYS_MS.length) {
+          timer = setTimeout(() => attempt(retry + 1), RETRY_DELAYS_MS[retry]);
+        } else {
+          setStatus('unresolved');
+        }
+      };
       getTeamMembers(leadSessionId)
         .then((data) => {
           if (cancelled) return;
+          if (!data) return miss();
           everResolvedRef.current = true;
           setInfo(data);
           setStatus('live');
           onMembersResolved?.(data.members.length);
         })
-        .catch(() => {
-          if (cancelled) return;
-          if (everResolvedRef.current) {
-            // Team dir gone (lead exited, config.json removed) — final rollup off
-            // the LAST known roster, stop refreshing. Distinct from "members
-            // present but inactive": member transcripts stay viewable either way.
-            setStatus('gone');
-            return;
-          }
-          if (retry < RETRY_DELAYS_MS.length) {
-            timer = setTimeout(() => attempt(retry + 1), RETRY_DELAYS_MS[retry]);
-          } else {
-            setStatus('unresolved');
-          }
-        });
+        .catch(miss);
     }
     everResolvedRef.current = false;
     setStatus('loading');
@@ -134,7 +141,7 @@ export default function TeamPanel({
     if (touchPings[leadSessionId] === undefined) return;
     let cancelled = false;
     getTeamMembers(leadSessionId).then((data) => {
-      if (cancelled) return;
+      if (cancelled || !data) return; // null = no team (was a 404); leave the last roster up
       everResolvedRef.current = true;
       setInfo(data);
       setStatus('live');

@@ -298,7 +298,7 @@ function AppShell() {
           if (s.sessionId) {
             const tabId = 'term-' + s.ptyId;
             getTeamMembers(s.sessionId)
-              .then((info) => dispatch({ type: 'setTabTeam', tabId, teamName: info.teamName }))
+              .then((info) => info && dispatch({ type: 'setTabTeam', tabId, teamName: info.teamName }))
               .catch(() => {});
           }
         }
