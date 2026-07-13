@@ -18,6 +18,7 @@ import Toast from '../components/Toast';
 import ApprovalToast from '../components/ApprovalToast';
 import TerminalPane from '../components/TerminalPane';
 import SubagentViewer from '../components/SubagentViewer';
+import ChangesPanel from '../components/ChangesPanel';
 import GridView from '../components/GridView';
 import AgentsView from '../components/AgentsView';
 import TeamPanel from '../components/TeamPanel';
@@ -95,6 +96,9 @@ function AppShell() {
   // closed); the two are mutually exclusive — opening one closes the other, same
   // precedence as the pair-split winning over both (see `team` below).
   const [openTeamFor, setOpenTeamFor] = useState<string | null>(null);
+  // Changes panel (branch diff file tree): third occupant of the same exclusive
+  // right-pane slot, keyed by tab id like the two above.
+  const [openChangesFor, setOpenChangesFor] = useState<string | null>(null);
   // Chip member count, keyed by leadSessionId (mirrors teamPings) — lifted from
   // TeamPanel's own roster fetch the FIRST time it resolves, so it only populates
   // once the panel has been opened at least once (no new fetch added).
@@ -435,11 +439,18 @@ function AppShell() {
   // over the term/viewer split above it).
   function toggleTeamPanel(tabId: string) {
     setOpenViewerFor(null);
+    setOpenChangesFor(null);
     setOpenTeamFor((cur) => (cur === tabId ? null : tabId));
   }
   function openSubagentViewer(tabId: string) {
     setOpenTeamFor(null);
+    setOpenChangesFor(null);
     setOpenViewerFor(tabId);
+  }
+  function toggleChangesPanel(tabId: string) {
+    setOpenViewerFor(null);
+    setOpenTeamFor(null);
+    setOpenChangesFor((cur) => (cur === tabId ? null : tabId));
   }
 
   // Plain function (NOT a nested component) so key={tab.id} reconciliation is
@@ -483,6 +494,7 @@ function AppShell() {
           isTeamLead={tab.isTeamLead}
           teamMemberCount={tab.sessionId ? teamMemberCounts[tab.sessionId] : undefined}
           onOpenTeam={tab.isTeamLead ? () => toggleTeamPanel(tab.id) : undefined}
+          onOpenChanges={tab.projectId ? () => toggleChangesPanel(tab.id) : undefined}
         />
       );
     }
@@ -603,7 +615,9 @@ function AppShell() {
                 openViewerFor === activeTab.id &&
                 !!activeTab.sessionId &&
                 !!activeTab.projectId;
-              const rightOpen = teamOpen || viewerOpen;
+              const changesOpen =
+                !teamOpen && !viewerOpen && openChangesFor === activeTab.id && !!activeTab.projectId;
+              const rightOpen = teamOpen || viewerOpen || changesOpen;
               // Percentage flex-basis (not px) since container width is unknown at
               // render; min-width enforces TERM_MIN/VIEWER_MIN without measuring.
               // clampSize guards against a stored extreme hiding a pane on reload.
@@ -663,6 +677,27 @@ function AppShell() {
                           sessionId={activeTab.sessionId!}
                           refreshKey={subagentPings[activeTab.sessionId!]}
                           onClose={() => setOpenViewerFor(null)}
+                        />
+                      </div>
+                    </>
+                  ) : changesOpen ? (
+                    <>
+                      <div
+                        className={styles.splitHandle}
+                        onPointerDown={viewerDrag.onPointerDown}
+                        onDoubleClick={() => setViewerRatio(DEFAULT_RATIO)}
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label="Resize terminal / changes split"
+                      />
+                      <div
+                        className={`${styles.splitSide} ${styles.splitSideRight}`}
+                        style={{ flex: '1 1 0', minWidth: `${VIEWER_MIN}px` }}
+                      >
+                        <ChangesPanel
+                          projectId={activeTab.projectId!}
+                          branch={activeTab.branch}
+                          onClose={() => setOpenChangesFor(null)}
                         />
                       </div>
                     </>

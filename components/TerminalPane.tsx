@@ -22,6 +22,7 @@ import {
   listWorkspaces,
   finishWorkspace,
   getSubagents,
+  getGitChanges,
   type BridgeStart,
   type WorkspaceRecord,
   type WorkspaceFinishMode,
@@ -65,6 +66,10 @@ export type TerminalPaneProps = {
   isTeamLead?: boolean;
   teamMemberCount?: number;
   onOpenTeam?: () => void;
+  // Clicking the +N/-N diff chip opens the changes panel beside this terminal
+  // (page.tsx owns the split, same slot as the subagent viewer). Absent (grid
+  // tiles) → the stats render as a plain non-clickable span.
+  onOpenChanges?: () => void;
 };
 
 // Aperture terminal theme — values from tokens.scss --term-* / --accent.
@@ -89,6 +94,7 @@ export default function TerminalPane({
   isTeamLead,
   teamMemberCount,
   onOpenTeam,
+  onOpenChanges,
 }: TerminalPaneProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<'live' | 'done'>('live');
@@ -438,6 +444,37 @@ export default function TerminalPane({
     };
   }, [canShowSubagents, projectId, sessionId, subagentPing]);
   const subagentChipCount = subagentCount.running || subagentCount.total;
+  // Diff chip: +N/-N vs the repo's default branch (committed + dirty + untracked).
+  // Polled while mounted — mounted == visible here (tabs view renders only the
+  // active pane, grid renders every tile), so a tab switch remounts and fetches
+  // fresh numbers immediately. Errors keep the last value; the bar never breaks.
+  const [gitStats, setGitStats] = useState<{ added: number; removed: number; approx: boolean } | null>(null);
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    const refresh = () => {
+      getGitChanges(projectId, branch)
+        .then((res) => {
+          // degraded = git failed server-side (index.lock contention etc) —
+          // keep the last good numbers instead of blanking the chip.
+          if (cancelled || res.degraded) return;
+          setGitStats({
+            added: res.added,
+            removed: res.removed,
+            approx: res.files.some((f) => f.approx),
+          });
+        })
+        .catch(() => {
+          /* best-effort chip; terminal stays usable without it */
+        });
+    };
+    refresh();
+    const timer = setInterval(refresh, 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [projectId, branch]);
   // Team chip: shown as soon as this tab is a team lead (isTeamLead resolves
   // synchronously on spawn — see store.ts), no fetch of its own. The member
   // count is best-effort — it only appears once the panel has been opened at
@@ -594,6 +631,33 @@ export default function TerminalPane({
             <Button variant="chip" title="View team roster" onClick={() => onOpenTeam?.()}>
               ⚑ {teamMemberCount != null ? `${teamMemberCount} ` : ''}team
             </Button>
+          </>
+        ) : null}
+        {/* Diff stats: +N/-N vs the default branch. Clickable chip (opens the
+            changes panel) in the single-pane statusbar; plain span in grid. */}
+        {gitStats && (gitStats.added > 0 || gitStats.removed > 0) ? (
+          <>
+            {variant !== 'grid' ? <span className={styles.divider} aria-hidden="true" /> : null}
+            {(() => {
+              // approx: an untracked file's count was size-capped — the total
+              // is a lower bound, say so with a trailing +.
+              const stats = (
+                <>
+                  <span className={styles.diffAdded}>
+                    +{gitStats.added}
+                    {gitStats.approx ? '+' : ''}
+                  </span>
+                  <span className={styles.diffRemoved}>−{gitStats.removed}</span>
+                </>
+              );
+              return variant !== 'grid' && onOpenChanges ? (
+                <Button variant="chip" className={styles.diffChip} title="View changed files" onClick={onOpenChanges}>
+                  {stats}
+                </Button>
+              ) : (
+                <span className={styles.diffChip}>{stats}</span>
+              );
+            })()}
           </>
         ) : null}
         {/* Bridge actions cluster on the right, before the tail. In grid the

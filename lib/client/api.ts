@@ -357,3 +357,28 @@ export type TeamInfo = {
 export function getTeamMembers(leadSessionId: string): Promise<TeamInfo | null> {
   return req(`/api/teams/members?leadSession=${encodeURIComponent(leadSessionId)}`);
 }
+
+// approx: the count is a capped lower bound (huge untracked file).
+export type FileChange = { path: string; added: number; removed: number; status: string; approx?: boolean };
+// degraded: git failed server-side — a zeros payload; keep your last good value.
+export type GitChanges = { added: number; removed: number; files: FileChange[]; tree?: string[]; degraded?: boolean };
+
+// Branch line stats vs the repo's default branch (committed + dirty + untracked).
+// tree=true adds the full tracked file list for the changes panel.
+export function getGitChanges(projectId: string, branch?: string | null, tree?: boolean): Promise<GitChanges> {
+  const params = new URLSearchParams({ project: projectId });
+  if (branch) params.set('branch', branch);
+  if (tree) params.set('tree', '1');
+  return req(`/api/git/changes?${params}`);
+}
+
+// Unified diff for one changed file — the changes panel's click-through view.
+export function getGitFileDiff(
+  projectId: string,
+  branch: string | null | undefined,
+  path: string,
+): Promise<{ diff: string; truncated?: boolean }> {
+  const params = new URLSearchParams({ project: projectId, path });
+  if (branch) params.set('branch', branch);
+  return req(`/api/git/changes/file?${params}`);
+}

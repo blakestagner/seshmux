@@ -107,7 +107,7 @@ function update<T>(mutate: (records: WorkspaceRecord[]) => { records: WorkspaceR
   return run;
 }
 
-async function git(cwd: string, args: string[]): Promise<string> {
+export async function git(cwd: string, args: string[]): Promise<string> {
   // 64MB, not execFile's 1MB default: `status --porcelain` in a worktree after a big codemod
   // (~17k modified files) exceeds 1MB and throws ENOBUFS. A dirty check that ERRORS is one a
   // destructive path must never mistake for "clean" (R6-2) — callers below fail closed, and
@@ -215,17 +215,37 @@ async function isGitRepo(repoPath: string): Promise<boolean> {
   }
 }
 
-async function defaultBranch(repoPath: string): Promise<string> {
-  // Prefer the symbolic HEAD of origin (works whether it's main/master/etc);
-  // fall back to the current branch of the repo itself.
+/**
+ * The repo's default branch — the base both worktree CREATION and the diff
+ * stats (routes/git.ts) use, deliberately ONE function so a workspace is
+ * always diffed against what it was branched from.
+ *
+ * Resolution: origin's HEAD, but only as a local name if that local branch
+ * actually exists (a deleted local main otherwise breaks merge-base
+ * downstream — fall back to the remote ref itself, which git resolves fine);
+ * then a local main/master (an originless repo parked on a feature branch
+ * should not diff/branch against that feature); current branch as a last resort.
+ */
+export async function defaultBranch(repoPath: string): Promise<string> {
+  const localExists = async (name: string) => {
+    try {
+      await git(repoPath, ['show-ref', '--verify', '--quiet', `refs/heads/${name}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   try {
     const out = await git(repoPath, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
     const ref = out.trim().replace(/^origin\//, '');
-    if (ref) return ref;
+    if (ref) return (await localExists(ref)) ? ref : `origin/${ref}`;
   } catch {
     /* no origin / no symbolic ref — fall through */
   }
-  const out = await git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  for (const name of ['main', 'master']) {
+    if (await localExists(name)) return name;
+  }
+  const out = await git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '');
   return out.trim() || 'main';
 }
 

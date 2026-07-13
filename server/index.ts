@@ -147,6 +147,9 @@ export async function startServer({ port = 4700, dev = false } = {}) {
   await (await import('./lib/workspaces')).reconcile().catch(() => {});
   await f.register((await import('./routes/workspaces')).default);
 
+  // Read-only branch line stats (+N/-N chip + changes panel).
+  await f.register((await import('./routes/git')).default);
+
   // Teams v1 (Task 3): template CRUD + team start via the SHARED startSession.
   // onTeamWatch (Task 4): first /api/teams/members request for a team arms the
   // hub's lazy config.json watch → live {event:'team'} pushes for the roster panel.

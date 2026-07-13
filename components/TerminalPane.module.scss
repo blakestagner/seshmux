@@ -117,6 +117,23 @@
   width: 64px;
 }
 
+// Diff stats chip: +N green / -N red (status tokens, never provider colors).
+// Visual chrome for the clickable form lives in ui/Button's "chip" variant;
+// this is layout + color only, shared with the plain grid-footer span.
+.diffChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.diffAdded {
+  color: var(--live);
+}
+
+.diffRemoved {
+  color: var(--hot);
+}
+
 // Bridge action cluster (handoff/review) — pushed right; the tail sits after it.
 .bridge {
   display: inline-flex;
