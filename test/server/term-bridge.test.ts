@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import net from 'node:net';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -91,20 +91,49 @@ describe('term.validateStart (argv injection guard)', () => {
 // ── ensureDaemon: real detached spawn + recovery on a temp config dir ───────────
 describe('ensureDaemon (real spawn + recovery)', () => {
   let configDir: string;
+  // ensureDaemon spawns the daemon DETACHED + unref'd on purpose (update-safety:
+  // it must outlive its launcher). So it also outlives this test process — the
+  // tests have to reap what they spawn, or a run leaks a live daemon holding a
+  // socket in /tmp forever. Reading the pidfile once in afterAll is not enough:
+  // the stale-socket test overwrites it, and afterAll never runs at all if the
+  // run is interrupted. Record every pid we see, reap on afterAll AND on exit.
+  const spawnedPids = new Set<number>();
+
+  const reap = () => {
+    for (const pid of spawnedPids) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    }
+    spawnedPids.clear();
+    try {
+      if (configDir) fs.rmSync(configDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  };
 
   beforeAll(() => {
     configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'seshmux-ensure-test-'));
+    process.on('exit', reap); // safety net for an aborted run (afterAll skipped)
   });
 
-  afterAll(async () => {
-    // Kill any daemon we spawned via its pidfile, then clean the dir.
+  // Snapshot whichever daemon is live now, so a later test replacing the pidfile
+  // can't hide it from the reaper.
+  afterEach(() => {
     try {
       const pid = Number(fs.readFileSync(path.join(configDir, 'seshmuxd.pid'), 'utf8').trim());
-      if (pid) process.kill(pid, 'SIGKILL');
-    } catch {}
-    try {
-      fs.rmSync(configDir, { recursive: true, force: true });
-    } catch {}
+      if (pid && ensure.pidAlive(pid)) spawnedPids.add(pid);
+    } catch {
+      /* no pidfile — nothing spawned */
+    }
+  });
+
+  afterAll(() => {
+    reap();
+    process.off('exit', reap);
   });
 
   it('spawns a daemon when none exists, and it answers hello', async () => {
