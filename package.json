@@ -1,6 +1,6 @@
 {
   "name": "seshmux",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Local-first mission control for AI coding agents (Claude Code + Codex)",
   "bin": {
     "seshmux": "bin/seshmux.js"
