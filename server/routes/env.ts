@@ -9,24 +9,34 @@ import { getProviders } from '../lib/providers/types';
 import { dial } from '../daemon-client';
 import { isDaemonStale } from '../lib/update';
 
+export interface DaemonInfo {
+  /** Version the running daemon reports in its hello handshake; null = unreachable. */
+  version: string | null;
+  /** Live PTYs with no tmux backing — these DIE if the daemon restarts, so they block the
+   *  automatic post-update daemon upgrade (bin/seshmux.js autoUpgradeDaemon). */
+  plainPtys: number;
+}
+
 export interface EnvRouteDeps {
   bridgeStatus?: () => Promise<{ claude: boolean; codex: boolean }>;
-  /** Version the running daemon reports in its hello handshake; null = unreachable. */
-  daemonVersion?: () => Promise<string | null>;
+  daemonInfo?: () => Promise<DaemonInfo>;
   /** Version of THIS server (stamped by bin/seshmux.js); '' under `npm run dev`. */
   serverVersion?: () => string;
 }
 
-// hello() is the only thing we need from the daemon here — dial() already bounds
-// connect+hello at 1500ms, and an unreachable daemon is not an error for /api/env.
-async function realDaemonVersion(): Promise<string | null> {
+// dial() already bounds connect+hello at 1500ms, and an unreachable daemon is not an error
+// for /api/env — it just means "no info".
+async function realDaemonInfo(): Promise<DaemonInfo> {
   let conn = null;
   try {
     conn = await dial();
-    const { version } = await conn.hello();
-    return version || null;
+    const [{ version }, { ptys }] = await Promise.all([conn.hello(), conn.list()]);
+    return {
+      version: version || null,
+      plainPtys: ptys.filter((p) => p.alive !== false && !p.tmuxName).length,
+    };
   } catch {
-    return null;
+    return { version: null, plainPtys: 0 };
   } finally {
     conn?.close();
   }
@@ -51,16 +61,17 @@ function commandPreview(commands: {
 
 export default async function envRoutes(f: FastifyInstance, deps: EnvRouteDeps = {}) {
   const bridgeStatus = deps.bridgeStatus ?? (() => realBridgeStatus());
-  const daemonVersion = deps.daemonVersion ?? realDaemonVersion;
+  const daemonInfo = deps.daemonInfo ?? realDaemonInfo;
   const serverVersion = deps.serverVersion ?? (() => process.env.SESHMUX_VERSION ?? '');
 
   f.get('/api/env', async () => {
-    const [env, bridge, providers, dVersion] = await Promise.all([
+    const [env, bridge, providers, dInfo] = await Promise.all([
       detectEnv(),
       bridgeStatus().catch(() => ({ claude: false, codex: false })),
       getProviders(),
-      daemonVersion().catch(() => null),
+      daemonInfo().catch(() => ({ version: null, plainPtys: 0 })),
     ]);
+    const dVersion = dInfo.version;
     const sVersion = serverVersion();
     const commands: Record<string, ReturnType<typeof commandPreview>> = {};
     // Task 5 Step 1b: teammateMode gate for the Teams entry points — only
@@ -81,12 +92,14 @@ export default async function envRoutes(f: FastifyInstance, deps: EnvRouteDeps =
       },
       commands,
       teams,
-      // The daemon outlives server updates by design — tell the UI when it's older than us
-      // so the user can be nudged to fully restart. Never auto-restart: that kills live PTYs.
+      // The daemon outlives server updates by design, so it can be older than us. The NEXT update
+      // upgrades it automatically — unless plain (non-tmux) PTYs are live, which a restart would
+      // kill. plainPtys is what lets the UI tell those two states apart.
       daemon: {
         version: dVersion,
         serverVersion: sVersion || null,
         stale: isDaemonStale(dVersion, sVersion),
+        plainPtys: dInfo.plainPtys,
       },
     };
   });

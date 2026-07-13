@@ -109,6 +109,59 @@ function tryHello(sockPath, timeoutMs = HELLO_TIMEOUT_MS) {
   });
 }
 
+/**
+ * PURE predicate (unit-tested): may we restart the daemon without ending a live agent session?
+ * tmux-tier PTYs rehydrate from `tmux ls` in the fresh daemon and survive; PLAIN-tier PTYs
+ * (tmuxName null — machine without tmux) die with it. So: safe only when every LIVE pty is
+ * tmux-backed, or there are none. Dead entries can't be killed twice, so they don't block.
+ * @param {{tmuxName: string|null, alive?: boolean}[]} ptys — the daemon's `list` result
+ * @returns {{safe: boolean, plainCount: number}}
+ */
+function canSafelyRestartDaemon(ptys) {
+  const live = (ptys || []).filter((p) => p && p.alive !== false);
+  const plainCount = live.filter((p) => !p.tmuxName).length;
+  return { safe: plainCount === 0, plainCount };
+}
+
+/**
+ * One dial: hello + list. Resolves { version, ptys } or null if the daemon isn't reachable.
+ * Used by the supervisor's auto-upgrade decision (bin/seshmux.js) — never throws.
+ */
+function daemonInfo(sockPath, timeoutMs = HELLO_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let version = null;
+    const done = (v) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        sock.destroy();
+      } catch {
+        /* ignore */
+      }
+      resolve(v);
+    };
+    const timer = setTimeout(() => done(null), timeoutMs);
+    const decoder = createDecoder();
+    const sock = net.connect(sockPath);
+    sock.setEncoding('utf8');
+    sock.on('connect', () => {
+      sock.write(encode({ id: 1, method: 'hello' }));
+      sock.write(encode({ id: 2, method: 'list' }));
+    });
+    sock.on('data', (chunk) => {
+      for (const msg of decoder.push(chunk)) {
+        if (!msg || !msg.result) continue;
+        if (msg.id === 1) version = msg.result.version || null;
+        if (msg.id === 2) done({ version, ptys: msg.result.ptys || [] });
+      }
+    });
+    sock.on('error', () => done(null));
+    sock.on('close', () => done(null));
+  });
+}
+
 const sleep = (ms) =>
   new Promise((r) => {
     setTimeout(r, ms);
@@ -218,6 +271,8 @@ async function ensureDaemon(opts = {}) {
 
 module.exports = {
   classify,
+  canSafelyRestartDaemon,
+  daemonInfo,
   pidAlive,
   tryHello,
   ensureDaemon,

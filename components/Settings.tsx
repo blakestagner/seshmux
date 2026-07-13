@@ -36,9 +36,10 @@ type EnvResponse = {
   rg: { found: boolean };
   // Task 16.7: MCP bridge registration status (read-only; POST /api/bridge/register writes).
   bridge?: { claude: { registered: boolean }; codex: { registered: boolean } };
-  // The PTY daemon survives server updates by design, so it can be running older code than
-  // this server. stale = older; the Updates section nudges for a full restart (never auto).
-  daemon?: { version: string | null; serverVersion: string | null; stale: boolean };
+  // The PTY daemon survives server updates by design, so it can be running older code than this
+  // server. stale = older; it upgrades itself on the next update unless plainPtys > 0 (live
+  // non-tmux sessions that a daemon restart would kill — those block it).
+  daemon?: { version: string | null; serverVersion: string | null; stale: boolean; plainPtys?: number };
 };
 type UsageSummary = {
   sessions: number;
@@ -553,22 +554,28 @@ export default function Settings() {
             </EnvRow>
           ) : null}
           {/* The daemon keeps live sessions alive THROUGH an update, so it stays on the old code.
-              Nothing is broken — nudge, don't alarm, and never auto-restart it (that would kill the
-              PTYs it is protecting).
-              The copy must say --restart-daemon, NOT "restart seshmux": ensureDaemon() reuses any
-              daemon that answers hello (daemon/ensure.js classify()), so quitting and reopening the
-              app does NOT replace it. "Restart seshmux" would be advice that quietly does nothing —
-              verified against a daemon that had survived 3 days and several updates. */}
+              Nothing is broken in EITHER state below — never alarm.
+              Since the update flow now upgrades the daemon itself (bin/seshmux.js autoUpgradeDaemon),
+              the only case worth a word is the blocked one: live PTYs with no tmux backing would be
+              killed by a daemon restart, so we refuse. Only THERE may --restart-daemon be named — it
+              is the "do it anyway, I accept losing them" hatch (a plain seshmux restart does NOT
+              replace the daemon: ensureDaemon() reuses any daemon that answers hello). */}
           {env?.daemon?.stale ? (
-            <EnvRow
-              name="Session daemon"
-              sub="run `seshmux --restart-daemon` to upgrade it — tmux-backed sessions survive, any non-tmux ones end"
-              subMono={false}
-            >
-              <span className={`${styles.status} ${styles.neutral}`}>
-                still on v{env.daemon.version} — it outlived the update, so newer features stay off
-              </span>
-            </EnvRow>
+            (env.daemon.plainPtys ?? 0) > 0 ? (
+              <EnvRow
+                name="Session daemon"
+                sub={`${env.daemon.plainPtys} running session(s) aren't tmux-backed, so upgrading the daemon would end them — install tmux so sessions survive restarts, or let them finish. To upgrade now anyway: \`seshmux --restart-daemon\`.`}
+                subMono={false}
+              >
+                <span className={`${styles.status} ${styles.neutral}`}>
+                  still on v{env.daemon.version} — waiting on {env.daemon.plainPtys} session(s)
+                </span>
+              </EnvRow>
+            ) : (
+              <EnvRow name="Session daemon" sub="it upgrades itself on the next update" subMono={false}>
+                <span className={`${styles.status} ${styles.neutral}`}>still on v{env.daemon.version}</span>
+              </EnvRow>
+            )
           ) : null}
         </Section>
 

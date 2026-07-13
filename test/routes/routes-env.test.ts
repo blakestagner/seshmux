@@ -56,28 +56,50 @@ describe('GET /api/env — daemon staleness', () => {
   }
 
   it('reports stale when the daemon version is older than the server version', async () => {
-    expect(await envDaemon({ daemonVersion: async () => '0.9.0', serverVersion: () => '0.10.0' })).toEqual({
+    expect(
+      await envDaemon({ daemonInfo: async () => ({ version: '0.9.0', plainPtys: 0 }), serverVersion: () => '0.10.0' }),
+    ).toEqual({
       version: '0.9.0',
       serverVersion: '0.10.0',
       stale: true,
+      plainPtys: 0,
     });
   });
 
   it('is not stale when the versions match', async () => {
-    const d = await envDaemon({ daemonVersion: async () => '1.2.3', serverVersion: () => '1.2.3' });
+    const d = await envDaemon({
+      daemonInfo: async () => ({ version: '1.2.3', plainPtys: 0 }),
+      serverVersion: () => '1.2.3',
+    });
     expect(d.stale).toBe(false);
   });
 
   it('never nags in dev (no server version) or when the daemon is unreachable', async () => {
-    expect((await envDaemon({ daemonVersion: async () => '0.1.0', serverVersion: () => '' })).stale).toBe(false);
-    expect((await envDaemon({ daemonVersion: async () => null, serverVersion: () => '9.9.9' })).stale).toBe(false);
+    expect(
+      (await envDaemon({ daemonInfo: async () => ({ version: '0.1.0', plainPtys: 0 }), serverVersion: () => '' }))
+        .stale,
+    ).toBe(false);
+    expect(
+      (await envDaemon({ daemonInfo: async () => ({ version: null, plainPtys: 0 }), serverVersion: () => '9.9.9' }))
+        .stale,
+    ).toBe(false);
   });
 
   it('never 500s when the daemon dial throws', async () => {
     const d = await envDaemon({
-      daemonVersion: async () => { throw new Error('ECONNREFUSED'); },
+      daemonInfo: async () => { throw new Error('ECONNREFUSED'); },
       serverVersion: () => '1.0.0',
     });
-    expect(d).toEqual({ version: null, serverVersion: '1.0.0', stale: false });
+    expect(d).toEqual({ version: null, serverVersion: '1.0.0', stale: false, plainPtys: 0 });
+  });
+
+  // plainPtys is what lets Settings distinguish "the daemon fixes itself on the next update"
+  // from "blocked: N non-tmux sessions would be killed" (bin/seshmux.js refuses in that case).
+  it('reports the count of live non-tmux PTYs that block an automatic daemon upgrade', async () => {
+    const d = await envDaemon({
+      daemonInfo: async () => ({ version: '0.9.0', plainPtys: 2 }),
+      serverVersion: () => '1.0.0',
+    });
+    expect(d).toMatchObject({ stale: true, plainPtys: 2 });
   });
 });
