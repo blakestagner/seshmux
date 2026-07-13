@@ -107,7 +107,7 @@ function update<T>(mutate: (records: WorkspaceRecord[]) => { records: WorkspaceR
   return run;
 }
 
-async function git(cwd: string, args: string[]): Promise<string> {
+export async function git(cwd: string, args: string[]): Promise<string> {
   // 64MB, not execFile's 1MB default: `status --porcelain` in a worktree after a big codemod
   // (~17k modified files) exceeds 1MB and throws ENOBUFS. A dirty check that ERRORS is one a
   // destructive path must never mistake for "clean" (R6-2) — callers below fail closed, and
@@ -215,7 +215,7 @@ async function isGitRepo(repoPath: string): Promise<boolean> {
   }
 }
 
-async function defaultBranch(repoPath: string): Promise<string> {
+export async function defaultBranch(repoPath: string): Promise<string> {
   // Prefer the symbolic HEAD of origin (works whether it's main/master/etc);
   // fall back to the current branch of the repo itself.
   try {
