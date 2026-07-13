@@ -53,6 +53,87 @@ async function restartDaemon() {
   return true;
 }
 
+// Read the version FRESH every time, never once. `require` caches, and this supervisor
+// deliberately survives a self-update (it is what relaunches the server child) — so a cached
+// read meant the updated server was told it was still the OLD version, and the "update
+// available" banner stayed up forever. readFileSync, not require, precisely to dodge the cache.
+function currentVersion() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
+  } catch {
+    return '0.0.0';
+  }
+}
+
+// Latest published version, or null (offline, 404, timeout — never throws, never blocks).
+function latestVersion(timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const req = require('node:https').get(
+      'https://registry.npmjs.org/seshmux/latest',
+      { timeout: timeoutMs },
+      (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          return resolve(null);
+        }
+        let body = '';
+        res.on('data', (c) => (body += c));
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(body).version || null);
+          } catch {
+            resolve(null);
+          }
+        });
+      },
+    );
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+}
+
+// `seshmux update` / `seshmux update --check`.
+//
+// Installs the EXACT version the registry reported, with --prefer-online. Never `@latest`:
+// npm re-resolves that tag through its CACHED packument, so anyone whose cache predates the
+// release resolves latest -> X from the network and then dies with
+// "ETARGET: No matching version found for seshmux@X" from the cache. That bug shipped once
+// already (the in-app button announced updates it could not install); do not reintroduce it.
+async function runUpdate(checkOnly) {
+  const current = currentVersion();
+  const latest = await latestVersion();
+  if (!latest) {
+    console.error("[seshmux] couldn't reach the npm registry (offline?) — nothing changed");
+    process.exit(1);
+  }
+  if (!versionLess(current, latest)) {
+    console.log(`[seshmux] already on the latest version (v${current})`);
+    return;
+  }
+  console.log(`[seshmux] update available: v${current} -> v${latest}`);
+  if (checkOnly) return;
+
+  const code = await new Promise((resolve) => {
+    const child = spawn('npm', ['i', '-g', `seshmux@${latest}`, '--prefer-online'], { stdio: 'inherit' });
+    child.on('exit', (c) => resolve(c ?? 1));
+    child.on('error', () => resolve(1));
+  });
+  if (code !== 0) {
+    console.error(`[seshmux] install failed (npm exited ${code}) — still on v${current}`);
+    process.exit(code);
+  }
+
+  // The package on disk is new; the daemon still runs the old code. Upgrade it too, but only
+  // when nothing dies (holder- and tmux-tier PTYs re-attach; a pre-holder plain PTY would not).
+  await autoUpgradeDaemon(currentVersion()).catch(() => {});
+
+  console.log(`[seshmux] updated to v${latest}`);
+  if (await probeHealth(4700)) console.log('[seshmux] a seshmux is running — restart it to use the new version');
+}
+
 // Numeric-segment version compare ("0.10.0" > "0.9.0"). Mirror of server/lib/update.ts's
 // compareVersions — this file is plain CJS and cannot import the TS module.
 function versionLess(a, b) {
@@ -335,6 +416,14 @@ async function main() {
     runMcpBridge(root);
     return;
   }
+  if (argv[0] === 'update') {
+    await runUpdate(argv.includes('--check'));
+    return;
+  }
+  if (argv[0] === 'version' || argv.includes('--version') || argv.includes('-v')) {
+    console.log(currentVersion());
+    return;
+  }
 
   const args = parseArgs(argv);
 
@@ -416,20 +505,6 @@ async function main() {
     SESHMUX_TOKEN: token,
   };
   if (isProd) env.NODE_ENV = 'production';
-
-  // Read the version FRESH on every spawn, never once. `require` caches, and this supervisor
-  // deliberately survives a self-update (it is what relaunches the server child) — so a cached
-  // read meant the updated server was told it was still the OLD version. The user updated, the
-  // new code ran, and the "update available" banner stayed up forever because current never
-  // moved. Re-reading the file each spawn means the relaunch after an update sees the new
-  // version. readFileSync, not require, precisely to dodge the module cache.
-  function currentVersion() {
-    try {
-      return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
-    } catch {
-      return '0.0.0';
-    }
-  }
 
   function spawnServer() {
     env.SESHMUX_VERSION = currentVersion();
