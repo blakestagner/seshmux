@@ -31,6 +31,7 @@
 // same info (fallback: per-model table, fallback DEFAULT_WINDOW). null if no usable count.
 // NO plan mode: codex has no `--permission-mode plan` equivalent (per mockup, modal hides it).
 
+import { execFile } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -340,7 +341,22 @@ export class CodexProvider implements AgentProvider {
     } catch {
       /* no store */
     }
-    return { found: projects > 0, store: { projects, bytes } };
+    // `found` gates whether getProviders() includes codex at all, and store presence alone was
+    // a chicken-and-egg: install the codex CLI, never run it, and seshmux hid every codex
+    // surface — including the New-session option that would have created the first session.
+    // An installed CLI with an empty store is a usable agent, so probe the binary too.
+    // (claude is exempt: getProviders() always includes it.)
+    const cli = projects > 0 ? true : await this.hasCli();
+    return { found: cli || projects > 0, store: { projects, bytes } };
+  }
+
+  // `which codex` — this file is the only place allowed to know the binary name (hard rule 3).
+  private async hasCli(): Promise<boolean> {
+    return new Promise((resolve) => {
+      execFile('which', [CODEX_BIN], { timeout: 2000 }, (err, stdout) => {
+        resolve(!err && !!stdout.trim());
+      });
+    });
   }
 
   async scanProjects(): Promise<Project[]> {

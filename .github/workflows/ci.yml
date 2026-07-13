@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # The suite spawns real PTYs and a real seshmuxd, whose tmux tier is
+      # exercised by test/daemon/daemon.test.ts (it skips when tmux is absent —
+      # we install it so the tier is actually covered on both runners).
+      - name: Install tmux (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Install tmux (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tmux || brew list tmux
+
+      # Workspace tests run real `git worktree add` + commits. They set a
+      # repo-local identity, but a bare runner has no global one — set it so
+      # any git path that misses the local config still works.
+      - name: Configure git identity
+        run: |
+          git config --global user.email "ci@seshmux.test"
+          git config --global user.name "seshmux CI"
+          git config --global init.defaultBranch main
+
+      - run: npm ci
+
+      - run: npx tsc --noEmit
+
+      - run: npm test

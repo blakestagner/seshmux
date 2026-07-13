@@ -123,3 +123,35 @@ describe('CodexProvider.search (PERF-6 (file,mtime) line cache)', () => {
     }
   });
 });
+
+// getProviders() includes codex only when detect() reports found. Reporting found purely
+// from store presence was a chicken-and-egg: a user who installs the codex CLI but has never
+// run it got NO codex UI at all — including the New-session option that would have created
+// the first session. An installed CLI with an empty store is a usable agent.
+describe('CodexProvider.detect — installed CLI with an empty store', () => {
+  it('reports found when sessions exist, regardless of the CLI', async () => {
+    const p = new CodexProvider({ root });
+    const d = await p.detect();
+    expect(d.found).toBe(true);
+    expect(d.store?.projects ?? 0).toBeGreaterThan(0);
+  });
+
+  it('still reports found when the store is EMPTY but the codex CLI is installed', async () => {
+    const empty = mkdtempSync(join(os.tmpdir(), 'codex-empty-'));
+    try {
+      const p = new CodexProvider({ root: empty });
+      const d = await p.detect();
+      expect(d.store?.projects ?? 0).toBe(0);
+      // `which codex` decides. On a machine without codex this is correctly false — assert the
+      // rule rather than the machine: found must track CLI presence when the store is empty.
+      const cliPresent = await new Promise<boolean>((resolve) => {
+        import('node:child_process').then(({ execFile }) =>
+          execFile('which', ['codex'], (err, stdout) => resolve(!err && !!stdout.trim())),
+        );
+      });
+      expect(d.found).toBe(cliPresent);
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+});

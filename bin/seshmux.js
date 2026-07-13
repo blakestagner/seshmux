@@ -85,7 +85,10 @@ async function resolvePort(start, span = 10) {
 }
 
 function parseArgs(argv) {
-  const args = { port: 4700, noOpen: false };
+  // $PORT is honoured because server/index.ts already does — without this the CLI
+  // silently ignored it and booted on 4700 anyway. --port still wins over the env.
+  const envPort = Number(process.env.PORT);
+  const args = { port: Number.isInteger(envPort) && envPort > 0 ? envPort : 4700, noOpen: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--port' || a === '-p') args.port = Number(argv[++i]);
@@ -183,7 +186,17 @@ async function main() {
   // WS (carrying the old page's token) would 401 and the terminal couldn't
   // reattach after a server-only update. Never regenerate per iteration.
   const token = process.env.SESHMUX_TOKEN || randomBytes(32).toString('hex');
-  const env = { ...process.env, PORT: String(port), SESHMUX_TOKEN: token };
+  // The server's update check needs OUR version, and $npm_package_version is only set when
+  // node is launched by an npm script — never for `npx seshmux` or the global bin, i.e. never
+  // for a real user. It fell back to "0.0.0", which would report an update as available
+  // forever (0.0.0 < any published version) and never clear after applying one. The supervisor
+  // is the one process that can always read its own package.json, so it passes the version down.
+  const env = {
+    ...process.env,
+    PORT: String(port),
+    SESHMUX_TOKEN: token,
+    SESHMUX_VERSION: require('../package.json').version,
+  };
   if (isProd) env.NODE_ENV = 'production';
 
   function spawnServer() {

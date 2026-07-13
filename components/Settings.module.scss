@@ -112,6 +112,13 @@
   @include t-mono-data;
 }
 
+// Right-hand cluster when a row carries status text AND an action (Updates).
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 // Env right status (design L228): mono 12px, tone set per row. Detection
 // checks (✓/✗) colour live/hot; count/size details stay neutral --text-dim.
 .status {

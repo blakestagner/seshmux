@@ -114,3 +114,32 @@ describe('applyUpdate', () => {
     expect(res.log.toLowerCase()).toContain('permission denied');
   });
 });
+
+// Regression: detectInstallMethod realpath'd argv but NOT the npm prefix, so a symlinked
+// global prefix (macOS /tmp -> /private/tmp, homebrew /usr/local, some nvm layouts) compared
+// a resolved path against an unresolved one, missed, and reported a global install as 'local'.
+// That silently hides the update button, since we refuse `npm i -g` for non-global installs.
+// Found by booting the packed tarball, not by unit tests — fake paths never hit the symlink.
+describe('detectInstallMethod — symlinked global prefix', () => {
+  it('still reports global when `npm prefix -g` returns a symlink to the real prefix', async () => {
+    const { mkdtemp, mkdir, writeFile, symlink } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+
+    const base = await mkdtemp(join(tmpdir(), 'smx-prefix-'));
+    const realPrefix = join(base, 'real');
+    const linkedPrefix = join(base, 'link');
+    const binDir = join(realPrefix, 'lib', 'node_modules', 'seshmux', 'bin');
+    await mkdir(binDir, { recursive: true });
+    await writeFile(join(binDir, 'seshmux.js'), '');
+    await symlink(realPrefix, linkedPrefix);
+
+    // argv[1] resolves through realpath to the REAL path; npm reports the SYMLINK.
+    expect(
+      detectInstallMethod({
+        argvRealPath: join(realPrefix, 'lib', 'node_modules', 'seshmux', 'bin', 'seshmux.js'),
+        globalPrefix: linkedPrefix,
+      }),
+    ).toBe('global');
+  });
+});

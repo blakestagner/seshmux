@@ -4,6 +4,8 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useAppState } from '../lib/client/store';
 import { useDetectedProviders } from '../lib/client/providers';
 import {
+  applyUpdate,
+  checkUpdate,
   getEnv,
   getHooksStatus,
   getUsage,
@@ -13,6 +15,7 @@ import {
   uninstallStatusHooks,
   type HooksInstallState,
 } from '../lib/client/api';
+import { updateView, type UpdateStatus } from '../lib/client/update';
 import type { ProviderId } from '../lib/client/types';
 import Card from './ui/Card';
 import Toggle from './ui/Toggle';
@@ -135,6 +138,13 @@ export default function Settings() {
   const [hooksBusy, setHooksBusy] = useState(false);
   const [theme, setTheme] = useState<'system' | 'light' | 'dark'>('system');
   const [accent, setAccent] = useState<'teal' | 'iris'>('iris');
+  // Self-update (Task 18): `upd` null + !updFailed = still checking. `updPhase` drives the
+  // apply lifecycle; the server exits 75 mid-flight, so "restarting" ends by polling the
+  // check endpoint until the relaunched server answers again.
+  const [upd, setUpd] = useState<UpdateStatus | null>(null);
+  const [updFailed, setUpdFailed] = useState(false);
+  const [updPhase, setUpdPhase] = useState<'idle' | 'applying' | 'done' | 'error'>('idle');
+  const [updLog, setUpdLog] = useState('');
 
   const settings = state.config.settings as Record<string, unknown>;
 
@@ -189,8 +199,44 @@ export default function Settings() {
     rescan();
     refreshHooks();
     (getUsage(30) as Promise<UsageSummary>).then(setUsage);
+    checkUpdate()
+      .then(setUpd)
+      .catch(() => setUpdFailed(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Wait for the relaunched server to answer /api/update/check again (it exits 75 right after
+  // the install; the events ws reconnects on its own). ponytail: poll, no new event type.
+  async function waitForServer() {
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      try {
+        await checkUpdate();
+        return true;
+      } catch {
+        /* still down */
+      }
+    }
+    return false;
+  }
+
+  async function handleUpdate() {
+    setUpdPhase('applying');
+    setUpdLog('');
+    try {
+      const res = await applyUpdate();
+      if (!res.ok) {
+        setUpdLog(res.log || 'npm install failed');
+        setUpdPhase('error');
+        return;
+      }
+      await waitForServer();
+      setUpdPhase('done');
+    } catch (e) {
+      setUpdLog(e instanceof Error ? e.message : String(e));
+      setUpdPhase('error');
+    }
+  }
 
   useEffect(() => {
     setTheme(localStorage.getItem('seshmux-theme-locked') ? (state.config.theme as 'light' | 'dark') : 'system');
@@ -244,6 +290,7 @@ export default function Settings() {
     });
   }
 
+  const view = updateView(upd, updFailed);
   const byProviderPct = usage?.byProvider ?? [];
   const totalProviderPct = byProviderPct.reduce((s, p) => s + p.pct, 0) || 1;
 
@@ -471,15 +518,41 @@ export default function Settings() {
           </EnvRow>
         </Section>
 
-        <Section title="Account & sync" note="coming soon">
+        <Section title="Updates" note="npm registry">
+          <EnvRow name="Version" sub="installed" subMono={false}>
+            <span className={styles.mono}>{upd ? `v${upd.current}` : '—'}</span>
+          </EnvRow>
           <EnvRow
-            name="Firebase sync"
-            sub="pins, names, notes across machines — local-first either way"
+            name="Update"
+            sub={
+              updPhase === 'applying'
+                ? 'the server restarts itself — live sessions stay alive'
+                : 'installs the latest release and restarts the server'
+            }
             subMono={false}
           >
-            <Button disabled>Sign in</Button>
+            {updPhase === 'done' ? (
+              <span className={`${styles.status} ${styles.ok}`}>
+                ✓ updated to v{upd?.latest} — reload to get the new UI
+              </span>
+            ) : updPhase === 'applying' ? (
+              <span className={`${styles.status} ${styles.neutral}`}>updating…</span>
+            ) : (
+              <span className={styles.actions}>
+                <span className={`${styles.status} ${styles[view.tone]}`}>{view.message}</span>
+                {view.canApply ? <Button onClick={handleUpdate}>Update &amp; restart</Button> : null}
+              </span>
+            )}
           </EnvRow>
+          {updPhase === 'error' ? (
+            <EnvRow name="Update failed" sub={updLog} subMono>
+              <Button onClick={handleUpdate}>Retry</Button>
+            </EnvRow>
+          ) : null}
         </Section>
+
+        {/* No "Account & sync / Firebase sign-in" section: it was a disabled mockup stub that
+            advertised a feature nobody has built. Ship the sync backend first, then the row. */}
 
         <div className={styles.footer}>
           seshmux is an independent project, not affiliated with or endorsed by Anthropic or OpenAI.
