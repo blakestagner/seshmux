@@ -4,6 +4,7 @@ import {
   applyUpdate,
   compareVersions,
   detectInstallMethod,
+  isDaemonStale,
   _resetUpdateCache,
 } from '../../server/lib/update';
 
@@ -187,5 +188,20 @@ describe('applyUpdate — pins the resolved version (ETARGET regression)', () =>
     });
     expect(calls[0]).toContain('seshmux@latest'); // fell back, did not pin the junk
     expect(calls[0].join(' ')).not.toContain('evil.example');
+  });
+});
+
+describe('isDaemonStale', () => {
+  it('is true only when the server is strictly newer than the daemon', () => {
+    expect(isDaemonStale('0.9.0', '0.10.0')).toBe(true);
+    expect(isDaemonStale('1.0.0', '1.0.0')).toBe(false);
+    expect(isDaemonStale('1.1.0', '1.0.0')).toBe(false); // daemon ahead (dev tree) — no nag
+  });
+
+  it('never nags when either version is unknown (dev server / unreachable daemon)', () => {
+    expect(isDaemonStale('', '1.0.0')).toBe(false);
+    expect(isDaemonStale('1.0.0', '')).toBe(false);
+    expect(isDaemonStale(null, null)).toBe(false);
+    expect(isDaemonStale(undefined, undefined)).toBe(false);
   });
 });

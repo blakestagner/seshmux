@@ -49,9 +49,10 @@ export function getProjects(): Promise<Project[]> {
 }
 
 /** Deep width-correct scrollback for a live PTY (tmux capture-pane via the
- *  daemon's additive history RPC). Throws on older daemons (501) — callers
- *  degrade by leaving the screen as-is. */
-export function getTermHistory(ptyId: string, lines = 2000): Promise<{ data: string }> {
+ *  daemon's additive history RPC). A daemon predating the method answers
+ *  200 + { supported: false } (not an error — see routes/term.ts); callers
+ *  degrade to the ring buffer. Throws only on real failures. */
+export function getTermHistory(ptyId: string, lines = 2000): Promise<{ supported: boolean; data: string }> {
   return req(`/api/term/${encodeURIComponent(ptyId)}/history?lines=${lines}`);
 }
 

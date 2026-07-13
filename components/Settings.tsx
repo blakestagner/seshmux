@@ -36,6 +36,9 @@ type EnvResponse = {
   rg: { found: boolean };
   // Task 16.7: MCP bridge registration status (read-only; POST /api/bridge/register writes).
   bridge?: { claude: { registered: boolean }; codex: { registered: boolean } };
+  // The PTY daemon survives server updates by design, so it can be running older code than
+  // this server. stale = older; the Updates section nudges for a full restart (never auto).
+  daemon?: { version: string | null; serverVersion: string | null; stale: boolean };
 };
 type UsageSummary = {
   sessions: number;
@@ -547,6 +550,24 @@ export default function Settings() {
           {updPhase === 'error' ? (
             <EnvRow name="Update failed" sub={updLog} subMono>
               <Button onClick={handleUpdate}>Retry</Button>
+            </EnvRow>
+          ) : null}
+          {/* The daemon keeps live sessions alive THROUGH an update, so it stays on the old code.
+              Nothing is broken — nudge, don't alarm, and never auto-restart it (that would kill the
+              PTYs it is protecting).
+              The copy must say --restart-daemon, NOT "restart seshmux": ensureDaemon() reuses any
+              daemon that answers hello (daemon/ensure.js classify()), so quitting and reopening the
+              app does NOT replace it. "Restart seshmux" would be advice that quietly does nothing —
+              verified against a daemon that had survived 3 days and several updates. */}
+          {env?.daemon?.stale ? (
+            <EnvRow
+              name="Session daemon"
+              sub="run `seshmux --restart-daemon` to upgrade it — tmux-backed sessions survive, any non-tmux ones end"
+              subMono={false}
+            >
+              <span className={`${styles.status} ${styles.neutral}`}>
+                still on v{env.daemon.version} — it outlived the update, so newer features stay off
+              </span>
             </EnvRow>
           ) : null}
         </Section>
