@@ -357,3 +357,15 @@ export type TeamInfo = {
 export function getTeamMembers(leadSessionId: string): Promise<TeamInfo | null> {
   return req(`/api/teams/members?leadSession=${encodeURIComponent(leadSessionId)}`);
 }
+
+export type FileChange = { path: string; added: number; removed: number; status: string };
+export type GitChanges = { added: number; removed: number; files: FileChange[]; tree?: string[] };
+
+// Branch line stats vs the repo's default branch (committed + dirty + untracked).
+// tree=true adds the full tracked file list for the changes panel.
+export function getGitChanges(projectId: string, branch?: string | null, tree?: boolean): Promise<GitChanges> {
+  const params = new URLSearchParams({ project: projectId });
+  if (branch) params.set('branch', branch);
+  if (tree) params.set('tree', '1');
+  return req(`/api/git/changes?${params}`);
+}
