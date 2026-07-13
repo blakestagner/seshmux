@@ -29,7 +29,13 @@ export default async function updateRoutes(f: FastifyInstance, deps: UpdateRoute
     const status = await check();
     let result: ApplyUpdateResult;
     try {
-      result = await apply({ installMethod: status.installMethod, current: status.current });
+      // Pass the version check just resolved. Re-resolving `@latest` inside npm goes through its
+      // stale packument cache and ETARGETs on a fresh release — check and apply must agree.
+      result = await apply({
+        installMethod: status.installMethod,
+        current: status.current,
+        target: status.latest,
+      });
     } catch (e) {
       // applyUpdate rejects for npx installs (no self-update possible) — 409 Conflict.
       reply.code(409);
