@@ -12,6 +12,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Start from clean. NOT cosmetic: building on top of a .next left by `next dev` (or by a
+# previous build) produced a standalone with 19 nested packages instead of 192 — most of the
+# dependency closure missing — and the very next build on the same commit produced the full
+# 192. Same commit, two `npm pack` runs, 1,952 vs 14,034 files. The lean one installs fine and
+# then dies at boot on MODULE_NOT_FOUND, so a release built from a dirty tree ships broken.
+# The old "Idempotent." claim in this header was simply false.
+echo "[build] clean .next (release builds must be reproducible)…"
+rm -rf .next
+
 echo "[build] next build…"
 npx next build
 
