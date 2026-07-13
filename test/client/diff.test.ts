@@ -33,3 +33,25 @@ describe('parseUnifiedDiff', () => {
     expect(parseUnifiedDiff('')).toEqual([]);
   });
 });
+
+describe('parseUnifiedDiff — header prefixes inside hunks (review fix)', () => {
+  it('keeps a deleted line that looks like a --- header', () => {
+    const d = 'diff --git a/q.sql b/q.sql\n--- a/q.sql\n+++ b/q.sql\n@@ -1,2 +1,1 @@\n--- name: ListUsers :many\n select 1;\n';
+    const lines = parseUnifiedDiff(d);
+    expect(lines.map((l) => l.kind)).toEqual(['hunk', 'del', 'context']);
+    expect(lines[1]).toMatchObject({ kind: 'del', text: '-- name: ListUsers :many', oldNo: 1 });
+    expect(lines[2]).toMatchObject({ text: 'select 1;', oldNo: 2, newNo: 1 });
+  });
+
+  it('keeps an added line that looks like a +++ header', () => {
+    const d = '@@ -0,0 +1 @@\n+++ weird content\n';
+    const lines = parseUnifiedDiff(d);
+    expect(lines[1]).toMatchObject({ kind: 'add', text: '++ weird content', newNo: 1 });
+  });
+
+  it('resets header handling at the next file boundary', () => {
+    const d = '@@ -1 +1 @@\n-x\n+y\ndiff --git a/b b/b\nindex 123..456\n--- a/b\n+++ b/b\n@@ -1 +1 @@\n-p\n+q\n';
+    const kinds = parseUnifiedDiff(d).map((l) => l.kind);
+    expect(kinds).toEqual(['hunk', 'del', 'add', 'hunk', 'del', 'add']);
+  });
+});

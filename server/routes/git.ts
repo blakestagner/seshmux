@@ -1,4 +1,5 @@
 // GET /api/git/changes?project=<id>&branch=<b>&tree=1 -> GitChanges
+// GET /api/git/changes/file?project=<id>&branch=<b>&path=<p> -> { diff, truncated }
 //
 // Read-only line stats for the terminal statusbar chip and the changes panel.
 // branch=agent/* diffs inside that workspace's worktree dir; anything else
@@ -7,29 +8,52 @@
 // the numbers mean "everything not merged to main yet", uncommitted included.
 
 import type { FastifyInstance } from 'fastify';
-import { getProviders } from '../lib/providers/types';
-import { decodeProjectDir } from '../lib/store/scan';
-import { changes, fileDiff } from '../lib/git-stats';
-import { defaultBranch, list as listWorkspacesDefault, type WorkspaceRecord } from '../lib/workspaces';
+import { changes, fileDiff, defaultBaseRef } from '../lib/git-stats';
+import { list as listWorkspacesDefault, type WorkspaceRecord } from '../lib/workspaces';
+import { defaultResolveRepo } from './bridge';
 
 export interface GitRouteDeps {
-  // projectId -> absolute repo path (mirrors routes/workspaces.ts). Injectable for tests.
+  // projectId -> absolute repo path. Defaults to the resolver bridge.ts
+  // exports (providers know each project's REAL cwd; decodeProjectDir alone
+  // mis-decodes hyphenated repo names). Injectable for tests.
   resolveRepo?: (projectId: string) => string | null | Promise<string | null>;
   listWorkspaces?: (repo: string) => Promise<WorkspaceRecord[]>;
 }
 
 export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps = {}) {
-  const defaultResolveRepo = async (id: string): Promise<string | null> => {
-    const providers = await getProviders();
-    for (const p of providers) {
-      const projects = await p.scanProjects().catch(() => []);
-      const hit = projects.find((pr) => pr.id === id);
-      if (hit) return hit.path;
-    }
-    return decodeProjectDir(id).path;
-  };
   const resolveRepo = deps.resolveRepo ?? defaultResolveRepo;
   const listWorkspaces = deps.listWorkspaces ?? listWorkspacesDefault;
+
+  // The resolver runs provider store scans — far too heavy per 10s poll, and
+  // the id→path mapping essentially never changes. Memoize per registration.
+  const repoMemo = new Map<string, { at: number; path: string | null }>();
+  const REPO_TTL_MS = 60_000;
+  async function repoFor(projectId: string): Promise<string | null> {
+    const hit = repoMemo.get(projectId);
+    if (hit && Date.now() - hit.at < REPO_TTL_MS) return hit.path;
+    const path = await resolveRepo(projectId);
+    if (repoMemo.size > 500) repoMemo.clear(); // ponytail: crude bound
+    repoMemo.set(projectId, { at: Date.now(), path });
+    return path;
+  }
+
+  // Shared by both handlers: repo → (worktree dir for agent/* branches) + base
+  // ref. One implementation so the chip totals and the click-through diff can
+  // never disagree about what they're diffing.
+  async function resolveTarget(
+    projectId: string,
+    branch: string | undefined,
+  ): Promise<{ dir: string; base: string | null } | null> {
+    const repo = await repoFor(projectId);
+    if (!repo) return null;
+    let dir = repo;
+    if (branch?.startsWith('agent/')) {
+      const rec = (await listWorkspaces(repo).catch(() => [])).find((r) => r.branch === branch);
+      if (rec) dir = rec.dir;
+    }
+    const base = await defaultBaseRef(repo).catch(() => null);
+    return { dir, base };
+  }
 
   f.get<{ Querystring: { project?: string; branch?: string; tree?: string } }>(
     '/api/git/changes',
@@ -39,18 +63,12 @@ export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps =
         reply.code(400);
         return { error: 'project is required' };
       }
-      const repo = await resolveRepo(project);
-      if (!repo) {
+      const target = await resolveTarget(project, branch);
+      if (!target) {
         reply.code(404);
         return { error: 'project not found' };
       }
-      let dir = repo;
-      if (branch?.startsWith('agent/')) {
-        const rec = (await listWorkspaces(repo).catch(() => [])).find((r) => r.branch === branch);
-        if (rec) dir = rec.dir;
-      }
-      const base = await defaultBranch(repo).catch(() => null);
-      return changes(dir, base, tree === '1');
+      return changes(target.dir, target.base, tree === '1');
     },
   );
 
@@ -63,18 +81,12 @@ export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps =
         reply.code(400);
         return { error: 'project and path are required' };
       }
-      const repo = await resolveRepo(project);
-      if (!repo) {
+      const target = await resolveTarget(project, branch);
+      if (!target) {
         reply.code(404);
         return { error: 'project not found' };
       }
-      let dir = repo;
-      if (branch?.startsWith('agent/')) {
-        const rec = (await listWorkspaces(repo).catch(() => [])).find((r) => r.branch === branch);
-        if (rec) dir = rec.dir;
-      }
-      const base = await defaultBranch(repo).catch(() => null);
-      return { diff: await fileDiff(dir, base, relPath) };
+      return fileDiff(target.dir, target.base, relPath);
     },
   );
 }

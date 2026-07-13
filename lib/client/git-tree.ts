@@ -35,10 +35,13 @@ export function buildTree(tree: string[], files: FileChange[]): TreeNode[] {
     parent.children.push({ path: p, name: p.slice(idx + 1), children: [], change: changeByPath.get(p) });
   }
 
+  // Dir-ness by node IDENTITY, not path lookup: a deleted file can share its
+  // path with a new directory of the same name (both nodes legitimately
+  // exist), and a path-keyed check would sort the file node among the dirs.
   const sort = (nodes: TreeNode[]) => {
     nodes.sort((a, b) => {
-      const aDir = dirs.has(a.path) ? 0 : 1;
-      const bDir = dirs.has(b.path) ? 0 : 1;
+      const aDir = dirs.get(a.path) === a ? 0 : 1;
+      const bDir = dirs.get(b.path) === b ? 0 : 1;
       return aDir - bDir || a.name.localeCompare(b.name);
     });
     for (const n of nodes) sort(n.children);

@@ -70,7 +70,16 @@ function Row({
       </div>
       {hasDirShape && !isCollapsed
         ? node.children.map((c) => (
-            <Row key={c.path} node={c} depth={depth + 1} collapsed={collapsed} onToggle={onToggle} onOpenFile={onOpenFile} />
+            <Row
+              // dir/file discriminator in the key: a deleted file and a new
+              // directory can legitimately share a path (both rows render).
+              key={`${c.children.length ? 'd' : 'f'}:${c.path}`}
+              node={c}
+              depth={depth + 1}
+              collapsed={collapsed}
+              onToggle={onToggle}
+              onOpenFile={onOpenFile}
+            />
           ))
         : null}
     </>
@@ -109,12 +118,23 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
   // Panel-swap file view: non-null while reading one file's diff.
   const [openFile, setOpenFile] = useState<FileChange | null>(null);
   const [diffLines, setDiffLines] = useState<DiffLine[] | null>(null);
+  const [diffTruncated, setDiffTruncated] = useState(false);
+  // Which file's diff response is allowed to land — a slow fetch for file A
+  // must not paint under file B's header after the user navigated on.
+  const openPathRef = useRef<string | null>(null);
+  // The tracked file list barely changes; fetch it once per mount and tick
+  // with totals/files only (changed paths are unioned into the tree client-
+  // side, so new work still appears — only brand-new UNCHANGED tracked files
+  // wait for a panel reopen).
+  const treeRef = useRef<string[] | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const res = await getGitChanges(projectId, branch, true);
+      const wantTree = treeRef.current === null;
+      const res = await getGitChanges(projectId, branch, wantTree);
+      if (wantTree) treeRef.current = res.tree ?? [];
       setData(res);
-      const tree = buildTree(res.tree ?? [], res.files);
+      const tree = buildTree(treeRef.current ?? [], res.files);
       setNodes(tree);
       if (!seededRef.current) {
         seededRef.current = true;
@@ -126,6 +146,7 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
   }, [projectId, branch]);
 
   useEffect(() => {
+    treeRef.current = null; // new project/branch → new tree
     void load();
     const timer = setInterval(() => void load(), 10_000);
     return () => clearInterval(timer);
@@ -142,9 +163,22 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
   const openFileDiff = (change: FileChange) => {
     setOpenFile(change);
     setDiffLines(null);
+    setDiffTruncated(false);
+    openPathRef.current = change.path;
     getGitFileDiff(projectId, branch, change.path)
-      .then((res) => setDiffLines(parseUnifiedDiff(res.diff)))
-      .catch(() => setDiffLines([]));
+      .then((res) => {
+        if (openPathRef.current !== change.path) return; // stale response
+        setDiffLines(parseUnifiedDiff(res.diff));
+        setDiffTruncated(!!res.truncated);
+      })
+      .catch(() => {
+        if (openPathRef.current === change.path) setDiffLines([]);
+      });
+  };
+
+  const closeFileDiff = () => {
+    openPathRef.current = null;
+    setOpenFile(null);
   };
 
   return (
@@ -152,7 +186,7 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
       <div className={styles.head}>
         {openFile ? (
           <>
-            <Button variant="chip" className={styles.backBtn} title="Back to file tree" onClick={() => setOpenFile(null)}>
+            <Button variant="chip" className={styles.backBtn} title="Back to file tree" onClick={closeFileDiff}>
               ‹ back
             </Button>
             <span className={styles.title}>{openFile.path}</span>
@@ -182,7 +216,10 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
         ) : diffLines.length === 0 ? (
           <div className={styles.empty}>no diff (binary or unchanged)</div>
         ) : (
-          <DiffView lines={diffLines} />
+          <>
+            <DiffView lines={diffLines} />
+            {diffTruncated ? <div className={styles.empty}>diff truncated — showing the first 5,000 lines</div> : null}
+          </>
         )
       ) : (
         <div className={styles.tree}>
@@ -190,7 +227,14 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
             <div className={styles.empty}>{data ? 'no files' : 'loading…'}</div>
           ) : (
             nodes.map((n) => (
-              <Row key={n.path} node={n} depth={0} collapsed={collapsed} onToggle={toggle} onOpenFile={openFileDiff} />
+              <Row
+                key={`${n.children.length ? 'd' : 'f'}:${n.path}`}
+                node={n}
+                depth={0}
+                collapsed={collapsed}
+                onToggle={toggle}
+                onOpenFile={openFileDiff}
+              />
             ))
           )}
         </div>

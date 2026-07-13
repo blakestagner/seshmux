@@ -215,7 +215,7 @@ async function isGitRepo(repoPath: string): Promise<boolean> {
   }
 }
 
-export async function defaultBranch(repoPath: string): Promise<string> {
+async function defaultBranch(repoPath: string): Promise<string> {
   // Prefer the symbolic HEAD of origin (works whether it's main/master/etc);
   // fall back to the current branch of the repo itself.
   try {

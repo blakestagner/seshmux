@@ -46,3 +46,19 @@ describe('collapsedByDefault', () => {
     expect(collapsed.has('src/lib')).toBe(true);
   });
 });
+
+describe('deleted file vs new directory with the same name (review fix)', () => {
+  it('keeps both nodes and sorts the true dir among dirs', () => {
+    const nodes = buildTree(
+      ['config/app.ts', 'zz.txt'],
+      [{ path: 'config', added: 0, removed: 5, status: 'D' }],
+    );
+    const configNodes = nodes.filter((n) => n.path === 'config');
+    expect(configNodes).toHaveLength(2);
+    const dir = configNodes.find((n) => n.children.length > 0)!;
+    const file = configNodes.find((n) => n.children.length === 0)!;
+    expect(dir.children[0].path).toBe('config/app.ts');
+    expect(file.change?.status).toBe('D');
+    expect(nodes[0]).toBe(dir); // dir sorts first
+  });
+});

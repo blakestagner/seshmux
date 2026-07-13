@@ -12,36 +12,47 @@ export interface DiffLine {
   newNo?: number; // add + context
 }
 
+// File-level header noise (diff --git, index, ---/+++, mode/rename lines).
+// Only valid OUTSIDE hunks: inside a hunk these prefixes collide with real
+// content — deleting a `-- sql comment` line serializes as `--- sql comment`
+// and used to be eaten as a header, silently hiding the deletion and
+// shifting every later gutter number.
+const HEADER_PREFIXES = [
+  'diff --git',
+  'index ',
+  '--- ',
+  '+++ ',
+  'new file mode',
+  'deleted file mode',
+  'old mode',
+  'new mode',
+  'similarity index',
+  'rename from',
+  'rename to',
+];
+
 export function parseUnifiedDiff(diff: string): DiffLine[] {
   const lines: DiffLine[] = [];
   let oldNo = 0;
   let newNo = 0;
+  let inHunk = false;
   for (const raw of diff.split('\n')) {
-    // file-level header noise (diff --git, index, ---/+++, mode lines) — skip;
-    // the panel header already names the file.
-    if (
-      raw.startsWith('diff --git') ||
-      raw.startsWith('index ') ||
-      raw.startsWith('--- ') ||
-      raw.startsWith('+++ ') ||
-      raw.startsWith('new file mode') ||
-      raw.startsWith('deleted file mode') ||
-      raw.startsWith('old mode') ||
-      raw.startsWith('new mode') ||
-      raw.startsWith('similarity index') ||
-      raw.startsWith('rename from') ||
-      raw.startsWith('rename to') ||
-      raw.startsWith('\\ No newline')
-    ) {
-      continue;
-    }
     const hunk = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
     if (hunk) {
+      inHunk = true;
       oldNo = Number(hunk[1]);
       newNo = Number(hunk[2]);
       lines.push({ kind: 'hunk', text: raw });
       continue;
     }
+    if (raw.startsWith('diff --git')) inHunk = false; // next file's header block
+    if (!inHunk) {
+      if (HEADER_PREFIXES.some((p) => raw.startsWith(p))) continue;
+      continue; // anything else outside a hunk (empty preamble lines) — skip
+    }
+    // Inside a hunk the only legal prefixes are +, -, space, and the
+    // no-newline marker.
+    if (raw.startsWith('\\ No newline')) continue;
     if (raw.startsWith('+')) {
       lines.push({ kind: 'add', text: raw.slice(1), newNo: newNo++ });
     } else if (raw.startsWith('-')) {
@@ -49,7 +60,7 @@ export function parseUnifiedDiff(diff: string): DiffLine[] {
     } else if (raw.startsWith(' ')) {
       lines.push({ kind: 'context', text: raw.slice(1), oldNo: oldNo++, newNo: newNo++ });
     }
-    // anything else (empty trailing line) — skip
+    // anything else inside a hunk (empty trailing line) — skip
   }
   return lines;
 }

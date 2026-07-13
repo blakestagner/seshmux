@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseNumstat, changes } from '../../server/lib/git-stats';
+import { parseNumstat, changes, fileDiff } from '../../server/lib/git-stats';
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' });
@@ -114,23 +114,24 @@ describe('fileDiff (real repo)', () => {
 
   it('returns a unified diff for a tracked change', async () => {
     const { fileDiff } = await import('../../server/lib/git-stats');
-    const d = await fileDiff(repo, 'main', 'a.txt');
-    expect(d).toContain('@@');
-    expect(d).toContain('-two');
-    expect(d).toContain('+TWO');
+    const { diff, truncated } = await fileDiff(repo, 'main', 'a.txt');
+    expect(diff).toContain('@@');
+    expect(diff).toContain('-two');
+    expect(diff).toContain('+TWO');
+    expect(truncated).toBe(false);
   });
 
   it('renders an untracked file as all-added', async () => {
     const { fileDiff } = await import('../../server/lib/git-stats');
-    const d = await fileDiff(repo, 'main', 'new.txt');
-    expect(d).toContain('+hello');
-    expect(d).toContain('+world');
+    const { diff } = await fileDiff(repo, 'main', 'new.txt');
+    expect(diff).toContain('+hello');
+    expect(diff).toContain('+world');
   });
 
   it('refuses paths escaping the repo', async () => {
     const { fileDiff } = await import('../../server/lib/git-stats');
-    expect(await fileDiff(repo, 'main', '../../../etc/hosts')).toBe('');
-    expect(await fileDiff(repo, 'main', '/etc/hosts')).toBe('');
+    expect((await fileDiff(repo, 'main', '../../../etc/hosts')).diff).toBe('');
+    expect((await fileDiff(repo, 'main', '/etc/hosts')).diff).toBe('');
   });
 
   it('returns empty for an unchanged file', async () => {
@@ -138,6 +139,83 @@ describe('fileDiff (real repo)', () => {
     writeFileSync(join(repo, 'clean.txt'), 'x\n');
     git(repo, ['add', 'clean.txt']);
     git(repo, ['commit', '-m', 'clean']);
-    expect(await fileDiff(repo, 'main', 'clean.txt')).toBe('');
+    expect((await fileDiff(repo, 'main', 'clean.txt')).diff).toBe('');
+  });
+});
+
+describe('review-fix regressions (real repo)', () => {
+  let repo: string;
+
+  beforeAll(() => {
+    repo = mkdtempSync(join(tmpdir(), 'smx-gitfix-'));
+    git(repo, ['init', '-b', 'main']);
+    git(repo, ['config', 'user.email', 't@t']);
+    git(repo, ['config', 'user.name', 't']);
+    writeFileSync(join(repo, 'keep.txt'), 'k\n');
+    writeFileSync(join(repo, 'old.txt'), 'same content here\nline two\n');
+    git(repo, ['add', '.']);
+    git(repo, ['commit', '-m', 'base']);
+    git(repo, ['checkout', '-b', 'agent/fix-1']);
+    // rename: must NOT produce a `{old => new}` pseudo-path
+    git(repo, ['mv', 'old.txt', 'renamed.txt']);
+    git(repo, ['commit', '-m', 'rename']);
+    // unicode filename: core.quotepath would octal-escape this
+    writeFileSync(join(repo, 'héllo.txt'), 'a\nb\n');
+  });
+
+  afterAll(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  it('reports a rename as delete + add with real paths', async () => {
+    const res = await changes(repo, 'main', true);
+    const paths = res.files.map((f) => f.path);
+    expect(paths).not.toContainEqual(expect.stringContaining('=>'));
+    expect(paths).toContain('old.txt');
+    expect(paths).toContain('renamed.txt');
+    const byPath = Object.fromEntries(res.files.map((f) => [f.path, f]));
+    expect(byPath['old.txt'].status).toBe('D');
+    expect(byPath['renamed.txt'].status).toBe('A');
+    expect(res.tree).toContain('renamed.txt');
+  });
+
+  it('emits unicode paths unescaped and counts their lines', async () => {
+    const res = await changes(repo, 'main', true);
+    const uni = res.files.find((f) => f.path === 'héllo.txt');
+    expect(uni).toBeDefined();
+    expect(uni!.added).toBe(2);
+    expect(res.tree).toContain('héllo.txt');
+  });
+
+  it('fileDiff works for a unicode untracked file', async () => {
+    const { diff } = await fileDiff(repo, 'main', 'héllo.txt');
+    expect(diff).toContain('+a');
+    expect(diff).toContain('+b');
+  });
+
+  it('truncates oversized diffs and flags it', async () => {
+    writeFileSync(join(repo, 'big.txt'), Array.from({ length: 7000 }, (_, i) => `line ${i}`).join('\n') + '\n');
+    const { diff, truncated } = await fileDiff(repo, 'main', 'big.txt');
+    expect(truncated).toBe(true);
+    expect(diff.split('\n').length).toBeLessThanOrEqual(5000);
+  });
+});
+
+describe('defaultBaseRef', () => {
+  it('prefers a local main over the current branch on originless repos', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'smx-baseref-'));
+    try {
+      git(repo, ['init', '-b', 'main']);
+      git(repo, ['config', 'user.email', 't@t']);
+      git(repo, ['config', 'user.name', 't']);
+      writeFileSync(join(repo, 'a.txt'), 'x\n');
+      git(repo, ['add', '.']);
+      git(repo, ['commit', '-m', 'base']);
+      git(repo, ['checkout', '-b', 'feature-x']); // repo now SITS on a feature branch
+      const { defaultBaseRef } = await import('../../server/lib/git-stats');
+      expect(await defaultBaseRef(repo)).toBe('main');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
