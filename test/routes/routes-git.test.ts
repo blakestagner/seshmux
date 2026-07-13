@@ -91,11 +91,11 @@ describe('GET /api/git/changes', () => {
     }
   });
 
-  it('returns zeros for a non-repo project dir', async () => {
+  it('returns a degraded zeros payload for a non-repo project dir', async () => {
     const f = makeApp({ resolveRepo: () => notRepo });
     const res = await f.inject({ method: 'GET', url: '/api/git/changes?project=x' });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ added: 0, removed: 0, files: [] });
+    expect(res.json()).toEqual({ added: 0, removed: 0, files: [], degraded: true });
   });
 });
 

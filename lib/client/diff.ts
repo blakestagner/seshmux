@@ -12,25 +12,6 @@ export interface DiffLine {
   newNo?: number; // add + context
 }
 
-// File-level header noise (diff --git, index, ---/+++, mode/rename lines).
-// Only valid OUTSIDE hunks: inside a hunk these prefixes collide with real
-// content — deleting a `-- sql comment` line serializes as `--- sql comment`
-// and used to be eaten as a header, silently hiding the deletion and
-// shifting every later gutter number.
-const HEADER_PREFIXES = [
-  'diff --git',
-  'index ',
-  '--- ',
-  '+++ ',
-  'new file mode',
-  'deleted file mode',
-  'old mode',
-  'new mode',
-  'similarity index',
-  'rename from',
-  'rename to',
-];
-
 export function parseUnifiedDiff(diff: string): DiffLine[] {
   const lines: DiffLine[] = [];
   let oldNo = 0;
@@ -46,10 +27,11 @@ export function parseUnifiedDiff(diff: string): DiffLine[] {
       continue;
     }
     if (raw.startsWith('diff --git')) inHunk = false; // next file's header block
-    if (!inHunk) {
-      if (HEADER_PREFIXES.some((p) => raw.startsWith(p))) continue;
-      continue; // anything else outside a hunk (empty preamble lines) — skip
-    }
+    // EVERYTHING outside a hunk is header/preamble noise — skipped wholesale.
+    // Header prefixes must never be matched INSIDE a hunk: deleting a
+    // `-- sql comment` line serializes as `--- sql comment` and would be
+    // eaten as a header, hiding the deletion and shifting gutter numbers.
+    if (!inHunk) continue;
     // Inside a hunk the only legal prefixes are +, -, space, and the
     // no-newline marker.
     if (raw.startsWith('\\ No newline')) continue;

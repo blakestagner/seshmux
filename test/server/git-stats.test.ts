@@ -27,6 +27,16 @@ describe('parseNumstat', () => {
   it('handles empty output', () => {
     expect(parseNumstat('')).toEqual([]);
   });
+
+  it('parses -z rename records into path + oldPath', () => {
+    expect(parseNumstat('2\t1\t\0src/old.ts\0src/new.ts\0')).toEqual([
+      { path: 'src/new.ts', added: 2, removed: 1, oldPath: 'src/old.ts' },
+    ]);
+  });
+
+  it('keeps filenames containing newlines intact under -z', () => {
+    expect(parseNumstat('3\t0\tpa\nth.txt\0')).toEqual([{ path: 'pa\nth.txt', added: 3, removed: 0 }]);
+  });
 });
 
 describe('changes (real repo)', () => {
@@ -82,11 +92,11 @@ describe('changes (real repo)', () => {
     expect(res.removed).toBe(0);
   });
 
-  it('returns zeros for a non-repo dir', async () => {
+  it('returns a degraded zeros payload for a non-repo dir', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'smx-notrepo-'));
     try {
       const res = await changes(dir, 'main', true);
-      expect(res).toEqual({ added: 0, removed: 0, files: [] });
+      expect(res).toEqual({ added: 0, removed: 0, files: [], degraded: true });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -167,16 +177,16 @@ describe('review-fix regressions (real repo)', () => {
     rmSync(repo, { recursive: true, force: true });
   });
 
-  it('reports a rename as delete + add with real paths', async () => {
+  it('reports a rename with real paths and DETECTED counts (pure mv ≈ 0)', async () => {
     const res = await changes(repo, 'main', true);
     const paths = res.files.map((f) => f.path);
     expect(paths).not.toContainEqual(expect.stringContaining('=>'));
-    expect(paths).toContain('old.txt');
-    expect(paths).toContain('renamed.txt');
     const byPath = Object.fromEntries(res.files.map((f) => [f.path, f]));
-    expect(byPath['old.txt'].status).toBe('D');
-    expect(byPath['renamed.txt'].status).toBe('A');
+    expect(byPath['renamed.txt']).toMatchObject({ status: 'R', added: 0, removed: 0 });
+    expect(byPath['old.txt']).toMatchObject({ status: 'D', added: 0, removed: 0 });
     expect(res.tree).toContain('renamed.txt');
+    // the untracked unicode file is the only line contributor in this fixture
+    expect(res.added).toBe(2);
   });
 
   it('emits unicode paths unescaped and counts their lines', async () => {
@@ -201,19 +211,39 @@ describe('review-fix regressions (real repo)', () => {
   });
 });
 
-describe('defaultBaseRef', () => {
-  it('prefers a local main over the current branch on originless repos', async () => {
+describe('defaultBranch (shared by creation + diff base)', () => {
+  function makeRepo(): string {
     const repo = mkdtempSync(join(tmpdir(), 'smx-baseref-'));
+    git(repo, ['init', '-b', 'main']);
+    git(repo, ['config', 'user.email', 't@t']);
+    git(repo, ['config', 'user.name', 't']);
+    writeFileSync(join(repo, 'a.txt'), 'x\n');
+    git(repo, ['add', '.']);
+    git(repo, ['commit', '-m', 'base']);
+    return repo;
+  }
+
+  it('prefers a local main over the current branch on originless repos', async () => {
+    const repo = makeRepo();
     try {
-      git(repo, ['init', '-b', 'main']);
-      git(repo, ['config', 'user.email', 't@t']);
-      git(repo, ['config', 'user.name', 't']);
-      writeFileSync(join(repo, 'a.txt'), 'x\n');
-      git(repo, ['add', '.']);
-      git(repo, ['commit', '-m', 'base']);
       git(repo, ['checkout', '-b', 'feature-x']); // repo now SITS on a feature branch
-      const { defaultBaseRef } = await import('../../server/lib/git-stats');
-      expect(await defaultBaseRef(repo)).toBe('main');
+      const { defaultBranch } = await import('../../server/lib/workspaces');
+      expect(await defaultBranch(repo)).toBe('main');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to origin/<ref> when the local branch was deleted', async () => {
+    const repo = makeRepo();
+    try {
+      const sha = git(repo, ['rev-parse', 'HEAD']).trim();
+      git(repo, ['update-ref', 'refs/remotes/origin/main', sha]);
+      git(repo, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main']);
+      git(repo, ['checkout', '-b', 'work']);
+      git(repo, ['branch', '-D', 'main']); // worktree-centric flow: no local main
+      const { defaultBranch } = await import('../../server/lib/workspaces');
+      expect(await defaultBranch(repo)).toBe('origin/main');
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

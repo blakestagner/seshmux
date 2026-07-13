@@ -63,7 +63,12 @@ function Row({
         </span>
         {node.change ? (
           <span className={styles.stats}>
-            {node.change.added > 0 ? <span className={styles.added}>+{node.change.added}</span> : null}
+            {node.change.added > 0 ? (
+              <span className={styles.added}>
+                +{node.change.added}
+                {node.change.approx ? '+' : ''}
+              </span>
+            ) : null}
             {node.change.removed > 0 ? <span className={styles.removed}>−{node.change.removed}</span> : null}
           </span>
         ) : null}
@@ -132,7 +137,12 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
     try {
       const wantTree = treeRef.current === null;
       const res = await getGitChanges(projectId, branch, wantTree);
-      if (wantTree) treeRef.current = res.tree ?? [];
+      // degraded = git failed server-side (index.lock contention etc): keep
+      // the last good render, next tick retries. Critically, do NOT let the
+      // tree-less degraded payload poison treeRef — only a response actually
+      // carrying a tree satisfies the fetch-once contract.
+      if (res.degraded) return;
+      if (wantTree && res.tree) treeRef.current = res.tree;
       setData(res);
       const tree = buildTree(treeRef.current ?? [], res.files);
       setNodes(tree);
@@ -146,7 +156,18 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
   }, [projectId, branch]);
 
   useEffect(() => {
-    treeRef.current = null; // new project/branch → new tree
+    // New project/branch → reset EVERYTHING, not just the tree: the old
+    // collapsed set, an open file diff, and the seeded flag all describe the
+    // previous target and would render the new one under stale UI state.
+    treeRef.current = null;
+    seededRef.current = false;
+    openPathRef.current = null;
+    setData(null);
+    setNodes([]);
+    setCollapsed(new Set());
+    setOpenFile(null);
+    setDiffLines(null);
+    setDiffTruncated(false);
     void load();
     const timer = setInterval(() => void load(), 10_000);
     return () => clearInterval(timer);
@@ -200,7 +221,10 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
             <span className={styles.title}>changes{branch ? ` · ${branch}` : ''}</span>
             {data ? (
               <span className={styles.totals}>
-                <span className={styles.added}>+{data.added}</span>
+                <span className={styles.added}>
+                  +{data.added}
+                  {data.files.some((f) => f.approx) ? '+' : ''}
+                </span>
                 <span className={styles.removed}>−{data.removed}</span>
               </span>
             ) : null}

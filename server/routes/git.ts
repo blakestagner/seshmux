@@ -8,8 +8,8 @@
 // the numbers mean "everything not merged to main yet", uncommitted included.
 
 import type { FastifyInstance } from 'fastify';
-import { changes, fileDiff, defaultBaseRef } from '../lib/git-stats';
-import { list as listWorkspacesDefault, type WorkspaceRecord } from '../lib/workspaces';
+import { changes, fileDiff } from '../lib/git-stats';
+import { defaultBranch, list as listWorkspacesDefault, type WorkspaceRecord } from '../lib/workspaces';
 import { defaultResolveRepo } from './bridge';
 
 export interface GitRouteDeps {
@@ -33,7 +33,9 @@ export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps =
     if (hit && Date.now() - hit.at < REPO_TTL_MS) return hit.path;
     const path = await resolveRepo(projectId);
     if (repoMemo.size > 500) repoMemo.clear(); // ponytail: crude bound
-    repoMemo.set(projectId, { at: Date.now(), path });
+    // Never cache a miss: a brand-new project resolves on the NEXT poll, not
+    // a minute later (caching null 404'd fresh sessions for the full TTL).
+    if (path) repoMemo.set(projectId, { at: Date.now(), path });
     return path;
   }
 
@@ -51,7 +53,9 @@ export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps =
       const rec = (await listWorkspaces(repo).catch(() => [])).find((r) => r.branch === branch);
       if (rec) dir = rec.dir;
     }
-    const base = await defaultBaseRef(repo).catch(() => null);
+    // Same function worktree CREATION uses (workspaces.createOne), so a
+    // workspace is always diffed against what it was branched from.
+    const base = await defaultBranch(repo).catch(() => null);
     return { dir, base };
   }
 

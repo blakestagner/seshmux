@@ -448,14 +448,21 @@ export default function TerminalPane({
   // Polled while mounted — mounted == visible here (tabs view renders only the
   // active pane, grid renders every tile), so a tab switch remounts and fetches
   // fresh numbers immediately. Errors keep the last value; the bar never breaks.
-  const [gitStats, setGitStats] = useState<{ added: number; removed: number } | null>(null);
+  const [gitStats, setGitStats] = useState<{ added: number; removed: number; approx: boolean } | null>(null);
   useEffect(() => {
     if (!projectId) return;
     let cancelled = false;
     const refresh = () => {
       getGitChanges(projectId, branch)
         .then((res) => {
-          if (!cancelled) setGitStats({ added: res.added, removed: res.removed });
+          // degraded = git failed server-side (index.lock contention etc) —
+          // keep the last good numbers instead of blanking the chip.
+          if (cancelled || res.degraded) return;
+          setGitStats({
+            added: res.added,
+            removed: res.removed,
+            approx: res.files.some((f) => f.approx),
+          });
         })
         .catch(() => {
           /* best-effort chip; terminal stays usable without it */
@@ -631,17 +638,26 @@ export default function TerminalPane({
         {gitStats && (gitStats.added > 0 || gitStats.removed > 0) ? (
           <>
             {variant !== 'grid' ? <span className={styles.divider} aria-hidden="true" /> : null}
-            {variant !== 'grid' && onOpenChanges ? (
-              <Button variant="chip" className={styles.diffChip} title="View changed files" onClick={onOpenChanges}>
-                <span className={styles.diffAdded}>+{gitStats.added}</span>
-                <span className={styles.diffRemoved}>−{gitStats.removed}</span>
-              </Button>
-            ) : (
-              <span className={styles.diffChip}>
-                <span className={styles.diffAdded}>+{gitStats.added}</span>
-                <span className={styles.diffRemoved}>−{gitStats.removed}</span>
-              </span>
-            )}
+            {(() => {
+              // approx: an untracked file's count was size-capped — the total
+              // is a lower bound, say so with a trailing +.
+              const stats = (
+                <>
+                  <span className={styles.diffAdded}>
+                    +{gitStats.added}
+                    {gitStats.approx ? '+' : ''}
+                  </span>
+                  <span className={styles.diffRemoved}>−{gitStats.removed}</span>
+                </>
+              );
+              return variant !== 'grid' && onOpenChanges ? (
+                <Button variant="chip" className={styles.diffChip} title="View changed files" onClick={onOpenChanges}>
+                  {stats}
+                </Button>
+              ) : (
+                <span className={styles.diffChip}>{stats}</span>
+              );
+            })()}
           </>
         ) : null}
         {/* Bridge actions cluster on the right, before the tail. In grid the

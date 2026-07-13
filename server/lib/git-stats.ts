@@ -1,17 +1,17 @@
 // Line-count diff for the statusbar +N/-N chip and the changes panel:
 // everything not in the base branch — committed branch work, dirty tracked
 // edits, and untracked files — measured against merge-base(base, HEAD).
-// Read-only git throughout; every failure degrades to zeros (the bar shows
-// nothing rather than erroring). Deliberately NOT part of workspaces.ts —
-// that file is the destructive finish path and its guards fail closed;
-// display data fails open.
+// Read-only git throughout; failures degrade to a zeros payload carrying
+// `degraded: true` so clients can keep their last good value instead of
+// blanking the chip (and the memo below never caches a degraded result).
+// Deliberately NOT part of workspaces.ts — that file is the destructive
+// finish path and its guards fail closed; display data fails open.
 //
 // All path-emitting git calls use -z (NUL separators): the default
 // core.quotepath octal-escapes non-ASCII filenames in newline output, which
-// corrupted every unicode path. --no-renames keeps numstat/name-status on
-// plain one-path records (renames otherwise emit `{old => new}` pseudo-paths
-// that match nothing on disk); a rename shows as delete + add, which is also
-// what the tree view can actually render.
+// corrupted every unicode path. Rename detection stays ON — a rename is
+// reported as the new path (status R, the DETECTED line counts, so a pure
+// `git mv` counts ~0, not the whole file) plus the old path as a delete.
 
 import { open, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -21,7 +21,8 @@ export interface FileChange {
   path: string;
   added: number;
   removed: number;
-  status: string; // git name-status letter (M/A/D…); untracked reported as 'A'
+  status: string; // git name-status letter (M/A/D/R/C…); untracked reported as 'A'
+  approx?: boolean; // line count capped (huge untracked file) — a lower bound
 }
 
 export interface GitChanges {
@@ -29,21 +30,54 @@ export interface GitChanges {
   removed: number;
   files: FileChange[];
   tree?: string[]; // full tracked file list + untracked, only when requested
+  degraded?: boolean; // git failed — zeros payload, keep your last good value
 }
 
-// numstat record: `added\tremoved\tpath` — `-` for binary counts. Accepts
-// both -z (NUL) and legacy newline separation.
-export function parseNumstat(out: string): { path: string; added: number; removed: number }[] {
-  const rows: { path: string; added: number; removed: number }[] = [];
-  for (const line of out.split(/\0|\n/)) {
+export interface NumstatEntry {
+  path: string;
+  added: number;
+  removed: number;
+  oldPath?: string; // set for rename/copy records (path = the NEW name)
+}
+
+// numstat record: `added\tremoved\tpath` — `-` for binary counts. -z (NUL)
+// input gets the structural parser (handles rename records and filenames
+// containing ANY byte incl. newlines); newline input is the legacy/test form.
+export function parseNumstat(out: string): NumstatEntry[] {
+  if (out.includes('\0')) return parseNumstatZ(out);
+  const rows: NumstatEntry[] = [];
+  for (const line of out.split('\n')) {
     if (!line.trim()) continue;
     const [a, r, ...rest] = line.split('\t');
     if (rest.length === 0) continue;
-    rows.push({
-      path: rest.join('\t'),
-      added: a === '-' ? 0 : Number(a) || 0,
-      removed: r === '-' ? 0 : Number(r) || 0,
-    });
+    rows.push({ path: rest.join('\t'), added: num(a), removed: num(r) });
+  }
+  return rows;
+}
+
+const num = (s: string) => (s === '-' ? 0 : Number(s) || 0);
+
+// -z numstat: normal records are one token `a\tr\tpath`; rename/copy records
+// are `a\tr\t` followed by the old and new paths as their own NUL tokens.
+function parseNumstatZ(out: string): NumstatEntry[] {
+  const tokens = out.split('\0');
+  const rows: NumstatEntry[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (!t) continue;
+    const tab1 = t.indexOf('\t');
+    const tab2 = t.indexOf('\t', tab1 + 1);
+    if (tab1 === -1 || tab2 === -1) continue;
+    const added = num(t.slice(0, tab1));
+    const removed = num(t.slice(tab1 + 1, tab2));
+    const rest = t.slice(tab2 + 1);
+    if (rest === '') {
+      const oldPath = tokens[++i];
+      const newPath = tokens[++i];
+      if (oldPath && newPath) rows.push({ path: newPath, added, removed, oldPath });
+    } else {
+      rows.push({ path: rest, added, removed });
+    }
   }
   return rows;
 }
@@ -59,48 +93,19 @@ async function resolveMergeBase(dir: string, baseRef: string | null): Promise<st
   }
 }
 
-/**
- * The ref everything is diffed against. origin/HEAD when there is an origin;
- * otherwise prefer a local main/master over the repo's CURRENT branch — the
- * old current-branch fallback gave agent/* worktree tabs a silently wrong
- * base whenever an originless repo sat on a feature branch. Null → callers
- * degrade to uncommitted-only.
- */
-export async function defaultBaseRef(repo: string): Promise<string | null> {
-  try {
-    const out = await git(repo, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
-    const ref = out.trim().replace(/^origin\//, '');
-    if (ref) return ref;
-  } catch {
-    /* no origin — fall through */
-  }
-  for (const name of ['main', 'master']) {
-    try {
-      await git(repo, ['show-ref', '--verify', '--quiet', `refs/heads/${name}`]);
-      return name;
-    } catch {
-      /* not this one */
-    }
-  }
-  try {
-    return (await git(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() || null;
-  } catch {
-    return null;
-  }
-}
-
 // ── Untracked line counting ────────────────────────────────────────────────
 // Streamed with a hard size cap (never buffer whole files — an untracked
 // 1.5GB sqlite dump used to be read fully into memory on every 10s poll) and
-// cached by (mtime, size) so unchanged files are never re-read.
+// cached by (mtime, size) so unchanged files are never re-read. A capped
+// count is a LOWER BOUND and says so via `approx`.
 const LINE_COUNT_CAP = 10 * 1024 * 1024; // count at most the first 10MB
-const lineCache = new Map<string, { mtimeMs: number; size: number; lines: number }>();
+const lineCache = new Map<string, { mtimeMs: number; size: number; lines: number; approx: boolean }>();
 
-async function untrackedLines(abs: string): Promise<number> {
+async function untrackedLines(abs: string): Promise<{ lines: number; approx: boolean }> {
   try {
     const st = await stat(abs);
     const hit = lineCache.get(abs);
-    if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.lines;
+    if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit;
 
     let lines = 0;
     let read = 0;
@@ -130,12 +135,17 @@ async function untrackedLines(abs: string): Promise<number> {
     }
     // Trailing partial line counts only when we actually read to EOF — a
     // cap-truncated count stays a lower bound rather than inventing a line.
-    const result = binary || st.size === 0 ? 0 : lines + (lastByte !== 10 && read >= st.size ? 1 : 0);
+    const result = {
+      mtimeMs: st.mtimeMs,
+      size: st.size,
+      lines: binary || st.size === 0 ? 0 : lines + (lastByte !== 10 && read >= st.size ? 1 : 0),
+      approx: !binary && st.size > LINE_COUNT_CAP,
+    };
     if (lineCache.size > 10_000) lineCache.clear(); // ponytail: crude bound; LRU if it ever matters
-    lineCache.set(abs, { mtimeMs: st.mtimeMs, size: st.size, lines: result });
+    lineCache.set(abs, result);
     return result;
   } catch {
-    return 0;
+    return { lines: 0, approx: false };
   }
 }
 
@@ -149,6 +159,9 @@ const MAX_DIFF_LINES = 5000;
  * Unified diff for ONE file vs the merge-base (same base logic as changes()).
  * Untracked files diff against /dev/null so they render as all-added.
  * Truncated past MAX_DIFF_LINES (flag tells the client to say so).
+ * --no-renames here (unlike changes()): a single pathspec can't carry a
+ * rename pair, so the click-through for a renamed file shows it as all-added
+ * — wrong-but-useful, and the tree's R status tells the real story.
  *
  * `relPath` is a TRUST BOUNDARY: it arrives from a query param, and the
  * untracked branch below hands an absolute path to `git diff --no-index`,
@@ -195,7 +208,9 @@ function truncateDiff(diff: string): { diff: string; truncated: boolean } {
 // ── changes(): the chip + panel data ───────────────────────────────────────
 // Coalesced: the statusbar chip, an open panel, and N grid tiles of the same
 // project all poll the same (dir, base) — one in-flight computation plus a
-// short TTL serves them all instead of N× the subprocess fan-out.
+// short TTL serves them all instead of N× the subprocess fan-out. Degraded
+// (git-failed) results are evicted immediately so a transient index.lock
+// collision is retried on the next poll instead of being served for 5s.
 const changesMemo = new Map<string, { at: number; promise: Promise<GitChanges> }>();
 const CHANGES_TTL_MS = 5000;
 
@@ -206,6 +221,9 @@ export function changes(dir: string, baseRef: string | null, wantTree: boolean):
   const promise = computeChanges(dir, baseRef, wantTree);
   if (changesMemo.size > 200) changesMemo.clear(); // ponytail: crude bound
   changesMemo.set(key, { at: Date.now(), promise });
+  void promise.then((res) => {
+    if (res.degraded && changesMemo.get(key)?.promise === promise) changesMemo.delete(key);
+  });
   return promise;
 }
 
@@ -214,35 +232,51 @@ async function computeChanges(dir: string, baseRef: string | null, wantTree: boo
     const base = await resolveMergeBase(dir, baseRef);
 
     const [numstatOut, nameStatusOut, untrackedOut] = await Promise.all([
-      git(dir, ['diff', '--numstat', '--no-renames', '-z', base]),
-      git(dir, ['diff', '--name-status', '--no-renames', '-z', base]),
+      git(dir, ['diff', '--numstat', '-z', base]),
+      git(dir, ['diff', '--name-status', '-z', base]),
       git(dir, ['ls-files', '-o', '--exclude-standard', '-z']),
     ]);
 
-    // name-status -z is a flat token stream: status, path, status, path, …
-    // (--no-renames guarantees one path per record).
+    // name-status -z is a token stream: status, then one path — or two paths
+    // for rename/copy records (R100/C75 score codes).
     const statusTokens = splitZ(nameStatusOut);
     const statusByPath = new Map<string, string>();
-    for (let i = 0; i + 1 < statusTokens.length; i += 2) {
-      statusByPath.set(statusTokens[i + 1], statusTokens[i].charAt(0));
+    for (let i = 0; i < statusTokens.length; ) {
+      const code = statusTokens[i++]?.charAt(0);
+      if (!code) continue;
+      if (code === 'R' || code === 'C') {
+        i++; // old path (delete side emitted from the numstat record below)
+        const newPath = statusTokens[i++];
+        if (newPath) statusByPath.set(newPath, code);
+      } else {
+        const p = statusTokens[i++];
+        if (p) statusByPath.set(p, code);
+      }
     }
 
-    const files: FileChange[] = parseNumstat(numstatOut).map((f) => ({
-      ...f,
-      status: statusByPath.get(f.path) ?? 'M',
-    }));
+    const files: FileChange[] = [];
+    for (const f of parseNumstat(numstatOut)) {
+      if (f.oldPath) {
+        // Rename: new path carries the DETECTED counts (a pure `git mv` is
+        // ~0, not the whole file); the old path shows as the delete it is.
+        // Copy: the source still exists unchanged — no delete row.
+        const code = statusByPath.get(f.path) ?? 'R';
+        files.push({ path: f.path, added: f.added, removed: f.removed, status: code });
+        if (code !== 'C') files.push({ path: f.oldPath, added: 0, removed: 0, status: 'D' });
+      } else {
+        files.push({ path: f.path, added: f.added, removed: f.removed, status: statusByPath.get(f.path) ?? 'M' });
+      }
+    }
 
     // Untracked counts in small batches: parallel enough to not serialize a
     // big list, bounded so 30k suddenly-untracked files can't exhaust fds.
     const untracked = splitZ(untrackedOut);
     for (let i = 0; i < untracked.length; i += 16) {
       const batch = await Promise.all(
-        untracked.slice(i, i + 16).map(async (rel) => ({
-          path: rel,
-          added: await untrackedLines(path.join(dir, rel)),
-          removed: 0,
-          status: 'A',
-        })),
+        untracked.slice(i, i + 16).map(async (rel) => {
+          const { lines, approx } = await untrackedLines(path.join(dir, rel));
+          return { path: rel, added: lines, removed: 0, status: 'A', ...(approx ? { approx: true } : {}) };
+        }),
       );
       files.push(...batch);
     }
@@ -258,6 +292,6 @@ async function computeChanges(dir: string, baseRef: string | null, wantTree: boo
     }
     return result;
   } catch {
-    return { added: 0, removed: 0, files: [] };
+    return { added: 0, removed: 0, files: [], degraded: true };
   }
 }

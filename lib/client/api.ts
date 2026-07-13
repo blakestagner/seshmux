@@ -358,8 +358,10 @@ export function getTeamMembers(leadSessionId: string): Promise<TeamInfo | null> 
   return req(`/api/teams/members?leadSession=${encodeURIComponent(leadSessionId)}`);
 }
 
-export type FileChange = { path: string; added: number; removed: number; status: string };
-export type GitChanges = { added: number; removed: number; files: FileChange[]; tree?: string[] };
+// approx: the count is a capped lower bound (huge untracked file).
+export type FileChange = { path: string; added: number; removed: number; status: string; approx?: boolean };
+// degraded: git failed server-side — a zeros payload; keep your last good value.
+export type GitChanges = { added: number; removed: number; files: FileChange[]; tree?: string[]; degraded?: boolean };
 
 // Branch line stats vs the repo's default branch (committed + dirty + untracked).
 // tree=true adds the full tracked file list for the changes panel.
