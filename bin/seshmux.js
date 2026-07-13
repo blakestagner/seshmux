@@ -234,6 +234,99 @@ function runMcpBridge(root) {
   child.on('exit', (code) => process.exit(code ?? 0));
 }
 
+// Is a binary on PATH? Shell-free.
+function have(bin) {
+  return new Promise((resolve) => {
+    execFile('which', [bin], (err, stdout) => resolve(!err && !!String(stdout).trim()));
+  });
+}
+
+// The package manager we can offer to install tmux with, or null when there is nothing to offer.
+async function tmuxInstaller() {
+  if (process.platform === 'darwin' && (await have('brew'))) return { cmd: 'brew', args: ['install', 'tmux'] };
+  if (await have('apt-get')) return { cmd: 'sudo', args: ['apt-get', 'install', '-y', 'tmux'] };
+  if (await have('dnf')) return { cmd: 'sudo', args: ['dnf', 'install', '-y', 'tmux'] };
+  return null;
+}
+
+// Resolves 'yes' | 'no' | 'none'. 'none' = the user never actually answered (stdin hit EOF, or
+// the terminal went away): rl.question's callback then NEVER fires, which would hang startup
+// forever. Booting the app matters more than this prompt, so no answer means "skip it, ask again
+// next time" — never a silent decline the user did not make.
+function askYesNo(question) {
+  return new Promise((resolve) => {
+    const rl = require('node:readline').createInterface({ input: process.stdin, output: process.stdout });
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      rl.close();
+      resolve(v);
+    };
+    rl.on('close', () => finish('none')); // EOF / ^D / stdin closed
+    rl.question(question, (answer) => finish(/^n/i.test(String(answer).trim()) ? 'no' : 'yes'));
+  });
+}
+
+// Without tmux, a session's PTY is owned by the daemon and dies with it — a crash or a daemon
+// restart ends the user's running agent. session-start.ts picks the tmux tier ONLY when tmux is
+// on PATH, so a tmux-less machine silently gets the fragile tier and nobody says a word. A real
+// user lost every session this way. Offer to fix it, once, and never nag again.
+//
+// NOT an npm postinstall: that needs a package manager we can't assume, is skipped entirely under
+// `npm ci --ignore-scripts` (standard in CI), would run in Docker images where tmux is pointless,
+// and shelling out to a system installer from an install hook is exactly what supply-chain
+// scanners flag. A first-run prompt asks the person who is actually there.
+async function offerTmux() {
+  if (await have('tmux')) return;
+  const ackFile = path.join(configDir(), 'tmux-declined');
+  if (fs.existsSync(ackFile)) return;
+
+  const durability =
+    '[seshmux] tmux is not installed.\n' +
+    '  Your agent sessions will end if seshmux restarts or crashes.\n' +
+    '  With tmux, they survive restarts, updates, and crashes.';
+
+  // Non-interactive (piped, CI, launched by a GUI): state it, never block on a prompt nobody
+  // can answer, and do not record a decline the user never made.
+  if (!process.stdin.isTTY) {
+    console.log(`${durability}\n  Install tmux to make sessions durable.`);
+    return;
+  }
+
+  const installer = await tmuxInstaller();
+  if (!installer) {
+    console.log(`${durability}\n  Install tmux with your package manager to make sessions durable.`);
+    return;
+  }
+
+  console.log(durability);
+  const answer = await askYesNo(`\n  Install tmux now with ${installer.cmd}? [Y/n] `);
+  if (answer === 'none') return; // no answer given — boot anyway, ask again next launch
+  if (answer === 'no') {
+    try {
+      fs.mkdirSync(path.dirname(ackFile), { recursive: true });
+      fs.writeFileSync(ackFile, 'declined\n');
+    } catch {
+      /* best effort — worst case we ask again next launch */
+    }
+    console.log('[seshmux] continuing without tmux (sessions are not crash-safe). Not asking again.');
+    return;
+  }
+
+  console.log(`[seshmux] ${installer.cmd} ${installer.args.join(' ')}…`);
+  await new Promise((resolve) => {
+    const child = spawn(installer.cmd, installer.args, { stdio: 'inherit' });
+    child.on('exit', resolve);
+    child.on('error', resolve);
+  });
+  console.log(
+    (await have('tmux'))
+      ? '[seshmux] tmux installed — new sessions will survive restarts and crashes.'
+      : '[seshmux] tmux install did not complete; continuing without it.',
+  );
+}
+
 async function main() {
   // Subcommand dispatch (before arg parsing / server flow).
   const argv = process.argv.slice(2);
@@ -273,6 +366,11 @@ async function main() {
     if (!args.noOpen) openBrowser(reuseUrl);
     return;
   }
+
+  // Ask about tmux BEFORE the daemon starts, so a yes takes effect for the very first session
+  // (session-start.ts picks the tmux tier only if tmux is on PATH at spawn time). Only reached
+  // when we are actually starting seshmux — never when we just hand off to a running instance.
+  await offerTmux().catch(() => {}); // never block startup on this
 
   // Ensure a responsive daemon BEFORE the server comes up. Spawns detached +
   // unref'd if needed; recovers a stale socket. Non-fatal if it can't start —
