@@ -243,7 +243,10 @@ async function startDaemon(opts = {}) {
 
   fs.writeFileSync(pidPath, String(process.pid));
 
-  // Re-hydrate any surviving tmux-tier sessions (no-op if tmux absent).
+  // Adopt PTYs that outlived the previous daemon: holder tier first (ptyIds are
+  // preserved there, and they were already reserved in the PtyManager ctor),
+  // then tmux-tier sessions (no-op if tmux absent).
+  await ptyManager.rehydrateHolders();
   await ptyManager.rehydrateTmux();
 
   return { server, ptyManager, sockPath, pidPath, close };
