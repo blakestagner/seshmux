@@ -5,21 +5,221 @@
  * Provider-agnostic: spawns whatever argv it is handed (args come from the
  * server's provider.commands). NO agent binary names appear here.
  *
- * Two persistence tiers:
- *   - plain PTY: reattach survives any number of server connections via the
- *     in-memory ring buffer, but dies with the daemon.
+ * Two persistence tiers, BOTH of which survive the daemon's death:
+ *   - holder tier (default): a detached `daemon/holder.js` process owns the
+ *     PTY and speaks NDJSON over `<configDir>/holders/<ptyId>.sock`. The daemon
+ *     is just a client. Kill the daemon and the agent never notices; the next
+ *     daemon re-adopts the holder under its ORIGINAL ptyId (rehydrateHolders).
  *   - tmux tier (tmuxName present): `tmux new-session -A -s seshmux-<name>`,
  *     so the session survives a daemon restart and can be re-hydrated from
- *     `tmux ls` on startup.
+ *     `tmux ls` on startup. Unchanged.
+ *
+ * Externally (spawn/write/resize/kill/list/history RPCs, data/exit events, the
+ * ring buffer served on attach) nothing about this changed — the holder tier is
+ * internal re-plumbing. Daemon<->server protocol stays FROZEN at 1.
  *
  * Only dependency: @homebridge/node-pty-prebuilt-multiarch.
  */
 
 const pty = require('@homebridge/node-pty-prebuilt-multiarch');
-const { execFile } = require('node:child_process');
+const { execFile, spawn: spawnProcess } = require('node:child_process');
+const net = require('node:net');
+const fs = require('node:fs');
+const crypto = require('node:crypto');
 const path = require('node:path');
 const os = require('node:os');
-const { TMUX_PREFIX, RING_BUFFER_LINES, RING_BUFFER_BYTES } = require('./protocol');
+const {
+  TMUX_PREFIX,
+  RING_BUFFER_LINES,
+  RING_BUFFER_BYTES,
+  encode,
+  createDecoder,
+} = require('./protocol');
+
+const HOLDER_ENTRY = path.join(__dirname, 'holder.js');
+// Connect retries while a freshly-spawned holder boots node + binds its socket.
+const HOLDER_CONNECT_TRIES = 100;
+const HOLDER_CONNECT_DELAY_MS = 100;
+
+/**
+ * Path of a holder's unix socket. macOS caps sun_path at ~104 bytes, and a
+ * config dir can be arbitrarily deep (tests use mkdtemp under /var/folders/...),
+ * so fall back to a short /tmp name keyed by a hash of the holder dir when the
+ * natural path would overflow. The holder records the path it actually bound in
+ * its .json, so adoption never has to re-derive it.
+ */
+function holderSockPath(holderDir, ptyId) {
+  const natural = path.join(holderDir, ptyId + '.sock');
+  if (Buffer.byteLength(natural) <= 100) return natural;
+  const base = process.platform === 'win32' ? os.tmpdir() : '/tmp';
+  const h = crypto.createHash('sha1').update(holderDir).digest('hex').slice(0, 8);
+  return path.join(base, `smx-${h}-${ptyId}.sock`);
+}
+
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err && err.code === 'EPERM'; // alive, just not ours to signal
+  }
+}
+
+function unlinkQuiet(p) {
+  try {
+    fs.unlinkSync(p);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Client side of the holder link, shaped like a node-pty process (onData /
+ * onExit / write / resize / kill) so PtyManager entries and _wireProc don't
+ * care which tier they're on.
+ *
+ * Connects with retries (a just-spawned holder needs a moment to bind), queues
+ * writes until connected, and buffers inbound frames until onData/onExit are
+ * registered (adoption registers them AFTER awaiting ready()).
+ */
+class HolderClient {
+  constructor(sockPath, opts = {}) {
+    this._sockPath = sockPath;
+    this._tries = opts.tries || HOLDER_CONNECT_TRIES;
+    this._sock = null;
+    this._queue = [];
+    this._pendingData = [];
+    this._pendingExit = null;
+    this._onData = null;
+    this._onExit = null;
+    this._done = false; // exit delivered/queued — stop reconnecting
+    this._detached = false;
+    this._ready = false;
+    this._readyResolve = null;
+    this._readyPromise = new Promise((r) => {
+      this._readyResolve = r;
+    });
+    this._connect(0);
+  }
+
+  /** @returns {Promise<boolean>} true once the holder accepted us as ITS client. */
+  ready() {
+    return this._readyPromise;
+  }
+
+  _settleReady(ok) {
+    if (this._readyResolve) {
+      const r = this._readyResolve;
+      this._readyResolve = null;
+      r(ok);
+    }
+  }
+
+  _connect(attempt) {
+    const s = net.connect(this._sockPath);
+    const decoder = createDecoder();
+    s.on('connect', () => {
+      this._sock = s;
+      for (const frame of this._queue) s.write(frame);
+      this._queue = [];
+    });
+    s.on('data', (chunk) => {
+      for (const m of decoder.push(chunk.toString('utf8'))) this._handle(m);
+    });
+    s.on('error', () => {});
+    s.on('close', () => {
+      if (this._sock === s) this._sock = null;
+      if (this._done || this._detached) return;
+      // Attached-then-dropped means the holder itself died — its PTY died with
+      // it (master fd closed). Anything else is a not-yet-listening socket.
+      if (this._ready || attempt >= this._tries) {
+        this._settleReady(false);
+        this._fail(1);
+        return;
+      }
+      setTimeout(() => this._connect(attempt + 1), HOLDER_CONNECT_DELAY_MS);
+    });
+  }
+
+  _handle(msg) {
+    switch (msg && msg.event) {
+      case 'ready':
+        this._ready = true;
+        this._settleReady(true);
+        return;
+      case 'busy':
+        // Another daemon owns this holder. Never double-attach: give up on it.
+        // (Adoption checks ready() and drops the client before it ever becomes
+        // an entry; a spawn that somehow lost the race goes dead rather than
+        // silently mute.)
+        this._settleReady(false);
+        this._fail(1);
+        return;
+      case 'data':
+        if (this._onData) this._onData(msg.data);
+        else this._pendingData.push(msg.data);
+        return;
+      case 'exit':
+        this._fail(msg.code);
+        return;
+      default:
+      // ignore
+    }
+  }
+
+  _fail(code) {
+    if (this._done) return;
+    this._done = true;
+    if (this._onExit) this._onExit({ exitCode: code });
+    else this._pendingExit = { exitCode: code };
+  }
+
+  _send(msg) {
+    const frame = encode(msg);
+    if (this._sock && !this._sock.destroyed) this._sock.write(frame);
+    else if (!this._done) this._queue.push(frame);
+  }
+
+  onData(fn) {
+    this._onData = fn;
+    const pending = this._pendingData;
+    this._pendingData = [];
+    for (const d of pending) fn(d);
+  }
+
+  onExit(fn) {
+    this._onExit = fn;
+    if (this._pendingExit) {
+      const e = this._pendingExit;
+      this._pendingExit = null;
+      fn(e);
+    }
+  }
+
+  write(data) {
+    this._send({ method: 'write', data });
+  }
+
+  resize(cols, rows) {
+    this._send({ method: 'resize', cols, rows });
+  }
+
+  kill() {
+    this._send({ method: 'kill' });
+  }
+
+  /** Let go of the holder without touching its PTY (daemon shutting down). */
+  detach() {
+    this._detached = true;
+    if (this._sock) {
+      try {
+        this._sock.end(); // end(), not destroy(): flush a queued kill first
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
 
 // Dead PTY entries (alive=false) linger so a recently-exited session can still
 // be re-attached / rehydrated, then get swept once past this grace window —
@@ -141,7 +341,14 @@ class PtyManager {
     this._nextId = 1;
     /** listeners: (event) => void, where event is a {event,...} object */
     this._onEvent = null;
-    this._configTag = opts.configDir || defaultConfigDirTag();
+    this._configDir = opts.configDir || defaultConfigDirTag();
+    this._configTag = this._configDir;
+    this._holderDir = path.join(this._configDir, 'holders');
+    // ID stability: surviving holders keep their ORIGINAL ptyId when adopted
+    // (the server and browser hold ptyIds). Reserve those ids synchronously
+    // HERE — rehydrateHolders() is async and the daemon's socket is already
+    // listening by then, so a spawn racing it must not hand out a colliding id.
+    this._reserveHolderIds();
     // Unref'd so it never keeps the daemon process alive on its own.
     this._sweepTimer = setInterval(() => void this._sweepDead(), SWEEP_INTERVAL_MS);
     this._sweepTimer.unref();
@@ -166,9 +373,27 @@ class PtyManager {
     }
   }
 
-  /** Stop the background sweep. Called by the daemon on close(). */
+  /** Bump _nextId past every ptyId already claimed by a holder on disk. */
+  _reserveHolderIds() {
+    let files = [];
+    try {
+      files = fs.readdirSync(this._holderDir);
+    } catch {
+      return; // no holders dir yet
+    }
+    for (const f of files) {
+      const m = /^pty-(\d+)\.json$/.exec(f);
+      if (m && Number(m[1]) >= this._nextId) this._nextId = Number(m[1]) + 1;
+    }
+  }
+
+  /** Stop the background sweep, and let go of holders WITHOUT killing them —
+   *  their PTYs are the whole point: they outlive this daemon. */
   close() {
     clearInterval(this._sweepTimer);
+    for (const e of this._ptys.values()) {
+      if (e.proc && typeof e.proc.detach === 'function') e.proc.detach();
+    }
   }
 
   /** Register the sink that receives {event:'data'|'exit', ...} objects. */
@@ -286,6 +511,34 @@ class PtyManager {
   }
 
   /**
+   * Launch a detached holder for this PTY and return a node-pty-shaped client
+   * for it. detached + stdio:'ignore' + unref() + the holder's SIGHUP handler
+   * are what make `kill -9 <daemon>` a non-event for the agent.
+   */
+  _spawnHolder({ ptyId, cwd, args, cols, rows }) {
+    fs.mkdirSync(this._holderDir, { recursive: true, mode: 0o700 });
+    const sock = holderSockPath(this._holderDir, ptyId);
+    const spec = {
+      holderDir: this._holderDir,
+      ptyId,
+      sock,
+      cwd,
+      args,
+      cols,
+      rows,
+      env: { SESHMUX_PTY_ID: ptyId },
+    };
+    const child = spawnProcess(process.execPath, [HOLDER_ENTRY, JSON.stringify(spec)], {
+      detached: true,
+      stdio: 'ignore',
+      cwd,
+      env: process.env,
+    });
+    child.unref();
+    return new HolderClient(sock);
+  }
+
+  /**
    * Spawn a PTY running the given argv.
    * @param {{cwd?:string, args:string[], cols?:number, rows?:number, tmuxName?:string}} params
    * @returns {{ptyId:string}}
@@ -304,8 +557,7 @@ class PtyManager {
     // mapping. Additive env var, not a wire-protocol change.
     const ptyId = this._nextPtyId();
 
-    let file;
-    let argv;
+    let proc;
     let fullTmuxName = null;
     if (tmuxName) {
       // tmux tier: attach-or-create a named session running the argv.
@@ -324,34 +576,28 @@ class PtyManager {
       // so its hook writes to a now-stale status file and that session
       // degrades to heuristics until it's respawned — graceful, not fatal).
       fullTmuxName = TMUX_PREFIX + tmuxName;
-      file = 'tmux';
       const envFlags = ['-e', `SESHMUX_PTY_ID=${ptyId}`];
       if (process.env.SESHMUX_CONFIG_DIR) {
         envFlags.push('-e', `SESHMUX_CONFIG_DIR=${process.env.SESHMUX_CONFIG_DIR}`);
       }
-      argv = ['new-session', '-A', '-s', fullTmuxName, ...envFlags, '--', ...args];
-    } else {
-      file = args[0];
-      argv = args.slice(1);
-    }
-
-    const baseEnv = tmuxName ? tmuxEnv() : { ...process.env };
-    baseEnv.SESHMUX_PTY_ID = ptyId;
-
-    const proc = pty.spawn(file, argv, {
-      name: 'xterm-256color',
-      cols: columns,
-      rows: lines,
-      cwd: cwdResolved,
-      env: baseEnv,
-    });
-
-    if (fullTmuxName) {
+      const argv = ['new-session', '-A', '-s', fullTmuxName, ...envFlags, '--', ...args];
+      const baseEnv = tmuxEnv();
+      baseEnv.SESHMUX_PTY_ID = ptyId;
+      proc = pty.spawn('tmux', argv, {
+        name: 'xterm-256color',
+        cols: columns,
+        rows: lines,
+        cwd: cwdResolved,
+        env: baseEnv,
+      });
       // Hide tmux's own status bar for THIS session only — seshmux draws its
       // own statusbar, so the blue tmux chrome is redundant noise. Scoped to
       // the session (not -g) because we share the user's default tmux server.
       hideTmuxStatus(fullTmuxName);
       markTmuxConfig(fullTmuxName, this._configTag);
+    } else {
+      // Holder tier: a detached process owns the PTY, we're only its client.
+      proc = this._spawnHolder({ ptyId, cwd: cwdResolved, args, cols: columns, rows: lines });
     }
 
     const entry = {
@@ -489,6 +735,72 @@ class PtyManager {
         // ignore
       }
     }
+  }
+
+  /**
+   * On daemon startup, adopt every surviving holder under its ORIGINAL ptyId.
+   *
+   * For each `<holderDir>/<ptyId>.json`:
+   *   - pid dead        -> crash leftovers; delete json + socket, no entry
+   *   - socket refuses  -> holder wedged; leave the files, no entry
+   *   - {event:'busy'}  -> another daemon already holds it; skip (no double-attach)
+   *   - ready           -> adopt: the holder replays its ring buffer, so bytes
+   *                        produced while NO daemon was attached still reach
+   *                        the client on reattach.
+   */
+  async rehydrateHolders() {
+    let files = [];
+    try {
+      files = fs.readdirSync(this._holderDir);
+    } catch {
+      return this.count();
+    }
+    for (const f of files) {
+      if (!f.endsWith('.json')) continue;
+      const jsonPath = path.join(this._holderDir, f);
+      let meta;
+      try {
+        meta = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+      } catch {
+        unlinkQuiet(jsonPath);
+        continue;
+      }
+      if (!meta || !meta.ptyId || !meta.pid || !meta.sock) {
+        unlinkQuiet(jsonPath);
+        continue;
+      }
+      if (this._ptys.has(meta.ptyId)) continue; // already ours
+      if (!pidAlive(meta.pid)) {
+        unlinkQuiet(jsonPath);
+        unlinkQuiet(meta.sock);
+        continue;
+      }
+      // Short retry budget: an existing holder is either listening now or isn't.
+      const client = new HolderClient(meta.sock, { tries: 3 });
+      if (!(await client.ready())) {
+        client.detach();
+        continue;
+      }
+      const entry = {
+        ptyId: meta.ptyId,
+        proc: client,
+        cwd: meta.cwd,
+        args: meta.args,
+        tmuxName: null,
+        cols: meta.cols || 80,
+        rows: meta.rows || 24,
+        alive: true,
+        deadAt: null,
+        ring: [],
+        ringLines: 0,
+        ringBytes: 0,
+      };
+      this._ptys.set(meta.ptyId, entry);
+      this._wireProc(entry); // registers onData -> flushes the replayed ring
+      const n = Number(String(meta.ptyId).replace('pty-', ''));
+      if (Number.isFinite(n) && n >= this._nextId) this._nextId = n + 1;
+    }
+    return this.count();
   }
 
   /**

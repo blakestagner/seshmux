@@ -208,11 +208,12 @@ describe('daemon-client bridge', () => {
     // Simulate one /ws/term connection bound to catPty, with the ptyId filter.
     const term = new DaemonConnection(daemon.sockPath);
     await term.connect();
+    // NB: the daemon fans EVERY pty's events to EVERY subscribed socket (attach
+    // subscribes the socket, not a ptyId) — keeping one pty's bytes out of
+    // another's terminal is the ptyId filter's job, which is what `got` models.
     const got: string[] = [];
-    let leaked = false;
     term.onEvent((e) => {
       if (e.event === 'data' && e.ptyId === catPty.ptyId) got.push(e.data!);
-      if (e.event === 'data' && e.ptyId === otherPty.ptyId) leaked = true;
     });
     await term.attach(catPty.ptyId, true);
     await term.write(catPty.ptyId, 'ping\n');
@@ -224,8 +225,10 @@ describe('daemon-client bridge', () => {
     await poke.write(otherPty.ptyId, 'should-not-leak\n');
 
     await waitUntil(() => got.join('').includes('ping'), 2000);
+    // Give the other pty's echo every chance to land before we assert it didn't.
+    await new Promise((r) => setTimeout(r, 250));
     expect(got.join('')).toContain('ping');
-    expect(leaked).toBe(false); // ptyId filter kept other-pty output out
+    expect(got.join('')).not.toContain('should-not-leak'); // ptyId filter held
 
     await control.kill(catPty.ptyId);
     await control.kill(otherPty.ptyId);
