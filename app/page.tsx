@@ -23,6 +23,7 @@ import AgentsView from '../components/AgentsView';
 import TeamPanel from '../components/TeamPanel';
 import EmptyComposer from '../components/EmptyComposer';
 import type { ProviderId } from '../lib/client/types';
+import { DetectedProvidersProvider, providersFromEnv } from '../lib/client/providers';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import { clampSize, readPersistedSize, clampSplit } from '../lib/client/drag-resize';
@@ -45,7 +46,14 @@ const DEFAULT_RATIO = 0.5;
 // client never imports server/ code, so this is an independent local mirror,
 // same pattern as lib/client/types.ts mirroring server Project/SessionMeta).
 type AgentEnv = { found: boolean; path?: string; version?: string; store: { found: boolean; projects: number; bytes: number } };
-type EnvResponse = { claude: AgentEnv; codex: AgentEnv; tmux: { found: boolean }; rg: { found: boolean } };
+// `commands` keys = the providers the server actually detected (see lib/client/providers).
+type EnvResponse = {
+  claude: AgentEnv;
+  codex: AgentEnv;
+  tmux: { found: boolean };
+  rg: { found: boolean };
+  commands?: Record<string, unknown>;
+};
 
 function SetupGate({ onRescan }: { onRescan: () => void }) {
   return (
@@ -734,9 +742,14 @@ export default function Page() {
   const noAgentFound = env ? !env.claude.found && !env.codex.found : false;
   if (noAgentFound) return <SetupGate onRescan={rescan} />;
 
+  // env is resolved here (the `checking` gate above guarantees it) — thread the
+  // detected-provider set down once so no component re-fetches /api/env and no
+  // cross-agent button renders before detection is known.
   return (
-    <AppStateProvider>
-      <AppShell />
-    </AppStateProvider>
+    <DetectedProvidersProvider value={providersFromEnv(env)}>
+      <AppStateProvider>
+        <AppShell />
+      </AppStateProvider>
+    </DetectedProvidersProvider>
   );
 }

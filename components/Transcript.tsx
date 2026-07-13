@@ -9,6 +9,7 @@ import { getTranscript, startSession, bridgeHandoff, bridgeReview, getTeamMember
 import type { Msg, Ctx, BridgeStart } from '../lib/client/api';
 import type { ProviderId } from '../lib/client/types';
 import { useAppState } from '../lib/client/store';
+import { useDetectedProviders, bridgeTarget } from '../lib/client/providers';
 import styles from './Transcript.module.scss';
 
 // Ported from mockup.html renderTranscript() (~1624). Header: title, meta
@@ -111,11 +112,12 @@ export default function Transcript({ projectId, sessionId, title, provider }: Tr
   const [reloadKey, setReloadKey] = useState(0);
 
   const project = state.projects.find((p) => p.id === projectId);
-  // The bridge always targets the OPPOSITE provider (mockup: labels flip by
-  // source provider). Buttons say "Continue in ⬡ Codex" from a claude session.
-  const sourceProvider = provider ?? project?.provider ?? 'claude';
-  const otherProvider: ProviderId = sourceProvider === 'codex' ? 'claude' : 'codex';
-  const other = PROV[otherProvider];
+  // The bridge targets the opposite DETECTED provider (mockup: labels flip by
+  // source provider). Buttons say "Continue in ⬡ codex" from a claude session —
+  // and don't render at all on a single-agent machine (null target).
+  const sourceProvider: ProviderId = provider ?? project?.provider ?? 'claude';
+  const otherProvider = bridgeTarget(sourceProvider, useDetectedProviders());
+  const other = otherProvider ? PROV[otherProvider] : null;
 
   async function handleResume() {
     if (!project) return;
@@ -208,14 +210,16 @@ export default function Transcript({ projectId, sessionId, title, provider }: Tr
             <Button variant="primary" disabled={resuming || !project} onClick={handleResume}>
               ↻ Resume session
             </Button>
-            {!state.tabs.some((t) => t.linked && t.linkedKind === 'handoff' && t.linkSrc === sessionId) ? (
+            {other && !state.tabs.some((t) => t.linked && t.linkedKind === 'handoff' && t.linkSrc === sessionId) ? (
               <Button disabled={bridging || !project} onClick={() => runBridge(bridgeHandoff)}>
                 ⇄ Continue in {other.glyph} {otherProvider}
               </Button>
             ) : null}
-            <Button disabled={bridging || !project} onClick={() => runBridge(bridgeReview)}>
-              ⊙ Review with {other.glyph} {otherProvider}
-            </Button>
+            {other ? (
+              <Button disabled={bridging || !project} onClick={() => runBridge(bridgeReview)}>
+                ⊙ Review with {other.glyph} {otherProvider}
+              </Button>
+            ) : null}
             <Button onClick={copySessionId}>{copied ? 'Copied' : 'Copy session id'}</Button>
           </div>
           {actionError ? <div className={styles.actionError}>{actionError}</div> : null}

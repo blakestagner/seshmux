@@ -35,6 +35,10 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  // Single-provider machine: the chips are gone (see provFilterOptions), so keep
+  // the filter/visibility buttons pinned right where the flex:1 chips used to
+  // push them. No-op when the chips are present.
+  justify-content: flex-end;
 }
 
 // Sidebar-wide session filter (mock lines 61-63), above the project list.

@@ -9,17 +9,13 @@ import { getSessions, startSession, createWorkspace, getEnvTeams, startTeam } fr
 import type { TeamStartPayload } from '../lib/client/api';
 import type { SessionMeta, Project, Config, ProviderId } from '../lib/client/types';
 import { useAppState } from '../lib/client/store';
+import { useDetectedProviders, provFilterOptions } from '../lib/client/providers';
 import type { RailSort, Tab } from '../lib/client/store';
 import NewSessionModal, { type SessionMode } from './NewSessionModal';
 import TeamModal, { teamsAllowed } from './TeamModal';
 import FilterMenu from './FilterMenu';
 import styles from './Rail.module.scss';
 
-const PROV_OPTIONS: { id: 'all' | 'claude' | 'codex'; label: string }[] = [
-  { id: 'all', label: 'All' },
-  { id: 'claude', label: 'Claude' },
-  { id: 'codex', label: 'Codex' },
-];
 
 const CHUNK = 5;
 const FILTER_THRESHOLD = 6;
@@ -126,15 +122,11 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenPro
   }, []);
   const teamsGateOk = teamsAllowed(teammateMode);
 
-  // Providers offered in the modal: every provider seen across loaded projects
-  // (claude always present; codex only when its store was detected). Distinct,
-  // claude-first.
-  const availableProviders: ProviderId[] = (() => {
-    const seen = new Set<ProviderId>(projects.map((p) => p.provider));
-    const order: ProviderId[] = ['claude', 'codex'];
-    const list = order.filter((p) => seen.has(p));
-    return list.length ? list : ['claude'];
-  })();
+  // Providers offered in the modal / the filter chips: the env-detected set (a
+  // detected agent with zero sessions yet must still be offerable, so this is
+  // NOT derived from the loaded projects' providers).
+  const availableProviders = useDetectedProviders();
+  const provOptions = provFilterOptions(availableProviders);
 
   async function handleStartSession(provider: ProviderId, mode: SessionMode) {
     const project = modalProject;
@@ -339,19 +331,21 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenPro
         <span className={styles.scan}>{totalProjects}</span>
       </div>
       <div className={styles.provFilter}>
-        <div className={styles.provChips} role="group" aria-label="Filter by provider">
-          {PROV_OPTIONS.map((opt) => (
-            <button
-              key={opt.id}
-              type="button"
-              className={`${styles.chip} ${provFilter === opt.id ? styles.chipActive : ''}`}
-              aria-pressed={provFilter === opt.id}
-              onClick={() => dispatch({ type: 'setProvFilter', filter: opt.id })}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
+        {provOptions.length ? (
+          <div className={styles.provChips} role="group" aria-label="Filter by provider">
+            {provOptions.map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                className={`${styles.chip} ${provFilter === opt.id ? styles.chipActive : ''}`}
+                aria-pressed={provFilter === opt.id}
+                onClick={() => dispatch({ type: 'setProvFilter', filter: opt.id })}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <FilterMenu />
         <IconButton label="Project visibility" variant="boxed" size={28} onClick={() => onOpenProjectVisibility?.()}>
           ⋯

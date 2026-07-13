@@ -27,6 +27,7 @@ import {
   type WorkspaceFinishMode,
 } from '../lib/client/api';
 import { useAppState } from '../lib/client/store';
+import { useDetectedProviders, bridgeTarget } from '../lib/client/providers';
 import { retryRepaintUntilReady } from '../lib/client/repaint-retry';
 import StatusDot from './ui/StatusDot';
 import ProviderBadge, { PROV } from './ui/ProviderBadge';
@@ -338,13 +339,14 @@ export default function TerminalPane({
   // the common case. Require a REAL matched project (rehydrated PTYs can carry
   // a raw-cwd fallback projectId that no session store knows → guaranteed 404).
   const project = state.projects.find((p) => p.id === projectId);
-  const canBridge = !!project;
   const bridgeSessionId = sessionId ?? 'latest';
-  // Bridge always targets the OPPOSITE provider (mirrors Transcript). Label flips
-  // by source provider — from a codex session the buttons say ✳ claude.
+  // Bridge targets the opposite DETECTED provider (mirrors Transcript). Label flips
+  // by source provider — from a codex session the buttons say ✳ claude. No other
+  // provider on this machine → no bridge actions at all.
   const sourceProvider: ProviderId = provider ?? project?.provider ?? 'claude';
-  const otherProvider: ProviderId = sourceProvider === 'codex' ? 'claude' : 'codex';
-  const other = PROV[otherProvider];
+  const otherProvider = bridgeTarget(sourceProvider, useDetectedProviders());
+  const other = otherProvider ? PROV[otherProvider] : null;
+  const canBridge = !!project && !!other;
 
   // Workspace chip + finish flow (Spec 1). The naming convention (agent/<slug>-<n>,
   // see server/lib/workspaces.ts) IS the marker — no separate tab flag needed.
