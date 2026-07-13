@@ -21,13 +21,29 @@
     "bin/",
     "daemon/",
     ".next/standalone/",
-    "docs/screenshots/",
     "README.md",
     "LICENSE"
   ],
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "ai-agents",
+    "tui",
+    "terminal",
+    "session-manager",
+    "local-first",
+    "developer-tools"
+  ],
+  "author": "blakestagner",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blakestagner/seshmux.git"
+  },
+  "homepage": "https://github.com/blakestagner/seshmux#readme",
+  "bugs": {
+    "url": "https://github.com/blakestagner/seshmux/issues"
+  },
   "type": "commonjs",
   "dependencies": {
     "@fastify/websocket": "^11.3.0",

@@ -329,7 +329,7 @@ npm run build        # Next.js standalone bundle via scripts/build-standalone.sh
 
 | Light | Dark |
 | --- | --- |
-| ![seshmux — light](docs/screenshots/shell-light.png) | ![seshmux — dark](docs/screenshots/shell-dark.png) |
+| ![seshmux — light](https://raw.githubusercontent.com/blakestagner/seshmux/main/docs/screenshots/shell-light.png) | ![seshmux — dark](https://raw.githubusercontent.com/blakestagner/seshmux/main/docs/screenshots/shell-dark.png) |
 
 ## License
 
