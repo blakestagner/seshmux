@@ -129,9 +129,11 @@ One click gives an agent its own isolated checkout. Two agents can work the same
 
 | Option | What happens |
 | --- | --- |
-| **Merge** | `git merge --no-ff <branch>` into the default branch. On conflict, the error is surfaced and *nothing* is changed — resolve manually. |
+| **Merge** | `git merge --no-ff <branch>` into the default branch, then the worktree is removed. Refused (nothing changed) if the worktree has uncommitted edits to tracked files, or if the branch has no commits to merge — in both cases a merge would move nothing and the cleanup would eat the work. On conflict the parent is restored to its pre-merge HEAD and the error is surfaced. |
 | **Keep branch** | Worktree is removed, the branch survives for a later manual merge/PR. |
 | **Discard** | Worktree force-removed and branch deleted. If the tree is dirty, you must type `discard` to confirm — uncommitted work is never silently destroyed. |
+
+**Gitignored files are preserved, not judged.** An agent working in a worktree creates files git never tracks: a `.env`, a `dev.sqlite` it migrated, a `terraform.tfstate`. `git worktree remove` deletes those, even without `--force`. So on **merge** and **keep**, every ignored *file* is moved to `<repo>/.seshmux/leftovers/<workspace>/` first and the path is reported back to you. Ignored *directories* (`node_modules/`, `dist/`, `.next/`) are discarded — they are rebuildable and expensive to copy. Nothing tries to guess which filenames "matter"; that guess is unwinnable, so it isn't made.
 
 **Details worth knowing:**
 - All git operations run via `execFile` with argument arrays — no shell interpolation, repo paths validated against known projects.

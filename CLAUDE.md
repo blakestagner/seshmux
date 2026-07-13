@@ -19,7 +19,8 @@ Sessions from `~/.claude` and `~/.codex` are merged by repo cwd into Projects; e
 - **Cross-agent bridge** (handoff/review/scratchpad/plan-off/MCP/approval) → `server/lib/bridge/`, `server/routes/bridge.ts`, `server/routes/approval.ts`.
 - **Live events** (status dots, ctx meters, approval, scratchpad refresh) → `server/events-hub.ts` + the `EventMessage` union in `lib/client/ws.ts`.
 - **Visual appearance** → `components/ui/` primitives + `styles/tokens.scss` + `styles/typography.scss`. Feature components compose, never redraw.
-- **Needs-input detection** → `server/lib/needs-input.ts` (+ provider `needsInputPatterns`).
+- **Needs-input detection** → `server/lib/needs-input.ts` (+ provider `needsInputPatterns`). The Claude TUI emits ZERO line feeds — `stripAnsi` reconstructs rows from cursor-moving CSI escapes. Test against real captured output, not hand-written strings with `\n` in them.
+- **Worktree finish / merge-keep-discard** → `server/lib/workspaces.ts` (see hard rule 7).
 
 ## Key seams (touch these deliberately)
 - `server/session-start.ts` — ALL PTY session spawning (shared by term + bridge routes).
@@ -48,5 +49,6 @@ Sessions from `~/.claude` and `~/.codex` are merged by repo cwd into Projects; e
 4. Update-safety invariant: nothing may kill daemon-owned PTYs during a server update. Daemon protocol is frozen at 1.
 5. Never ship Anthropic/OpenAI logo assets — generic glyphs (✳/⬡) + our colors only.
 6. Codex work: schema-discover against real `~/.codex/sessions` files first, never guess fields.
+7. Workspace finish (`server/lib/workspaces.ts`) is a data-loss path: `git worktree remove` deletes gitignored files even without `--force`. Preserve them to `.seshmux/leftovers/`, never name-match which ones "matter" (a heuristic shipped four consecutive data-loss bugs). A guard on a destructive path fails CLOSED — if git can't answer, refuse.
 
 Domain knowledge: see `.claude/skills/` (style-system, provider-abstraction, daemon-protocol, agent-bridge).
