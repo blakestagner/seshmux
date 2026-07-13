@@ -36,6 +36,13 @@ export function bridgeTarget(source: ProviderId, detected: ProviderId[]): Provid
 
 const PROV_CHIP_LABEL: Record<ProviderId, string> = { claude: 'Claude', codex: 'Codex' };
 
+/** Provider identity (the ✳/⬡ badge on tabs, session rows, cards, statusbar) only
+ *  says something when there is more than one provider to tell apart. On a
+ *  single-agent machine every badge would read the same, so they are all noise. */
+export function showsProviderIdentity(detected: ProviderId[]): boolean {
+  return detected.length > 1;
+}
+
 /** Rail's provider-filter chips. One detected provider = nothing to filter
  *  between, so the whole segmented control disappears (a filter with a single
  *  real option is noise). */

@@ -9,7 +9,7 @@ import { getSessions, startSession, createWorkspace, getEnvTeams, startTeam } fr
 import type { TeamStartPayload } from '../lib/client/api';
 import type { SessionMeta, Project, Config, ProviderId } from '../lib/client/types';
 import { useAppState } from '../lib/client/store';
-import { useDetectedProviders, provFilterOptions } from '../lib/client/providers';
+import { useDetectedProviders, provFilterOptions, showsProviderIdentity } from '../lib/client/providers';
 import type { RailSort, Tab } from '../lib/client/store';
 import NewSessionModal, { type SessionMode } from './NewSessionModal';
 import TeamModal, { teamsAllowed } from './TeamModal';
@@ -127,6 +127,8 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenPro
   // NOT derived from the loaded projects' providers).
   const availableProviders = useDetectedProviders();
   const provOptions = provFilterOptions(availableProviders);
+  // Per-session agent label: only tells you something when there are two agents.
+  const showProvider = showsProviderIdentity(availableProviders);
 
   async function handleStartSession(provider: ProviderId, mode: SessionMode) {
     const project = modalProject;
@@ -530,7 +532,9 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenPro
                             <span className={styles.workspaceMark} title="Workspace session">⑃</span>
                           ) : null}
                           <span className={styles.sessTitle}>{s.title || s.branch || 'untitled'}</span>
-                          <span className={`${styles.sessAgent} ${styles[s.provider]}`}>{s.provider}</span>
+                          {showProvider ? (
+                            <span className={`${styles.sessAgent} ${styles[s.provider]}`}>{s.provider}</span>
+                          ) : null}
                         </div>
                         <div className={styles.sessSub}>
                           {s.branch ? `${s.branch} · ` : ''}
