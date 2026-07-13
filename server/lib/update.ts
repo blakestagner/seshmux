@@ -42,6 +42,16 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
+// The daemon deliberately OUTLIVES a server update (hard rule 4), so after `Update & restart`
+// the server is new while the daemon keeps running the OLD code — indefinitely, and with the
+// newer additive RPCs simply missing. Nothing is broken; some features are unavailable until a
+// full seshmux restart. This is the pure decision for that nudge.
+// Unknown/empty on EITHER side (dev server has no SESHMUX_VERSION) -> never stale, never nag.
+export function isDaemonStale(daemonVersion?: string | null, serverVersion?: string | null): boolean {
+  if (!daemonVersion || !serverVersion) return false;
+  return compareVersions(serverVersion, daemonVersion) > 0;
+}
+
 // Install method from an already-resolved argv path + npm global prefix. npx MUST be right
 // (it gates applyUpdate's reject); anchor on the stable `_npx` cache segment, not a hash.
 export function detectInstallMethod(opts: {

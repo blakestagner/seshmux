@@ -18,7 +18,17 @@ const http = require('node:http');
 const { randomBytes } = require('node:crypto');
 const path = require('node:path');
 const fs = require('node:fs');
-const { ensureDaemon } = require('../daemon/ensure');
+const { ensureDaemon, pidAlive, paths, configDir } = require('../daemon/ensure');
+
+// The daemon's pid, from the pidfile it writes in the config dir. null when it isn't running.
+function readDaemonPid() {
+  try {
+    const pid = Number(fs.readFileSync(paths(configDir()).pid, 'utf8').trim());
+    return Number.isInteger(pid) && pid > 0 && pidAlive(pid) ? pid : null;
+  } catch {
+    return null;
+  }
+}
 
 // Absolute path to THIS cli entry, inherited by the server child. The MCP
 // bridge registration writes it into agent configs (`node <bin> mcp-bridge`) —
@@ -88,12 +98,17 @@ function parseArgs(argv) {
   // $PORT is honoured because server/index.ts already does — without this the CLI
   // silently ignored it and booted on 4700 anyway. --port still wins over the env.
   const envPort = Number(process.env.PORT);
-  const args = { port: Number.isInteger(envPort) && envPort > 0 ? envPort : 4700, noOpen: false };
+  const args = {
+    port: Number.isInteger(envPort) && envPort > 0 ? envPort : 4700,
+    noOpen: false,
+    restartDaemon: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--port' || a === '-p') args.port = Number(argv[++i]);
     else if (a.startsWith('--port=')) args.port = Number(a.slice(7));
     else if (a === '--no-open') args.noOpen = true;
+    else if (a === '--restart-daemon') args.restartDaemon = true;
   }
   if (!Number.isInteger(args.port) || args.port <= 0) args.port = 4700;
   return args;
@@ -142,6 +157,35 @@ async function main() {
   }
 
   const args = parseArgs(argv);
+
+  // --restart-daemon: the ONLY way to upgrade the daemon. ensureDaemon() treats any daemon that
+  // answers hello as 'ok' and reuses it (daemon/ensure.js classify()), which is what keeps your
+  // sessions alive across server updates — but it also means a daemon started months ago runs
+  // forever, missing every RPC added since. Restarting seshmux does NOT replace it. This does.
+  //
+  // Destructive on purpose, so it is explicit and never automatic: tmux-tier sessions rehydrate
+  // from `tmux ls` and survive, but PLAIN-tier PTYs die with the daemon. Hence a flag the user
+  // types, not something the update flow does behind their back.
+  if (args.restartDaemon) {
+    const before = readDaemonPid();
+    if (before) {
+      console.log(`[seshmux] stopping daemon ${before} — tmux-backed sessions survive; any non-tmux PTYs will end`);
+      try {
+        process.kill(before, 'SIGTERM');
+      } catch {
+        /* already gone */
+      }
+      for (let i = 0; i < 40 && pidAlive(before); i++) await new Promise((r) => setTimeout(r, 100));
+      if (pidAlive(before)) {
+        console.error(`[seshmux] daemon ${before} did not stop; not starting a second one`);
+        process.exit(1);
+      }
+    } else {
+      console.log('[seshmux] no daemon running');
+    }
+    const { spawned } = await ensureDaemon();
+    console.log(`[seshmux] daemon ${spawned ? 'restarted' : 'already up'} (pid ${readDaemonPid() ?? '?'})`);
+  }
 
   // If a healthy seshmux already runs on the requested port range, just open the
   // browser to it — no duplicate server, no port fight.

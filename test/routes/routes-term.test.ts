@@ -124,3 +124,41 @@ describe('GET /api/sessions/live', () => {
     expect(res.json().live).toEqual([]);
   });
 });
+
+// A daemon that predates the additive `history` RPC is EXPECTED (the daemon outlives server
+// updates by design) and the UI degrades to the ring buffer — so it must NOT be an error
+// status: the browser logs any 4xx/5xx as a red console error on a perfectly healthy app.
+describe('GET /api/term/:ptyId/history — unsupported is a 200 answer, not a failure', () => {
+  it('returns { supported: true, data } when the daemon has the method', async () => {
+    const f = makeApp({
+      dialFn: (async () => ({ history: async () => ({ data: 'scrollback' }), close: () => {} })) as never,
+    });
+    const res = await f.inject({ method: 'GET', url: '/api/term/pty-1/history' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ supported: true, data: 'scrollback' });
+  });
+
+  it('answers 200 { supported: false } (not 501) when the daemon lacks the method', async () => {
+    const f = makeApp({
+      dialFn: (async () => ({
+        history: async () => { throw new Error('unknown method: history'); },
+        close: () => {},
+      })) as never,
+    });
+    const res = await f.inject({ method: 'GET', url: '/api/term/pty-1/history' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ supported: false, data: '' });
+  });
+
+  it('still 500s on a genuine daemon failure', async () => {
+    const f = makeApp({
+      dialFn: (async () => ({
+        history: async () => { throw new Error('pty not found'); },
+        close: () => {},
+      })) as never,
+    });
+    const res = await f.inject({ method: 'GET', url: '/api/term/pty-1/history' });
+    expect(res.statusCode).toBe(500);
+    expect(res.json().error).toContain('pty not found');
+  });
+});

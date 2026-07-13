@@ -164,8 +164,11 @@ export default async function termRoutes(f: FastifyInstance, deps: TermRouteDeps
 
   // GET /api/term/:ptyId/history — "fetch history": deep width-correct
   // scrollback via the daemon's additive history RPC (tmux capture-pane;
-  // ring-buffer fallback). Older daemons without the method → 501, so the UI
-  // can hide the affordance instead of erroring.
+  // ring-buffer fallback). A daemon predating the method is EXPECTED (the daemon
+  // outlives server updates by design) and the UI degrades cleanly to the ring
+  // buffer — so that's a PROBE answer, not a failure: 200 + supported:false
+  // (same shape as /api/teams/members?leadSession=). A 501/500 painted the
+  // browser console red on a perfectly healthy app. Real daemon failures still 500.
   f.get<{ Params: { ptyId: string }; Querystring: { lines?: string } }>(
     '/api/term/:ptyId/history',
     async (req, reply) => {
@@ -174,10 +177,11 @@ export default async function termRoutes(f: FastifyInstance, deps: TermRouteDeps
       try {
         conn = await (deps.dialFn ?? dial)();
         const { data } = await withTimeout(conn.history(req.params.ptyId, lines), 5000, 'history timed out');
-        return reply.send({ data });
+        return reply.send({ supported: true, data });
       } catch (e) {
         const msg = (e as Error).message || String(e);
-        return reply.code(msg.includes('unknown method') ? 501 : 500).send({ error: msg });
+        if (msg.includes('unknown method')) return reply.send({ supported: false, data: '' });
+        return reply.code(500).send({ error: msg });
       } finally {
         conn?.close();
       }

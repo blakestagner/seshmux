@@ -40,3 +40,44 @@ describe('GET /api/env — bridge status', () => {
     expect(res.json().bridge).toEqual({ claude: { registered: false }, codex: { registered: false } });
   });
 });
+
+// The daemon survives server updates (hard rule 4), so it can sit on old code indefinitely
+// after `Update & restart`. /api/env carries the comparison so Settings can nudge for a full
+// restart. Never nag when either version is unknown (a dev server has no SESHMUX_VERSION).
+describe('GET /api/env — daemon staleness', () => {
+  const base = { bridgeStatus: async () => ({ claude: false, codex: false }) };
+
+  async function envDaemon(deps: Record<string, unknown>) {
+    const f = Fastify();
+    f.register(envRoutes, { ...base, ...deps });
+    const res = await f.inject({ method: 'GET', url: '/api/env' });
+    expect(res.statusCode).toBe(200);
+    return res.json().daemon;
+  }
+
+  it('reports stale when the daemon version is older than the server version', async () => {
+    expect(await envDaemon({ daemonVersion: async () => '0.9.0', serverVersion: () => '0.10.0' })).toEqual({
+      version: '0.9.0',
+      serverVersion: '0.10.0',
+      stale: true,
+    });
+  });
+
+  it('is not stale when the versions match', async () => {
+    const d = await envDaemon({ daemonVersion: async () => '1.2.3', serverVersion: () => '1.2.3' });
+    expect(d.stale).toBe(false);
+  });
+
+  it('never nags in dev (no server version) or when the daemon is unreachable', async () => {
+    expect((await envDaemon({ daemonVersion: async () => '0.1.0', serverVersion: () => '' })).stale).toBe(false);
+    expect((await envDaemon({ daemonVersion: async () => null, serverVersion: () => '9.9.9' })).stale).toBe(false);
+  });
+
+  it('never 500s when the daemon dial throws', async () => {
+    const d = await envDaemon({
+      daemonVersion: async () => { throw new Error('ECONNREFUSED'); },
+      serverVersion: () => '1.0.0',
+    });
+    expect(d).toEqual({ version: null, serverVersion: '1.0.0', stale: false });
+  });
+});

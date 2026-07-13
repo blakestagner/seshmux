@@ -180,20 +180,12 @@ export default function TerminalPane({
       // the repaint — live screen only, still clean.
       const backfill = async () => {
         if (disposed || !term || !socket) return;
-        try {
-          const { data } = await getTermHistory(ptyId);
-          if (disposed || !term || !socket) return;
-          term.write('\x1bc' + (data ? data + '\r\n' : ''));
-          // SUCCESS path — unchanged: history painted data regardless of
-          // repaint outcome, so forceRepaint's cols<10 no-op was never
-          // observable here.
-          forceRepaint();
-          if (!disposed) setConnecting(false);
-        } catch {
-          // DEGRADE path (old daemon 501/500): we just wiped the pane with NO
-          // data. If the initial fit hasn't settled (cols<10) forceRepaint
-          // no-ops — retry until it's paintable (or give up bounded) instead
-          // of clearing the overlay over a permanently blank pane.
+        // DEGRADE path (daemon predating the history RPC → 200 supported:false,
+        // or a real failure): we just wiped the pane with NO data. If the initial
+        // fit hasn't settled (cols<10) forceRepaint no-ops — retry until it's
+        // paintable (or give up bounded) instead of clearing the overlay over a
+        // permanently blank pane.
+        const degrade = () => {
           if (disposed || !term) return;
           term.write('\x1bc');
           retryRepaintUntilReady(
@@ -204,6 +196,19 @@ export default function TerminalPane({
             },
             (cb) => requestAnimationFrame(cb),
           );
+        };
+        try {
+          const { supported, data } = await getTermHistory(ptyId);
+          if (disposed || !term || !socket) return;
+          if (!supported) return degrade(); // expected on an old daemon — silent, no error
+          term.write('\x1bc' + (data ? data + '\r\n' : ''));
+          // SUCCESS path — unchanged: history painted data regardless of
+          // repaint outcome, so forceRepaint's cols<10 no-op was never
+          // observable here.
+          forceRepaint();
+          if (!disposed) setConnecting(false);
+        } catch {
+          degrade();
         }
       };
 
