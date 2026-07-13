@@ -3,7 +3,9 @@
 Local-first mission control for AI coding agents (Claude Code + Codex). `npx seshmux` → browser app: browse/search all agent sessions, live embedded terminals, cross-agent bridge. Zero hosting.
 
 ## Status
-**v1 fully built.** All plan tasks (through Task 19) are done; the 10-item end-to-end acceptance passed 2026-07-09. `docs/local/plans/2026-07-08-seshmux-v1.md` is now a historical execution record, not a to-do list. `mockup.html` remains the design source of truth — match it, don't redesign it. Follow-up candidates for v1.x live in `docs/local/plans/2026-07-09-cmux-analysis.md`.
+**v1 fully built.** All plan tasks (through Task 19) are done; the 10-item end-to-end acceptance passed 2026-07-09. `docs/local/plans/2026-07-08-seshmux-v1.md` is now a historical execution record, not a to-do list. Follow-up candidates for v1.x live in `docs/local/plans/2026-07-09-cmux-analysis.md`.
+
+**Design source of truth is `styles/tokens.scss`, not `mockup.html`.** The mockup holds four mutually exclusive exploration variants (LEDGER / APERTURE / BASELINE / MERIDIAN) and cannot be a spec; it is kept as a historical artifact. The shipped system is theme (`dark`|`light`) × accent (`teal`|`iris`), both stamped pre-paint by `app/layout.tsx`, default **iris**. Any new color/spacing/radius decision goes in `tokens.scss` — do not "restore" the app to the mockup.
 
 ## Architecture as built
 Three pieces in one npm package (`bin/seshmux.js` supervises all):
