@@ -9,7 +9,7 @@
 import type { FastifyInstance } from 'fastify';
 import { getProviders } from '../lib/providers/types';
 import { decodeProjectDir } from '../lib/store/scan';
-import { changes } from '../lib/git-stats';
+import { changes, fileDiff } from '../lib/git-stats';
 import { defaultBranch, list as listWorkspacesDefault, type WorkspaceRecord } from '../lib/workspaces';
 
 export interface GitRouteDeps {
@@ -51,6 +51,30 @@ export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps =
       }
       const base = await defaultBranch(repo).catch(() => null);
       return changes(dir, base, tree === '1');
+    },
+  );
+
+  // Unified diff for one changed file (the panel's click-through view).
+  f.get<{ Querystring: { project?: string; branch?: string; path?: string } }>(
+    '/api/git/changes/file',
+    async (req, reply) => {
+      const { project, branch, path: relPath } = req.query;
+      if (!project || !relPath) {
+        reply.code(400);
+        return { error: 'project and path are required' };
+      }
+      const repo = await resolveRepo(project);
+      if (!repo) {
+        reply.code(404);
+        return { error: 'project not found' };
+      }
+      let dir = repo;
+      if (branch?.startsWith('agent/')) {
+        const rec = (await listWorkspaces(repo).catch(() => [])).find((r) => r.branch === branch);
+        if (rec) dir = rec.dir;
+      }
+      const base = await defaultBranch(repo).catch(() => null);
+      return { diff: await fileDiff(dir, base, relPath) };
     },
   );
 }

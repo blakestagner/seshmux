@@ -92,3 +92,52 @@ describe('changes (real repo)', () => {
     }
   });
 });
+
+describe('fileDiff (real repo)', () => {
+  let repo: string;
+
+  beforeAll(() => {
+    repo = mkdtempSync(join(tmpdir(), 'smx-filediff-'));
+    git(repo, ['init', '-b', 'main']);
+    git(repo, ['config', 'user.email', 't@t']);
+    git(repo, ['config', 'user.name', 't']);
+    writeFileSync(join(repo, 'a.txt'), 'one\ntwo\n');
+    git(repo, ['add', '.']);
+    git(repo, ['commit', '-m', 'base']);
+    writeFileSync(join(repo, 'a.txt'), 'one\nTWO\n'); // modified
+    writeFileSync(join(repo, 'new.txt'), 'hello\nworld\n'); // untracked
+  });
+
+  afterAll(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  it('returns a unified diff for a tracked change', async () => {
+    const { fileDiff } = await import('../../server/lib/git-stats');
+    const d = await fileDiff(repo, 'main', 'a.txt');
+    expect(d).toContain('@@');
+    expect(d).toContain('-two');
+    expect(d).toContain('+TWO');
+  });
+
+  it('renders an untracked file as all-added', async () => {
+    const { fileDiff } = await import('../../server/lib/git-stats');
+    const d = await fileDiff(repo, 'main', 'new.txt');
+    expect(d).toContain('+hello');
+    expect(d).toContain('+world');
+  });
+
+  it('refuses paths escaping the repo', async () => {
+    const { fileDiff } = await import('../../server/lib/git-stats');
+    expect(await fileDiff(repo, 'main', '../../../etc/hosts')).toBe('');
+    expect(await fileDiff(repo, 'main', '/etc/hosts')).toBe('');
+  });
+
+  it('returns empty for an unchanged file', async () => {
+    const { fileDiff } = await import('../../server/lib/git-stats');
+    writeFileSync(join(repo, 'clean.txt'), 'x\n');
+    git(repo, ['add', 'clean.txt']);
+    git(repo, ['commit', '-m', 'clean']);
+    expect(await fileDiff(repo, 'main', 'clean.txt')).toBe('');
+  });
+});

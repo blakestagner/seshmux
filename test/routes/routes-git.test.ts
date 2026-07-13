@@ -98,3 +98,27 @@ describe('GET /api/git/changes', () => {
     expect(res.json()).toEqual({ added: 0, removed: 0, files: [] });
   });
 });
+
+describe('GET /api/git/changes/file', () => {
+  it('400 without path', async () => {
+    const f = makeApp();
+    const res = await f.inject({ method: 'GET', url: '/api/git/changes/file?project=x' });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('returns the unified diff for a dirty file', async () => {
+    const f = makeApp();
+    const res = await f.inject({ method: 'GET', url: '/api/git/changes/file?project=x&path=a.txt' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().diff).toContain('+two');
+  });
+
+  it('empty diff for a path outside the repo', async () => {
+    const f = makeApp();
+    const res = await f.inject({
+      method: 'GET',
+      url: '/api/git/changes/file?project=x&path=' + encodeURIComponent('../../etc/hosts'),
+    });
+    expect(res.json().diff).toBe('');
+  });
+});

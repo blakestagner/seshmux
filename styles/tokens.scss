@@ -68,6 +68,10 @@
   --waiting: #fbbf24; // design has no waiting sample — amber kept as-is
   --done: #63636b; // design idle dot uses --faint
   --hot: #d9705f; // design --bad
+  // Diff view row tints (changes panel): --live/--hot at whisper strength so
+  // full-width added/removed rows read as blocks without shouting.
+  --diff-add-bg: rgba(75, 184, 122, 0.12);
+  --diff-del-bg: rgba(217, 112, 95, 0.12);
   --role-user: #79b8ff;
   --shadow-dropdown: 0 12px 32px rgba(0, 0, 0, 0.35);
   // Neutral-tinted terminal bg harmonized with the new #0f0f12 dark family
@@ -102,6 +106,9 @@
   --waiting: #b45309; // amber kept as-is (no design waiting sample)
   --done: #9a9aa1; // design idle dot uses --faint
   --hot: #c1584a; // design --bad
+  // Diff view row tints — slightly stronger than dark: pale tints wash out on white.
+  --diff-add-bg: rgba(47, 158, 99, 0.14);
+  --diff-del-bg: rgba(193, 88, 74, 0.14);
   // ponytail: mockup uses #79b8ff for both themes, but it fails contrast on the
   // light near-white bg — light gets the readable blue (matches --term-user light).
   --role-user: #1e6fc4;

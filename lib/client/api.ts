@@ -369,3 +369,10 @@ export function getGitChanges(projectId: string, branch?: string | null, tree?: 
   if (tree) params.set('tree', '1');
   return req(`/api/git/changes?${params}`);
 }
+
+// Unified diff for one changed file — the changes panel's click-through view.
+export function getGitFileDiff(projectId: string, branch: string | null | undefined, path: string): Promise<{ diff: string }> {
+  const params = new URLSearchParams({ project: projectId, path });
+  if (branch) params.set('branch', branch);
+  return req(`/api/git/changes/file?${params}`);
+}

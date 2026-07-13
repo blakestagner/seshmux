@@ -104,3 +104,68 @@
   padding: 12px;
   color: var(--text-faint);
 }
+
+// ── File diff view (panel-swap) ────────────────────────────────────────────
+
+.backBtn {
+  flex: 0 0 auto;
+}
+
+.diff {
+  @include t-mono-micro;
+  overflow: auto;
+  flex: 1 1 auto;
+  padding: 8px 0;
+}
+
+.diffLine {
+  display: flex;
+  align-items: baseline;
+  padding: 0 12px 0 0;
+  color: var(--text-dim);
+}
+
+.diffAdd {
+  background: var(--diff-add-bg);
+  color: var(--text);
+}
+
+.diffDel {
+  background: var(--diff-del-bg);
+  color: var(--text);
+}
+
+.diffHunk {
+  padding: 6px 12px 2px;
+  color: var(--text-faint);
+}
+
+// Two number columns (old | new) — fixed width keeps code aligned; numbers
+// stay faint so the code carries the contrast.
+.diffGutter {
+  flex: 0 0 40px;
+  padding-right: 8px;
+  text-align: right;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.diffMarker {
+  flex: 0 0 14px;
+  text-align: center;
+  user-select: none;
+}
+
+.diffAdd .diffMarker {
+  color: var(--live);
+}
+
+.diffDel .diffMarker {
+  color: var(--hot);
+}
+
+// Long lines scroll horizontally inside the row (pre keeps indentation).
+.diffText {
+  white-space: pre;
+  flex: 1 1 auto;
+}

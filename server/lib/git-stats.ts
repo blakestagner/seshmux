@@ -57,6 +57,48 @@ async function untrackedLines(abs: string): Promise<number> {
   }
 }
 
+/**
+ * Unified diff for ONE file vs the merge-base (same base logic as changes()).
+ * Untracked files diff against /dev/null so they render as all-added.
+ *
+ * `relPath` is a TRUST BOUNDARY: it arrives from a query param, and the
+ * untracked branch below hands an absolute path to `git diff --no-index`,
+ * which would happily read any file on disk. Resolve + prefix-check against
+ * the repo dir and refuse anything that escapes. Failures return '' — this
+ * is display data, not a guard.
+ */
+export async function fileDiff(dir: string, baseRef: string | null, relPath: string): Promise<string> {
+  try {
+    const abs = path.resolve(dir, relPath);
+    if (!abs.startsWith(path.resolve(dir) + path.sep)) return '';
+
+    let base = 'HEAD';
+    if (baseRef) {
+      try {
+        base = (await git(dir, ['merge-base', baseRef, 'HEAD'])).trim() || 'HEAD';
+      } catch {
+        /* fall back to HEAD */
+      }
+    }
+    const tracked = await git(dir, ['diff', base, '--', relPath]);
+    if (tracked) return tracked;
+
+    // Untracked? Only diff --no-index files git itself lists as untracked —
+    // never an arbitrary path (see trust-boundary note above).
+    const untracked = (await git(dir, ['ls-files', '-o', '--exclude-standard', '--', relPath])).trim();
+    if (!untracked) return '';
+    try {
+      return await git(dir, ['diff', '--no-index', '--', '/dev/null', abs]);
+    } catch (e) {
+      // git diff --no-index exits 1 when files differ — that's the success path.
+      const out = (e as { stdout?: string }).stdout;
+      return typeof out === 'string' ? out : '';
+    }
+  } catch {
+    return '';
+  }
+}
+
 export async function changes(dir: string, baseRef: string | null, wantTree: boolean): Promise<GitChanges> {
   try {
     // merge-base failure (unknown ref, unborn HEAD, detached weirdness) →
