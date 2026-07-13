@@ -18,7 +18,7 @@ const http = require('node:http');
 const { randomBytes } = require('node:crypto');
 const path = require('node:path');
 const fs = require('node:fs');
-const { ensureDaemon, pidAlive, paths, configDir } = require('../daemon/ensure');
+const { ensureDaemon, pidAlive, paths, configDir, daemonInfo, canSafelyRestartDaemon } = require('../daemon/ensure');
 
 // The daemon's pid, from the pidfile it writes in the config dir. null when it isn't running.
 function readDaemonPid() {
@@ -28,6 +28,65 @@ function readDaemonPid() {
   } catch {
     return null;
   }
+}
+
+// Stop the running daemon (if any) and start a fresh one. The ONLY kill+respawn path —
+// shared by --restart-daemon (explicit, may end plain PTYs) and the post-update auto-upgrade
+// (which only calls this once canSafelyRestartDaemon() says every live PTY is tmux-backed).
+// Returns false if the old daemon refused to die (we never start a second one).
+async function restartDaemon() {
+  const before = readDaemonPid();
+  if (before) {
+    try {
+      process.kill(before, 'SIGTERM');
+    } catch {
+      /* already gone */
+    }
+    for (let i = 0; i < 40 && pidAlive(before); i++) await new Promise((r) => setTimeout(r, 100));
+    if (pidAlive(before)) {
+      console.error(`[seshmux] daemon ${before} did not stop; not starting a second one`);
+      return false;
+    }
+  }
+  const { spawned } = await ensureDaemon();
+  console.log(`[seshmux] daemon ${spawned ? 'restarted' : 'already up'} (pid ${readDaemonPid() ?? '?'})`);
+  return true;
+}
+
+// Numeric-segment version compare ("0.10.0" > "0.9.0"). Mirror of server/lib/update.ts's
+// compareVersions — this file is plain CJS and cannot import the TS module.
+function versionLess(a, b) {
+  const pa = a.split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = b.split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d !== 0) return d < 0;
+  }
+  return false;
+}
+
+// After a self-update the server is new but the daemon still runs the OLD code forever
+// (ensureDaemon reuses any daemon that answers hello). Upgrade it here — but ONLY when no live
+// session would die: tmux-tier PTYs rehydrate in the fresh daemon, plain-tier PTYs do not.
+// Unreachable daemon / unknown versions (dev) → do nothing.
+async function autoUpgradeDaemon(ourVersion) {
+  const info = await daemonInfo(paths(configDir()).sock).catch(() => null);
+  if (!info || !info.version || !ourVersion || ourVersion === '0.0.0') return;
+  if (!versionLess(info.version, ourVersion)) return;
+
+  const { safe, plainCount } = canSafelyRestartDaemon(info.ptys);
+  if (!safe) {
+    console.log(
+      `[seshmux] daemon stays on v${info.version} — ${plainCount} session(s) are not tmux-backed and would be killed ` +
+        '(install tmux, or run `seshmux --restart-daemon` once they finish)',
+    );
+    return;
+  }
+  const tmuxCount = info.ptys.filter((p) => p.tmuxName && p.alive !== false).length;
+  console.log(
+    `[seshmux] upgrading daemon v${info.version} -> v${ourVersion} (${tmuxCount} tmux session(s) will re-attach)`,
+  );
+  await restartDaemon();
 }
 
 // Absolute path to THIS cli entry, inherited by the server child. The MCP
@@ -158,33 +217,23 @@ async function main() {
 
   const args = parseArgs(argv);
 
-  // --restart-daemon: the ONLY way to upgrade the daemon. ensureDaemon() treats any daemon that
-  // answers hello as 'ok' and reuses it (daemon/ensure.js classify()), which is what keeps your
-  // sessions alive across server updates — but it also means a daemon started months ago runs
-  // forever, missing every RPC added since. Restarting seshmux does NOT replace it. This does.
+  // --restart-daemon: the manual escape hatch for upgrading the daemon (the update flow does it
+  // automatically, but ONLY when no plain PTY would die — see autoUpgradeDaemon). ensureDaemon()
+  // treats any daemon that answers hello as 'ok' and reuses it (daemon/ensure.js classify()),
+  // which is what keeps your sessions alive across server updates — restarting seshmux does NOT
+  // replace the daemon. This does.
   //
-  // Destructive on purpose, so it is explicit and never automatic: tmux-tier sessions rehydrate
-  // from `tmux ls` and survive, but PLAIN-tier PTYs die with the daemon. Hence a flag the user
-  // types, not something the update flow does behind their back.
+  // Destructive on purpose: tmux-tier sessions rehydrate from `tmux ls` and survive, PLAIN-tier
+  // PTYs die with the daemon. The automatic path refuses to run in that case; this flag is the
+  // explicit "do it anyway, I accept losing them".
   if (args.restartDaemon) {
     const before = readDaemonPid();
     if (before) {
       console.log(`[seshmux] stopping daemon ${before} — tmux-backed sessions survive; any non-tmux PTYs will end`);
-      try {
-        process.kill(before, 'SIGTERM');
-      } catch {
-        /* already gone */
-      }
-      for (let i = 0; i < 40 && pidAlive(before); i++) await new Promise((r) => setTimeout(r, 100));
-      if (pidAlive(before)) {
-        console.error(`[seshmux] daemon ${before} did not stop; not starting a second one`);
-        process.exit(1);
-      }
     } else {
       console.log('[seshmux] no daemon running');
     }
-    const { spawned } = await ensureDaemon();
-    console.log(`[seshmux] daemon ${spawned ? 'restarted' : 'already up'} (pid ${readDaemonPid() ?? '?'})`);
+    if (!(await restartDaemon())) process.exit(1);
   }
 
   // If a healthy seshmux already runs on the requested port range, just open the
@@ -289,7 +338,7 @@ async function main() {
   // and printed by the server before it exits.
   const RESTART_CODE = 75;
   let restartTimes = [];
-  const onExit = (code) => {
+  const onExit = async (code) => {
     if (shuttingDown) return;
     if (code === RESTART_CODE) {
       const now = Date.now();
@@ -302,7 +351,12 @@ async function main() {
         );
         process.exit(1);
       }
-      console.log('[seshmux] server restarting for update (session-safe; daemon untouched)…');
+      console.log('[seshmux] server restarting for update (session-safe)…');
+      // One-click means one click: the new package is on disk now, so upgrade the daemon too —
+      // but only if every live PTY is tmux-backed (it re-attaches). Otherwise leave it alone.
+      await autoUpgradeDaemon(currentVersion()).catch((e) =>
+        console.error(`[seshmux] daemon upgrade skipped (${e.message}) — sessions unaffected`),
+      );
       child = spawnServer();
       child.on('exit', onExit);
       return;
