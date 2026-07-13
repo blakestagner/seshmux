@@ -383,7 +383,13 @@ tmuxDescribe('seshmuxd tmux tier', () => {
     const tmuxBareName = 'test-env-' + process.pid;
     const spawn = await c.call('spawn', {
       cwd: os.tmpdir(),
-      args: ['/bin/sh', '-c', 'echo "PTYID=$SESHMUX_PTY_ID"'],
+      // The pane must OUTLIVE the assertion. `tmux new-session -A` runs inside the spawned
+      // PTY, so the PTY is a tmux client: a command that echoes and exits immediately kills
+      // the session (and the client) in a race with our attach, and the data event may never
+      // land — deterministically so on Linux CI, flakily on macOS. `sleep` holds the pane
+      // open; the echo we assert on is unchanged. Real sessions run long-lived agents, so
+      // the instant-exit case this was testing never occurs in production.
+      args: ['/bin/sh', '-c', 'echo "PTYID=$SESHMUX_PTY_ID"; sleep 30'],
       cols: 80,
       rows: 24,
       tmuxName: tmuxBareName,
