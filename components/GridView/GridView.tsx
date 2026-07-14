@@ -160,8 +160,8 @@ export default function GridView() {
     // leaving seamDrag.current dangling and `interacting` stuck true
     // forever. Cancel any in-flight drag first — dropping a resize because
     // the layout changed underneath it is rare and acceptable. Same reasoning
-    // applies to an in-flight header drag (previewTree/zone reference leaf
-    // ids that may no longer exist post-reconcile).
+    // applies to an in-flight header drag (zone references a leaf id that
+    // may no longer exist post-reconcile).
     endDrag(false);
     endHeadDrag(false);
     const next = reconcile(tree, openIds);
@@ -184,27 +184,26 @@ export default function GridView() {
   // drag starts, when zone is still null.
   const zoneRef = useRef(zone);
   zoneRef.current = zone;
-  const [previewTree, setPreviewTree] = useState<LayoutNode | null>(null);
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null);
   const headDrag = useRef<{
     id: string; sx: number; sy: number; active: boolean; pid: number;
     raf: number | null; lastX: number; lastY: number;
   } | null>(null);
-  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Readable inside rAF/setTimeout callbacks without re-binding to a stale
   // render closure (mirrors layoutRef below).
   const treeRef = useRef(tree);
   treeRef.current = tree;
 
-  // Rects render from the live preview while one is pending, else the real tree.
-  const renderTree = previewTree ?? tree;
-  // Not memoized: seam drag mutates fractions in place on the tree (see
-  // seamDrag below) and bumps `tick` to force a recompute. computeLayout on
-  // <20 panels is microseconds; memoizing here risks rendering stale rects.
-  const layout = renderTree && ws.w > 10
+  // Layout always renders from the real tree — a header drag never reflows
+  // the panels, only the zone highlight + drag ghost move. The layout
+  // changes once, on drop (endHeadDrag's commit path). Not memoized: seam
+  // drag mutates fractions in place on the tree (see seamDrag below) and
+  // bumps `tick` to force a recompute. computeLayout on <20 panels is
+  // microseconds; memoizing here risks rendering stale rects.
+  const layout = tree && ws.w > 10
     ? focusId && !dragId
-      ? { rects: focusRects(renderTree, focusId, ws), seams: [] }
-      : computeLayout(renderTree, ws)
+      ? { rects: focusRects(tree, focusId, ws), seams: [] }
+      : computeLayout(tree, ws)
     : { rects: new Map<string, Rect>(), seams: [] };
 
   // ── Seam drag (resize) ─────────────────────────────────────────────────
@@ -320,15 +319,10 @@ export default function GridView() {
     const d = headDrag.current;
     if (!d) return;
     if (d.raf != null) cancelAnimationFrame(d.raf);
-    if (previewTimer.current) {
-      clearTimeout(previewTimer.current);
-      previewTimer.current = null;
-    }
     headDrag.current = null;
     const z = zoneRef.current;
     setDragId(null);
     setZone(null);
-    setPreviewTree(null);
     setGhostPos(null);
     setInteracting(false);
     if (commit && d.active && z) {
@@ -350,24 +344,14 @@ export default function GridView() {
     headDrag.current = { id: tab.id, sx: e.clientX, sy: e.clientY, active: false, pid: e.pointerId, raf: null, lastX: e.clientX, lastY: e.clientY };
   }
 
-  // Zone changes → 150ms later show the real resulting layout as a preview.
-  // Reads `treeRef.current` (not a closed-over `tree`) so a tree that changed
-  // between the hover settling and the timer firing (e.g. a concurrent
-  // reconcile) can't apply the drop to a stale/detached tree.
-  function setZoneDebounced(z: DropZone | null, id: string) {
+  // Dedup zone updates so identical hover results don't re-render. No layout
+  // preview here — the panels never move mid-drag, only the zone highlight
+  // and drag ghost track the pointer. The actual layout change happens once,
+  // on drop (endHeadDrag's commit path applies the drop to the real tree).
+  function setZoneDebounced(z: DropZone | null) {
     setZone((prev) => {
       const key = (v: DropZone | null) => (v ? `${v.kind}:${v.target ?? ''}:${v.side}` : 'none');
       if (key(prev) === key(z)) return prev;
-      if (previewTimer.current) clearTimeout(previewTimer.current);
-      setPreviewTree(null);
-      if (z) {
-        previewTimer.current = setTimeout(() => {
-          previewTimer.current = null;
-          const cur = treeRef.current;
-          if (!cur) return;
-          setPreviewTree(applyDrop(cloneNode(cur), id, z));
-        }, 150);
-      }
       return z;
     });
   }
@@ -396,7 +380,7 @@ export default function GridView() {
         const y = dd.lastY - b.top;
         setGhostPos({ x, y });
         const z = hitZone(x, y, ws, layoutRef.current.rects, dd.id);
-        setZoneDebounced(z, dd.id);
+        setZoneDebounced(z);
       });
     }
   }
