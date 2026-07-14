@@ -1,0 +1,43 @@
+@use '../../../styles/typography' as *;
+
+// Shared dropdown surface + row item (FilterMenu, BridgeMenu). Positioning
+// (top/bottom/left/right, min-width) stays in the consumer module.
+.menu {
+  position: absolute;
+  padding: 6px 0;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-dropdown), var(--shadow);
+  z-index: 200;
+}
+
+.item {
+  @include t-row;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 16px 7px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.item:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.item:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.sep {
+  height: 1px;
+  margin: 6px 0;
+  background: var(--border);
+}

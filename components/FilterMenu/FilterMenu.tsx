@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import IconButton from '../ui/IconButton/IconButton';
 import { useAppState } from '../../lib/client/store';
 import type { RailSort } from '../../lib/client/store';
+import menu from '../ui/Menu/Menu.module.scss';
 import styles from './FilterMenu.module.scss';
 
 // Floating sort/group menu anchored to the filter button at the right of the
@@ -49,53 +50,53 @@ export default function FilterMenu() {
         {FILTER_SVG}
       </IconButton>
       {open ? (
-        <div className={styles.menu} role="menu">
+        <div className={`${menu.menu} ${styles.menu}`} role="menu">
           {/* ponytail: Filter submenu is inert — no filter facets defined yet. */}
-          <button type="button" className={styles.item} disabled role="menuitem">
+          <button type="button" className={menu.item} disabled role="menuitem">
             <span className={styles.check} />
             <span className={styles.itemLabel}>Filter</span>
             <span className={styles.chevron}>›</span>
           </button>
 
-          <div className={styles.sep} />
+          <div className={menu.sep} />
 
-          <button type="button" className={styles.item} role="menuitemradio" aria-checked={sort === 'created'} onClick={() => setSort('created')}>
+          <button type="button" className={menu.item} role="menuitemradio" aria-checked={sort === 'created'} onClick={() => setSort('created')}>
             <Check on={sort === 'created'} />
             <span className={styles.itemLabel}>Sort by Created</span>
           </button>
-          <button type="button" className={styles.item} role="menuitemradio" aria-checked={sort === 'updated'} onClick={() => setSort('updated')}>
+          <button type="button" className={menu.item} role="menuitemradio" aria-checked={sort === 'updated'} onClick={() => setSort('updated')}>
             <Check on={sort === 'updated'} />
             <span className={styles.itemLabel}>Sort by Updated</span>
           </button>
 
-          <div className={styles.sep} />
+          <div className={menu.sep} />
 
           {/* ponytail: group-by is display-only — rail groups by workspace already;
               time-grouping needs a bucketing backend. Wire when added. */}
-          <button type="button" className={styles.item} role="menuitemradio" aria-checked disabled>
+          <button type="button" className={menu.item} role="menuitemradio" aria-checked disabled>
             <Check on />
             <span className={styles.itemLabel}>Group by Workspace</span>
           </button>
-          <button type="button" className={styles.item} role="menuitemradio" aria-checked={false} disabled>
+          <button type="button" className={menu.item} role="menuitemradio" aria-checked={false} disabled>
             <span className={styles.check} />
             <span className={styles.itemLabel}>Group by Time</span>
           </button>
 
-          <div className={styles.sep} />
+          <div className={menu.sep} />
 
           {/* ponytail: show-recent/all is display-only — rail already paginates
               (load more); a distinct "all" fetch mode is a separate feature. */}
-          <button type="button" className={styles.item} role="menuitemradio" aria-checked disabled>
+          <button type="button" className={menu.item} role="menuitemradio" aria-checked disabled>
             <Check on />
             <span className={styles.itemLabel}>Show Recent Sessions</span>
           </button>
-          <button type="button" className={styles.item} role="menuitemradio" aria-checked={false} disabled>
+          <button type="button" className={menu.item} role="menuitemradio" aria-checked={false} disabled>
             <span className={styles.check} />
             <span className={styles.itemLabel}>Show All Sessions</span>
           </button>
           <button
             type="button"
-            className={styles.item}
+            className={menu.item}
             role="menuitemcheckbox"
             aria-checked={state.showHidden}
             onClick={() => dispatch({ type: 'setShowHidden', on: !state.showHidden })}
@@ -104,11 +105,11 @@ export default function FilterMenu() {
             <span className={styles.itemLabel}>Show Hidden Projects</span>
           </button>
 
-          <div className={styles.sep} />
+          <div className={menu.sep} />
 
           <button
             type="button"
-            className={styles.item}
+            className={menu.item}
             role="menuitem"
             onClick={() => {
               dispatch({ type: 'collapseAllProjects' });

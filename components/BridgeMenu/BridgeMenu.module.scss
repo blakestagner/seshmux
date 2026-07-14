@@ -1,0 +1,25 @@
+// Surface + item visuals come from ui/Menu; this module only positions.
+
+.wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.menu {
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 200px;
+}
+
+// Statusbar sits at the pane bottom — open upward, hugging the right edge.
+.menu.up {
+  top: auto;
+  bottom: calc(100% + 6px);
+  left: auto;
+  right: 0;
+}
+
+.caret {
+  color: var(--text-dim);
+}
