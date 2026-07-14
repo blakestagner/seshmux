@@ -82,6 +82,14 @@ export default function GridView() {
   // saved tree, unfocused) ────────────────────────────────────────────────
   const [focusId, setFocusId] = useState<string | null>(null);
   const preFocus = useRef<LayoutNode | null>(null);
+  // Click-without-move (onHeadPointerUp) may refocus a *different* panel
+  // while focus mode is active; it never toggles the already-focused one.
+  // Enter/exit toggling belongs to onDoubleClick/⛶/Esc only. A double-click
+  // on a strip panel fires as click1 (refocus) then dblclick — without this
+  // guard the dblclick would immediately toggle the panel it just refocused
+  // right back out of focus. Record the refocus so dblclick can skip its
+  // toggle when it lands on the same panel within a double-click window.
+  const lastRefocus = useRef<{ id: string; time: number } | null>(null);
 
   function toggleFocus(id: string) {
     if (focusId === id) {
@@ -389,11 +397,15 @@ export default function GridView() {
     const d = headDrag.current;
     if (!d) return;
     if (!d.active) {
-      // Click without move: plain select — or, in focus mode, toggle focus
-      // (refocus another panel's header, exit on the focused panel's own).
+      // Click without move: plain select — or, in focus mode, refocus a
+      // *different* panel. Never toggles the already-focused panel itself;
+      // that's onDoubleClick/⛶/Esc's job (see lastRefocus above).
       headDrag.current = null;
       if (focusId) {
-        toggleFocus(tab.id);
+        if (focusId !== tab.id) {
+          lastRefocus.current = { id: tab.id, time: Date.now() };
+          toggleFocus(tab.id);
+        }
         return;
       }
       dispatch({ type: 'activateTab', id: tab.id });
@@ -528,7 +540,18 @@ export default function GridView() {
               onPointerMove={onHeadPointerMove}
               onPointerUp={(e) => onHeadPointerUp(e, tab)}
               onPointerCancel={() => endHeadDrag(false)}
-              onDoubleClick={() => toggleFocus(tab.id)}
+              onDoubleClick={() => {
+                // Skip the toggle if the first click of this double-click
+                // just refocused this exact panel (see lastRefocus above) —
+                // otherwise focused-A -> click-B -> dblclick-B would refocus
+                // B then immediately exit focus instead of staying focused.
+                const lr = lastRefocus.current;
+                if (lr && lr.id === tab.id && Date.now() - lr.time < 400) {
+                  lastRefocus.current = null;
+                  return;
+                }
+                toggleFocus(tab.id);
+              }}
               onKeyDown={(e) => {
                 if (e.key !== 'Enter' && e.key !== ' ') return;
                 e.preventDefault();
@@ -554,7 +577,14 @@ export default function GridView() {
                   <span className={styles.pct}>{Math.round((tab.ctx.tokens / tab.ctx.window) * 100)}%</span>
                 </span>
               ) : null}
-              <span data-nodrag className={styles.headBtns}>
+              <span
+                data-nodrag
+                className={styles.headBtns}
+                // Stop dblclick from bubbling to the header's onDoubleClick —
+                // two quick clicks on ⛶ (each a full toggleFocus via onClick)
+                // must not ALSO fire the header's toggle a third time.
+                onDoubleClick={(e) => e.stopPropagation()}
+              >
                 <IconButton
                   label={focusId === tab.id ? 'Exit focus' : 'Focus'}
                   variant="bare"
