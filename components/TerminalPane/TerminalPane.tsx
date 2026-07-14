@@ -730,9 +730,7 @@ export default function TerminalPane({
               ⌫
             </Button>
           </span>
-        ) : (
-          <span className={styles.tail}>detach-safe</span>
-        )}
+        ) : null}
       </div>
       {isWorkspace ? (
         <WorkspaceFinishPrompt

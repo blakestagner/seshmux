@@ -7,6 +7,7 @@
 // argv comes ONLY from provider.commands (hard rule 3). No agent binary names here.
 
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { dial } from './daemon-client';
 import { getProviders } from './lib/providers/types';
 import type { ProviderId } from './lib/providers/types';
@@ -75,6 +76,22 @@ function nextTmuxName(projectPath: string, taken: Set<string>): string {
   return `${repo}-${n}`;
 }
 
+// tmux runs a SINGLE-arg command through the user's login shell, and a
+// ~/.zshenv that overwrites PATH can lose the agent binary (seen live: fresh
+// codex spawn = argv ['codex'] died `zsh:1: command not found: codex`).
+// Multi-arg commands are exec'd directly with the tmux server's env, which is
+// also not guaranteed to match ours. Resolve argv[0] against THIS server's
+// PATH so the spawn is shell- and tmux-env-proof. Best effort: unresolved
+// names pass through unchanged.
+async function resolveBin(bin: string): Promise<string | null> {
+  if (bin.includes('/')) return null; // already a path
+  return new Promise((resolve) => {
+    execFile('which', [bin], { timeout: 2000 }, (err, stdout) => {
+      resolve(!err && stdout.trim() ? stdout.trim() : null);
+    });
+  });
+}
+
 function argvFor(
   provider: { id: ProviderId; commands: import('./lib/providers/types').ProviderCommands },
   mode: SessionMode,
@@ -110,6 +127,8 @@ export async function startSession(input: StartSessionInput): Promise<StartSessi
   const args = seedViaArgv
     ? provider.commands.freshPrompt!(projectPath, firstPrompt!)
     : argvFor(provider, mode, projectPath, resumeId);
+  const resolved = await resolveBin(args[0]);
+  if (resolved) args[0] = resolved;
 
   // Auto tmux tier when tmux is present (tier-2 persistence).
   const env = await detectEnv().catch(() => null);

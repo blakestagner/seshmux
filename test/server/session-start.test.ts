@@ -70,7 +70,9 @@ describe('startSession firstPrompt seeding', () => {
     });
 
     expect(spawnCalls).toHaveLength(1);
-    expect(spawnCalls[0].args).toEqual(['claude', '--', 'build the team']);
+    // argv[0] may be resolved to an absolute path (tmux shell-PATH proofing)
+    expect(spawnCalls[0].args[0].split('/').pop()).toBe('claude');
+    expect(spawnCalls[0].args.slice(1)).toEqual(['--', 'build the team']);
 
     await vi.advanceTimersByTimeAsync(5000);
     expect(writeCalls).toHaveLength(0); // never falls back — the prompt already landed in argv
@@ -95,7 +97,7 @@ describe('startSession firstPrompt seeding', () => {
 
     await startSession({ projectPath: '/tmp/repo', provider: 'claude', mode: 'new', firstPrompt: 'hi' });
 
-    expect(spawnCalls[0].args).toEqual(['claude']); // plain fresh() argv, no prompt injected
+    expect(spawnCalls[0].args[0].split('/').pop()).toBe('claude'); // plain fresh() argv, no prompt injected
     expect(writeCalls).toHaveLength(0); // not yet — still waiting out the settle delay
 
     await vi.advanceTimersByTimeAsync(3000);
@@ -116,7 +118,9 @@ describe('startSession firstPrompt seeding', () => {
       firstPrompt: 'hi',
     });
 
-    expect(spawnCalls[0].args).toEqual(['claude', '--resume=sess-123']); // resume path, not freshPrompt
+    // resume path, not freshPrompt
+    expect(spawnCalls[0].args[0].split('/').pop()).toBe('claude');
+    expect(spawnCalls[0].args.slice(1)).toEqual(['--resume=sess-123']);
     await vi.advanceTimersByTimeAsync(3000);
     expect(writeCalls).toHaveLength(1); // seeded via the fallback write instead
   });
