@@ -41,34 +41,6 @@
   height: 100%;
 }
 
-// grid-scaled-tiles: only the size-authority pane fits/resizes the shared
-// PTY; every other simultaneously-rendered pane mirrors the PTY's real
-// geometry into its local xterm and renders it CSS-scaled to fit its own
-// tile instead. scaleViewport clips to the tile's available space;
-// scaleBox is sized to the xterm's NATURAL (unscaled) pixel size and
-// transform-scaled down to fit — see TerminalPane.tsx recomputeScale().
-.scaleViewport {
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  position: relative;
-}
-
-.scaleBox {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  transform-origin: 0 0;
-}
-
-// Monitor tiles are read-only — never let the scaled-down xterm intercept
-// clicks/keys meant for the authority pane elsewhere.
-.scaleBoxMonitor {
-  pointer-events: none;
-}
-
 // Single-pane bottom status bar (mock lines 160-171): 42px, --panel, top border,
 // 11.5px mono, --text-dim. Segments are flex spans separated by 16px gap.
 .statusbar {
