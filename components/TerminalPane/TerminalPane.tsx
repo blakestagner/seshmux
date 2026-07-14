@@ -70,6 +70,14 @@ export type TerminalPaneProps = {
   // (page.tsx owns the split, same slot as the subagent viewer). Absent (grid
   // tiles) → the stats render as a plain non-clickable span.
   onOpenChanges?: () => void;
+  // Size authority (grid-scaled-tiles): only ONE view of a shared PTY may ever
+  // fit-and-resize it — every other simultaneously-rendered pane (grid monitor
+  // tiles) must mirror the PTY's real geometry via term.resize() and render
+  // CSS-scaled to fit its own tile, never touching the PTY. Default true keeps
+  // every existing caller (tabs view, SubagentViewer, bridge panes) on the
+  // unchanged fit/resize/backfill path. GridView (Task 2) is the only caller
+  // that ever passes false.
+  sizeAuthority?: boolean;
 };
 
 // Aperture terminal theme — values from tokens.scss --term-* / --accent.
@@ -95,8 +103,11 @@ export default function TerminalPane({
   teamMemberCount,
   onOpenTeam,
   onOpenChanges,
+  sizeAuthority,
 }: TerminalPaneProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
+  const scaleViewportRef = useRef<HTMLDivElement | null>(null);
+  const scaleBoxRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<'live' | 'done'>('live');
   // True from mount until the first content paints (snapshot backfill or the
   // first live chunk, whichever wins) — drives the connecting overlay.
@@ -107,6 +118,22 @@ export default function TerminalPane({
   // Escape hatch for the view-switch effect below: the main effect stores its
   // pushSize closure here so size can be reasserted from outside it.
   const pushSizeRef = useRef<(() => void) | null>(null);
+  // Updated every render (not just in an effect) — the main effect's closures
+  // (pushSize/onSize/forceRepaint) read this synchronously, and it must never
+  // lag a prop change by a tick the way an effect-driven ref would.
+  const isAuthority = sizeAuthority !== false;
+  const sizeAuthorityRef = useRef(isAuthority);
+  sizeAuthorityRef.current = isAuthority;
+  // Escape hatches for the authority-flip effect below: the main effect (keyed
+  // only on [ptyId], so it survives a sizeAuthority flip without remounting)
+  // stores these closures here so the flip effect can drive them from outside.
+  const recomputeScaleRef = useRef<(() => void) | null>(null);
+  const mirrorToPtyRef = useRef<(() => void) | null>(null);
+  const scheduleBackfillRef = useRef<(() => void) | null>(null);
+  // Last known real PTY geometry (from server size frames) — the true→false
+  // authority flip needs this to mirror the PTY without waiting on a fresh
+  // size frame.
+  const ptyDimsRef = useRef({ cols: 0, rows: 0 });
 
   // Reassert PTY size on EVERY tabs⇄grid⇄(future views) switch — panes that
   // survive a switch (or whose container math lands on the same px width)
@@ -115,6 +142,29 @@ export default function TerminalPane({
   useEffect(() => {
     requestAnimationFrame(() => pushSizeRef.current?.());
   }, [state.view]);
+
+  // Authority flip WITHOUT remount (grid tile promoted to/demoted from size
+  // authority — e.g. focusing a grid tile). The main effect below stays keyed
+  // on [ptyId] only, so the live term/socket survive the flip untouched; this
+  // effect just redirects who owns the PTY's geometry.
+  const prevAuthorityRef = useRef(isAuthority);
+  useEffect(() => {
+    const was = prevAuthorityRef.current;
+    prevAuthorityRef.current = isAuthority;
+    if (isAuthority === was) return; // initial mount, or no actual change
+    if (isAuthority) {
+      // false → true: became the authority. Clear any scale transform, fit to
+      // our own container, push that fit to the PTY, and force a fresh
+      // backfill so the tile repaints at its new (authority) width.
+      recomputeScaleRef.current?.();
+      pushSizeRef.current?.();
+      scheduleBackfillRef.current?.();
+    } else {
+      // true → false: became a monitor. Stop touching the PTY — mirror its
+      // last known real size locally and scale to fit our tile.
+      mirrorToPtyRef.current?.();
+    }
+  }, [isAuthority]);
 
   useEffect(() => {
     let disposed = false;
@@ -156,6 +206,7 @@ export default function TerminalPane({
       // RPC), then WINCH tmux into repainting the live screen below it. Live
       // output streams on top from there — one width, no reset races.
       let ptyCols = 0;
+      let ptyRows = 0;
       let backfillTimer: ReturnType<typeof setTimeout> | null = null;
       // True once the pane has provably painted (data frame, backfill success,
       // or the degrade path settled). Until then, any resize that lands must
@@ -193,11 +244,46 @@ export default function TerminalPane({
         }
       };
 
+      // Monitor-mode scale recompute (grid-scaled-tiles): NOT the size
+      // authority, so never fit/resize the PTY here — just CSS-scale the
+      // already-mirrored xterm to fit this tile. Authority panes clear any
+      // leftover transform and render at natural layout/scale 1.
+      const recomputeScale = () => {
+        if (disposed || !term) return;
+        const viewport = scaleViewportRef.current;
+        const box = scaleBoxRef.current;
+        if (!viewport || !box) return;
+        if (sizeAuthorityRef.current) {
+          box.style.width = '';
+          box.style.height = '';
+          box.style.transform = '';
+          box.style.left = '';
+          box.style.top = '';
+          return;
+        }
+        const screen = term.element?.querySelector<HTMLElement>('.xterm-screen');
+        const natW = screen?.offsetWidth || term.element?.scrollWidth || 0;
+        const natH = screen?.offsetHeight || term.element?.scrollHeight || 0;
+        const vw = viewport.clientWidth;
+        const vh = viewport.clientHeight;
+        if (!natW || !natH || !vw || !vh) return;
+        const s = Math.min(vw / natW, vh / natH, 1);
+        box.style.width = `${natW}px`;
+        box.style.height = `${natH}px`;
+        box.style.top = '0px';
+        box.style.left = `${Math.max(0, (vw - natW * s) / 2)}px`;
+        box.style.transform = `scale(${s})`;
+      };
+
       // Sanity-gated resize: never propagate teardown/zero-size fits (a
       // disposing grid pane firing its ResizeObserver once more must not
       // shrink the shared PTY under the pane that replaced it).
       const pushSize = () => {
         if (disposed || !fit || !term || !socket) return;
+        if (!sizeAuthorityRef.current) {
+          recomputeScale();
+          return;
+        }
         if (!safeFit()) return;
         if (term.cols >= 10 && term.rows >= 3) {
           socket.resize(term.cols, term.rows);
@@ -205,10 +291,22 @@ export default function TerminalPane({
         }
       };
 
+      // true→false authority flip: stop being the PTY's fitter, mirror its
+      // last known real geometry into the local xterm instead, then scale.
+      const mirrorToPty = () => {
+        if (disposed || !term) return;
+        const { cols, rows } = ptyDimsRef.current;
+        if (cols > 0 && rows > 0) term.resize(cols, rows);
+        requestAnimationFrame(() => recomputeScale());
+      };
+
       // Force tmux to repaint the current screen even if it's already at our
-      // size (rows-1 → rows WINCH dance).
+      // size (rows-1 → rows WINCH dance). Monitor panes never own the PTY's
+      // geometry — they rely on backfill's history write + the live stream,
+      // never a WINCH.
       const forceRepaint = () => {
         if (disposed || !term || !socket) return;
+        if (!sizeAuthorityRef.current) return;
         if (term.cols < 10) return;
         socket.resize(term.cols, Math.max(2, term.rows - 1));
         socket.resize(term.cols, term.rows);
@@ -283,10 +381,21 @@ export default function TerminalPane({
           backfillDone = true;
           if (!disposed) setConnecting(false); // content on screen — overlay off
         },
-        onSize: (cols) => {
+        onSize: (cols, rows) => {
           ptyCols = cols;
+          ptyRows = rows;
+          ptyDimsRef.current = { cols, rows };
           if (sizeFallback) clearTimeout(sizeFallback);
           if (disposed || !fit || !term || !socket) return;
+          if (!sizeAuthorityRef.current) {
+            // Monitor pane: mirror the PTY's real geometry locally — never
+            // fit/resize the PTY itself — then scale to fit our tile. A rAF
+            // lets xterm lay out the new geometry before we measure it.
+            term.resize(cols, rows);
+            requestAnimationFrame(() => recomputeScale());
+            if (!backfillDone) scheduleBackfill();
+            return;
+          }
           if (!safeFit()) {
             // Mount not laid out yet (grid mounts N panes at once — this pane
             // can still measure 0 wide when the size frame lands). This is the
@@ -350,7 +459,10 @@ export default function TerminalPane({
         if (roTimer) clearTimeout(roTimer);
         roTimer = setTimeout(() => pushSize(), 120);
       });
-      ro.observe(mountRef.current);
+      // Observe the outer scale viewport, not the (possibly natural-sized,
+      // CSS-scaled) xterm mount — it always reflects the tile's real
+      // available space in both authority and monitor mode.
+      ro.observe(scaleViewportRef.current ?? mountRef.current);
 
       // Reassert our size on window focus: another client (second browser
       // window, grid pane) may have resized the shared PTY smaller while this
@@ -379,11 +491,20 @@ export default function TerminalPane({
       // the window never blurred — the PTY stays narrow until a remount.
       mountRef.current.addEventListener('focusin', onFocus);
       pushSizeRef.current = pushSize;
+      recomputeScaleRef.current = recomputeScale;
+      mirrorToPtyRef.current = mirrorToPty;
+      scheduleBackfillRef.current = scheduleBackfill;
+      // Establish initial scale/transform state for the mode we mounted in
+      // (monitor panes mount already non-authority in Task 2's GridView).
+      recomputeScale();
     })();
 
     return () => {
       disposed = true;
       pushSizeRef.current = null;
+      recomputeScaleRef.current = null;
+      mirrorToPtyRef.current = null;
+      scheduleBackfillRef.current = null;
       if (roTimer) clearTimeout(roTimer);
       ro?.disconnect();
       themeObserver?.disconnect();
@@ -626,7 +747,14 @@ export default function TerminalPane({
   return (
     <div className={styles.pane}>
       <div className={styles.termWrap}>
-        <div ref={mountRef} className={styles.term} />
+        <div ref={scaleViewportRef} className={styles.scaleViewport}>
+          <div
+            ref={scaleBoxRef}
+            className={sizeAuthority === false ? `${styles.scaleBox} ${styles.scaleBoxMonitor}` : styles.scaleBox}
+          >
+            <div ref={mountRef} className={styles.term} />
+          </div>
+        </div>
         {connecting ? (
           <div className={styles.loading} aria-live="polite">
             <StatusDot status="live" size={7} pulse />
