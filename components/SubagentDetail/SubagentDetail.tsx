@@ -6,7 +6,7 @@ import StatusDot from '../ui/StatusDot/StatusDot';
 import IconButton from '../ui/IconButton/IconButton';
 import Button from '../ui/Button/Button';
 import { renderMarkdown } from '../Transcript/Transcript';
-import { renderOutcomeBlocks, type OutcomeBlock } from '../subagentOutcome';
+import { renderOutcomeBlocks, type OutcomeBlock } from '../../lib/client/subagent-outcome';
 import styles from '../SubagentViewer/SubagentViewer.module.scss';
 
 export interface SubagentDetailProps {
