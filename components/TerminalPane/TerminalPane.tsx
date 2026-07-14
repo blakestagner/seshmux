@@ -164,19 +164,35 @@ export default function TerminalPane({
       // "connecting…" with a healthy socket until something else repaints it.
       let backfillDone = false;
 
+      // Fit the LOCAL xterm only when the container proposes sane dimensions.
+      // A bare fit.fit() on a 0×0/hidden mount (grid panels render hidden
+      // until GridView measures its workspace) shrinks the local xterm to
+      // ~2 cols — the PTY guard below stops that reaching tmux, but any LIVE
+      // output streaming in during that window hard-wraps at 2 cols into the
+      // local scrollback and never reflows (the "shredded" scrollback bug).
+      // Keeping the previous geometry while degenerate means incoming bytes
+      // keep wrapping at the last real width.
+      const safeFit = (): boolean => {
+        if (disposed || !fit || !term) return false;
+        try {
+          const dims = fit.proposeDimensions();
+          if (!dims || !Number.isFinite(dims.cols) || dims.cols < 10 || dims.rows < 3) return false;
+          fit.fit();
+          return true;
+        } catch {
+          return false; // transient fit errors during teardown
+        }
+      };
+
       // Sanity-gated resize: never propagate teardown/zero-size fits (a
       // disposing grid pane firing its ResizeObserver once more must not
       // shrink the shared PTY under the pane that replaced it).
       const pushSize = () => {
         if (disposed || !fit || !term || !socket) return;
-        try {
-          fit.fit();
-          if (term.cols >= 10 && term.rows >= 3) {
-            socket.resize(term.cols, term.rows);
-            if (!backfillDone) scheduleBackfill();
-          }
-        } catch {
-          /* transient fit errors during teardown */
+        if (!safeFit()) return;
+        if (term.cols >= 10 && term.rows >= 3) {
+          socket.resize(term.cols, term.rows);
+          if (!backfillDone) scheduleBackfill();
         }
       };
 
@@ -245,13 +261,7 @@ export default function TerminalPane({
       // agent TUI paints squished. rAF lets layout settle first. The PTY resize
       // itself waits for the server's size frame (onSize) — see below.
       requestAnimationFrame(() => {
-        if (!disposed && fit && term) {
-          try {
-            fit.fit();
-          } catch {
-            /* not yet laid out */
-          }
-        }
+        safeFit(); // no-op if the mount isn't laid out yet
       });
 
       // Fallback for a server that never sends the size frame: just push our
@@ -268,12 +278,7 @@ export default function TerminalPane({
           ptyCols = cols;
           if (sizeFallback) clearTimeout(sizeFallback);
           if (disposed || !fit || !term || !socket) return;
-          try {
-            fit.fit();
-          } catch {
-            return;
-          }
-          if (term.cols < 10) {
+          if (!safeFit()) {
             // Mount not laid out yet (grid mounts N panes at once — this pane
             // can still measure 0 wide when the size frame lands). This is the
             // ONLY trigger for the initial backfill, so a bare return leaves
@@ -282,15 +287,7 @@ export default function TerminalPane({
             // then run the same resize+backfill; bounded so a genuinely
             // hidden pane gives up without wedging the overlay.
             retryRepaintUntilReady(
-              () => {
-                if (disposed || !fit || !term) return 0;
-                try {
-                  fit.fit();
-                } catch {
-                  return 0;
-                }
-                return term.cols;
-              },
+              () => (safeFit() && term ? term.cols : 0),
               () => {
                 if (disposed || !term || !socket) return;
                 socket.resize(term.cols, term.rows);
