@@ -122,6 +122,7 @@ export default function TerminalPane({
     let fit: import('@xterm/addon-fit').FitAddon | null = null;
     let socket: TermSocket | null = null;
     let ro: ResizeObserver | null = null;
+    let roTimer: ReturnType<typeof setTimeout> | null = null;
     let onFocus: (() => void) | null = null;
     let themeObserver: MutationObserver | null = null;
 
@@ -295,7 +296,13 @@ export default function TerminalPane({
       term.onData((data) => socket?.send(data));
 
       // Resize xterm to its container and tell the PTY.
-      ro = new ResizeObserver(() => pushSize());
+      // RO fires per animation frame during a seam drag (grid workspace) — debounce
+      // the PTY resize RPC so the daemon isn't resized 60×/s; trailing call lands
+      // the final size. One-shot reassert paths (focus/reconnect) stay immediate.
+      ro = new ResizeObserver(() => {
+        if (roTimer) clearTimeout(roTimer);
+        roTimer = setTimeout(() => pushSize(), 120);
+      });
       ro.observe(mountRef.current);
 
       // Reassert our size on window focus: another client (second browser
@@ -330,6 +337,7 @@ export default function TerminalPane({
     return () => {
       disposed = true;
       pushSizeRef.current = null;
+      if (roTimer) clearTimeout(roTimer);
       ro?.disconnect();
       themeObserver?.disconnect();
       if (onFocus) {
