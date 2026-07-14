@@ -185,6 +185,59 @@
     }
 }
 
+// Drop-zone highlight while dragging a header.
+.zone {
+    position: absolute;
+    z-index: 5;
+    background: var(--accent-soft);
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+    pointer-events: none;
+    transition:
+        left 0.12s ease-out,
+        top 0.12s ease-out,
+        width 0.12s ease-out,
+        height 0.12s ease-out;
+}
+
+// Compact floating label following the pointer (the "lifted panel"). A
+// cloned live xterm canvas can't be dragged as a ghost image, so this title
+// chip is the deliberate stand-in.
+// ponytail: no full-panel drag ghost — xterm canvases aren't clonable, and a
+// title chip is enough signal for what's being dropped.
+.dragGhost {
+    @include t-item-title;
+    position: absolute;
+    z-index: 6;
+    transform: translate(-50%, -130%);
+    padding: 6px 12px;
+    background: var(--bg-raised);
+    border: 1px solid var(--accent);
+    box-shadow: var(--shadow);
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+// Source panel while its ghost is being dragged.
+.ghosted {
+    opacity: 0.35;
+}
+
+.hint {
+    @include t-mono-micro;
+    position: absolute;
+    z-index: 6;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 5px 12px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-bright);
+    color: var(--text-dim);
+    pointer-events: none;
+    white-space: nowrap;
+}
+
 .empty {
     flex: 1;
     display: flex;

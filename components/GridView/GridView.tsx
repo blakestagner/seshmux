@@ -8,8 +8,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useAppState, type Tab } from '../../lib/client/store';
 import { putConfig } from '../../lib/client/api';
 import {
-  computeLayout, reconcile, cloneNode, seamFractions, PAD,
-  type LayoutNode, type Rect,
+  computeLayout, reconcile, cloneNode, seamFractions, hitZone, applyDrop, PAD,
+  type LayoutNode, type Rect, type DropZone,
 } from '../../lib/client/grid-layout';
 import TerminalPane from '../TerminalPane/TerminalPane';
 import StatusDot from '../ui/StatusDot/StatusDot';
@@ -95,19 +95,40 @@ export default function GridView() {
     // node goes away (e.g. its panel closed), pointerup may never fire,
     // leaving seamDrag.current dangling and `interacting` stuck true
     // forever. Cancel any in-flight drag first — dropping a resize because
-    // the layout changed underneath it is rare and acceptable.
+    // the layout changed underneath it is rare and acceptable. Same reasoning
+    // applies to an in-flight header drag (previewTree/zone reference leaf
+    // ids that may no longer exist post-reconcile).
     endDrag(false);
+    endHeadDrag(false);
     const next = reconcile(tree, openIds);
     if (JSON.stringify(next) !== JSON.stringify(tree)) saveTree(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openKey]);
 
   const ws: Rect = { x: PAD, y: PAD, w: wsSize.w - PAD * 2, h: wsSize.h - PAD * 2 };
+
+  // ── Header drag (move panel → drop zones) ──────────────────────────────
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [zone, setZone] = useState<DropZone | null>(null);
+  const [previewTree, setPreviewTree] = useState<LayoutNode | null>(null);
+  const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null);
+  const headDrag = useRef<{
+    id: string; sx: number; sy: number; active: boolean; pid: number;
+    raf: number | null; lastX: number; lastY: number;
+  } | null>(null);
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Readable inside rAF/setTimeout callbacks without re-binding to a stale
+  // render closure (mirrors layoutRef below).
+  const treeRef = useRef(tree);
+  treeRef.current = tree;
+
+  // Rects render from the live preview while one is pending, else the real tree.
+  const renderTree = previewTree ?? tree;
   // Not memoized: seam drag mutates fractions in place on the tree (see
   // seamDrag below) and bumps `tick` to force a recompute. computeLayout on
   // <20 panels is microseconds; memoizing here risks rendering stale rects.
-  const layout = tree && ws.w > 10
-    ? computeLayout(tree, ws)
+  const layout = renderTree && ws.w > 10
+    ? computeLayout(renderTree, ws)
     : { rects: new Map<string, Rect>(), seams: [] };
 
   // ── Seam drag (resize) ─────────────────────────────────────────────────
@@ -159,6 +180,7 @@ export default function GridView() {
   useEffect(() => () => endDrag(false), []);
 
   function onSeamPointerDown(e: React.PointerEvent, seamIdx: number) {
+    if (dragId) return; // a header drag is in flight — seams don't get to start a resize
     const sm = layout.seams[seamIdx];
     if (!sm || !tree) return;
     e.preventDefault();
@@ -206,6 +228,143 @@ export default function GridView() {
     endDrag(true);
   }
 
+  // Last computed layout, readable inside rAF callbacks (hitZone needs rects
+  // for the CURRENT render, not whatever was captured when the handler closure
+  // was created).
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+
+  // Ends (or cancels) an in-flight header drag. `commit` applies the last
+  // hovered zone (normal pointerup/window fallback); `commit: false` discards
+  // it (Esc, pointercancel, reconcile mid-drag, unmount). Single choke point,
+  // same pattern as seam's endDrag — no risk of headDrag.current, the zone/
+  // preview overlays, or `interacting` dangling if any one caller fires
+  // without the others.
+  function endHeadDrag(commit: boolean) {
+    const d = headDrag.current;
+    if (!d) return;
+    if (d.raf != null) cancelAnimationFrame(d.raf);
+    if (previewTimer.current) {
+      clearTimeout(previewTimer.current);
+      previewTimer.current = null;
+    }
+    headDrag.current = null;
+    const z = zone;
+    setDragId(null);
+    setZone(null);
+    setPreviewTree(null);
+    setGhostPos(null);
+    setInteracting(false);
+    if (commit && d.active && z) {
+      const cur = treeRef.current;
+      if (cur) {
+        const t = applyDrop(cloneNode(cur), d.id, z);
+        if (t) saveTree(t);
+      }
+    }
+  }
+
+  function onHeadPointerDown(e: React.PointerEvent, tab: Tab) {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('[data-nodrag]')) return; // future header buttons
+    if (termTabs.length < 2) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    headDrag.current = { id: tab.id, sx: e.clientX, sy: e.clientY, active: false, pid: e.pointerId, raf: null, lastX: e.clientX, lastY: e.clientY };
+  }
+
+  // Zone changes → 150ms later show the real resulting layout as a preview.
+  // Reads `treeRef.current` (not a closed-over `tree`) so a tree that changed
+  // between the hover settling and the timer firing (e.g. a concurrent
+  // reconcile) can't apply the drop to a stale/detached tree.
+  function setZoneDebounced(z: DropZone | null, id: string) {
+    setZone((prev) => {
+      const key = (v: DropZone | null) => (v ? `${v.kind}:${v.target ?? ''}:${v.side}` : 'none');
+      if (key(prev) === key(z)) return prev;
+      if (previewTimer.current) clearTimeout(previewTimer.current);
+      setPreviewTree(null);
+      if (z) {
+        previewTimer.current = setTimeout(() => {
+          previewTimer.current = null;
+          const cur = treeRef.current;
+          if (!cur) return;
+          setPreviewTree(applyDrop(cloneNode(cur), id, z));
+        }, 150);
+      }
+      return z;
+    });
+  }
+
+  function onHeadPointerMove(e: React.PointerEvent) {
+    const d = headDrag.current;
+    if (!d) return;
+    d.lastX = e.clientX;
+    d.lastY = e.clientY;
+    if (!d.active) {
+      if (Math.abs(e.clientX - d.sx) < 4 && Math.abs(e.clientY - d.sy) < 4) return;
+      d.active = true;
+      setDragId(d.id);
+      setInteracting(true);
+    }
+    if (d.raf == null) {
+      d.raf = requestAnimationFrame(() => {
+        d.raf = null;
+        const dd = headDrag.current;
+        const el = wsRef.current;
+        if (!el || !dd?.active) return;
+        const b = el.getBoundingClientRect();
+        const x = dd.lastX - b.left;
+        const y = dd.lastY - b.top;
+        setGhostPos({ x, y });
+        const z = hitZone(x, y, ws, layoutRef.current.rects, dd.id);
+        setZoneDebounced(z, dd.id);
+      });
+    }
+  }
+
+  function onHeadPointerUp(e: React.PointerEvent, tab: Tab) {
+    const d = headDrag.current;
+    if (!d) return;
+    if (!d.active) {
+      // Click without move: plain select, no drag ever started.
+      headDrag.current = null;
+      dispatch({ type: 'activateTab', id: tab.id });
+      return;
+    }
+    endHeadDrag(true);
+  }
+
+  // Esc cancels an active header drag — calls the same choke point directly
+  // rather than fabricating a synthetic pointer event.
+  useEffect(() => {
+    if (!dragId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') endHeadDrag(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragId]);
+
+  // Safety net mirroring the seam drag: if the header element loses the
+  // pointer (e.g. capture lost, element unmounted mid-drag) the captured
+  // pointerup/pointercancel may never fire. Window-level listeners guarantee
+  // the drag always ends.
+  useEffect(() => {
+    if (!dragId) return;
+    const onWindowUp = () => endHeadDrag(true);
+    const onWindowCancel = () => endHeadDrag(false);
+    window.addEventListener('pointerup', onWindowUp);
+    window.addEventListener('pointercancel', onWindowCancel);
+    return () => {
+      window.removeEventListener('pointerup', onWindowUp);
+      window.removeEventListener('pointercancel', onWindowCancel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragId]);
+
+  // Unmount safety: cancel any pending rAF/timer, no persist.
+  useEffect(() => () => endHeadDrag(false), []);
+
   function sourceRef(linkSrc: string): string {
     const src = state.tabs.find((t) => t.sessionId === linkSrc);
     if (src) {
@@ -240,6 +399,7 @@ export default function GridView() {
               tab.linkedKind ? styles.bridged : '',
               selected ? styles.selected : '',
               interacting ? styles.noAnim : '',
+              dragId === tab.id ? styles.ghosted : '',
             ]
               .filter(Boolean)
               .join(' ')}
@@ -249,12 +409,18 @@ export default function GridView() {
                 : { left: 0, top: 0, width: 0, height: 0, visibility: 'hidden' }
             }
           >
-            {/* Header is the select target — a live terminal can't sit inside a
-                <button>, so only the header row is the clickable control. */}
+            {/* Header is the select target and the drag handle — a live
+                terminal can't sit inside a <button>, so only the header row
+                is the clickable/draggable control. Selection happens on
+                pointerup with no movement (see onHeadPointerUp); there's no
+                onClick so a completed drag never also fires a select. */}
             <button
               type="button"
               className={styles.head}
-              onClick={() => dispatch({ type: 'activateTab', id: tab.id })}
+              onPointerDown={(e) => onHeadPointerDown(e, tab)}
+              onPointerMove={onHeadPointerMove}
+              onPointerUp={(e) => onHeadPointerUp(e, tab)}
+              onPointerCancel={() => endHeadDrag(false)}
             >
               <span className={styles.grip}>⠿</span>
               <StatusDot status={waiting ? 'waiting' : 'live'} size={7} />
@@ -306,6 +472,17 @@ export default function GridView() {
           onPointerCancel={onSeamPointerUp}
         />
       ))}
+      {zone ? (
+        <div className={styles.zone} style={{ left: zone.x, top: zone.y, width: zone.w, height: zone.h }} />
+      ) : null}
+      {dragId && ghostPos ? (
+        <div className={styles.dragGhost} style={{ left: ghostPos.x, top: ghostPos.y }}>
+          {repoName(termTabs.find((t) => t.id === dragId)!, state.projects)}
+        </div>
+      ) : null}
+      {dragId ? (
+        <div className={styles.hint}>drop on an edge to split · center to swap · esc to cancel</div>
+      ) : null}
     </div>
   );
 }
