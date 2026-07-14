@@ -1,0 +1,236 @@
+@use '../../styles/typography' as *;
+
+// Settings redesign (design-markup L216-256). Card primitive is used only as
+// the shell (border/radius/bg/overflow) — its .title lives in another module
+// and can't be restyled from here, so Settings owns every section header,
+// row, and the usage block below. Two internal layouts share one shell:
+// sectioned cards (bordered header + bordered rows) for Environment and the
+// seshmux-only control cards, and one padded block for Usage.
+
+.settings {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--bg); // match the app shell, not the panel tint
+}
+
+.inner {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 36px 30px;
+}
+
+// Full-page header row: ← Back + the Settings title share one line, STICKY at
+// the top of the scroll container so Back is reachable from any scroll depth.
+// Sticky needs the scroll ancestor (.settings) — .inner's centering padding
+// stays below it, so the bar spans edge-to-edge with its own inset padding.
+.backRow {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: -36px -30px 20px; // cancel .inner padding so the bar spans full width
+  padding: 14px 30px;
+  background: var(--bg);
+
+  // Fade instead of a hard border: content scrolling under the bar dissolves
+  // out — barely visible right beneath the label/button, gone above.
+  &::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 100%;
+    height: 28px;
+    background: linear-gradient(var(--bg), transparent);
+    pointer-events: none;
+  }
+}
+
+.h1 {
+  @include t-settings-title;
+  margin: 0;
+}
+
+// Sectioned card header (design L220): padding 15x20, uppercase faint label,
+// bottom border. Rendered as the first child of a Card shell.
+.sectionHead {
+  @include t-section;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 15px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sectionNote {
+  @include t-section-note;
+}
+
+// Environment + control rows (design L222): padding 15x20, bottom border on
+// every row except the last within a card.
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px 20px;
+  border-bottom: 1px solid var(--border);
+  @include t-body;
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.name {
+  @include t-settings-row-name;
+}
+
+.sub {
+  @include t-settings-row-sub;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+// Plain sub for the non-path control rows (Appearance/Notifications/etc):
+// design uses the faint sans sub there, not mono.
+.subPlain {
+  @include t-sub;
+}
+
+.mono {
+  @include t-mono-data;
+}
+
+// Right-hand cluster when a row carries status text AND an action (Updates).
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+// Env right status (design L228): mono 12px, tone set per row. Detection
+// checks (✓/✗) colour live/hot; count/size details stay neutral --text-dim.
+.status {
+  @include t-settings-status;
+  white-space: nowrap;
+}
+
+.ok {
+  color: var(--live);
+}
+
+.bad {
+  color: var(--hot);
+}
+
+.neutral {
+  color: var(--text-dim);
+}
+
+.pending {
+  color: var(--text-faint);
+}
+
+// Usage card (design L236): single padded block, inline header (no border).
+.usageCard {
+  padding: 22px;
+}
+
+.usageHead {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.usageHeadTitle {
+  @include t-section;
+}
+
+.usageHeadNote {
+  @include t-mono-micro;
+  color: var(--text-faint);
+}
+
+// 4 stat tiles (design L241): value 24px/600, label 11.5px muted.
+.stats {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.stat {
+  flex: 1;
+  min-width: 0;
+}
+
+.statN {
+  @include t-settings-stat;
+}
+
+.statL {
+  @include t-settings-stat-label;
+  margin-top: 2px;
+}
+
+// Bar rows (design L250): label 150px fixed, 7px accent track, mono pct right.
+.barRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 11px 0;
+}
+
+.barName {
+  @include t-settings-bar-name;
+  width: 150px;
+  flex: 0 0 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.barTrack {
+  flex: 1;
+}
+
+.barPct {
+  @include t-settings-bar-pct;
+  width: 38px;
+  flex: 0 0 38px;
+  text-align: right;
+}
+
+// Provider-split pct cell (keeps the real ProviderBadge functionality the
+// flat design sample omits): auto width, badges laid out inline.
+.barPctProviders {
+  @include t-settings-bar-pct;
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 8px;
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.providerPct {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.footer {
+  @include t-sub;
+  text-align: center;
+  padding: 24px 16px 0;
+}

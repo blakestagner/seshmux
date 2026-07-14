@@ -1,0 +1,63 @@
+@use '../../../styles/typography' as *;
+
+// Segmented — mockup .seg / .view-toggle / .m-provider.
+
+.seg {
+  display: inline-flex;
+}
+
+// default — raised group, accent-soft active (design top-bar segmented,
+// markup L29-32): raised bg, 1px border, radius 9, 3px padding, gap 2.
+.seg.default {
+  gap: 2px;
+  padding: 3px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.seg.default button {
+  @include t-tab; // 12.5px/500 inactive
+  padding: 5px 13px;
+  color: var(--text-dim);
+  border-radius: calc(var(--radius-sm) - 3px);
+}
+
+.seg.default button:hover {
+  color: var(--text);
+}
+
+.seg.default button.active {
+  @include t-tab-active; // 12.5px/600 active
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+// raised — full-width equal thirds, neutral raised-pill active
+// (mockup .rail-provfilter, ~257-278).
+.seg.raised {
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.seg.raised button {
+  @include t-mono-micro;
+  flex: 1;
+  padding: 4px 0;
+  color: var(--text-faint);
+  border-radius: calc(var(--radius-sm) - 3px);
+}
+
+.seg.raised button:hover {
+  color: var(--text);
+}
+
+.seg.raised button.active {
+  @include t-mono-micro-strong;
+  background: var(--bg-raised);
+  color: var(--text);
+  box-shadow: 0 0 0 1px var(--border-bright), var(--shadow);
+}

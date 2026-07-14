@@ -1,0 +1,11 @@
+@use '../../../styles/typography' as *;
+
+// MetaLine — space-between faint row (mockup .sess-meta / .tr-meta).
+
+.row {
+  @include t-meta;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}

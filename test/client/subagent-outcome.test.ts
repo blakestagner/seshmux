@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderOutcomeBlocks } from '../../components/subagentOutcome';
+import { renderOutcomeBlocks } from '../../lib/client/subagent-outcome';
 
 describe('renderOutcomeBlocks', () => {
   it('text kind → single markdown block', () => {

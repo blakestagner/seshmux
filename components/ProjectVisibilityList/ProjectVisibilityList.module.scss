@@ -1,0 +1,39 @@
+@use '../../styles/typography' as *;
+
+.list {
+  display: flex;
+  flex-direction: column;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.name {
+  @include t-item-title;
+}
+
+.path {
+  @include t-mono-micro;
+  color: var(--text-faint);
+  word-break: break-all;
+}
+
+.empty {
+  @include t-sub;
+  padding: 20px 0;
+}

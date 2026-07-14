@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { teamsAllowed, buildInlinePayload, buildPredefinedPayload } from '../../components/TeamModal';
+import { teamsAllowed, buildInlinePayload, buildPredefinedPayload } from '../../components/TeamModal/TeamModal';
 import type { TeamTemplate } from '../../lib/client/api';
 
 describe('teamsAllowed', () => {

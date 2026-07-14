@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { visibleProjects } from '../../components/ProjectVisibilityList';
+import { visibleProjects } from '../../components/ProjectVisibilityList/ProjectVisibilityList';
 import type { Project } from '../../lib/client/types';
 
 const proj = (over: Partial<Project>): Project => ({

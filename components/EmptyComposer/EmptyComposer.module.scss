@@ -1,0 +1,80 @@
+@use '../../styles/typography' as *;
+
+// Empty-pane composer (image ref). Centered column: headline with inline
+// project/agent pickers, a prompt box, and a muted footer row.
+
+.composer {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.headline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.lead {
+  @include t-heading;
+  color: var(--text-dim);
+}
+
+.pickerWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pickerIcon {
+  @include t-heading;
+  color: var(--text-faint);
+}
+
+.promptBox {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.promptFoot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 6px 4px;
+}
+
+.footChip {
+  @include t-chip;
+  color: var(--text-dim);
+}
+
+.footSpacer {
+  flex: 1;
+}
+
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+}
+
+.footNote {
+  @include t-meta;
+  color: var(--text-faint);
+}
+
+.hint {
+  @include t-body;
+  color: var(--text-faint);
+}
