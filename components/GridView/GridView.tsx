@@ -89,6 +89,14 @@ export default function GridView() {
   // Reconcile when the open tab set changes (session opened/closed elsewhere).
   const openKey = openIds.join(',');
   useEffect(() => {
+    // A seam drag holds a clone of `tree` in seamDrag.current and mutates it
+    // in place via rAF. If reconcile swaps in a new tree mid-drag, further
+    // pointermoves would mutate a detached object, and if the seam's DOM
+    // node goes away (e.g. its panel closed), pointerup may never fire,
+    // leaving seamDrag.current dangling and `interacting` stuck true
+    // forever. Cancel any in-flight drag first — dropping a resize because
+    // the layout changed underneath it is rare and acceptable.
+    endDrag(false);
     const next = reconcile(tree, openIds);
     if (JSON.stringify(next) !== JSON.stringify(tree)) saveTree(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -116,6 +124,39 @@ export default function GridView() {
     raf: number | null;
     lastPos: number;
   } | null>(null);
+
+  // Ends (or cancels) an in-flight seam drag. `commit` persists the mutated
+  // tree (normal pointerup/pointercancel); `commit: false` just discards the
+  // in-progress resize (reconcile mid-drag, unmount). Single choke point so
+  // pointerup, pointercancel, the window-level fallback, the reconcile
+  // guard, and unmount all share one path — no risk of seamDrag.current or
+  // `interacting` dangling if any one of them fires without the others.
+  function endDrag(commit: boolean) {
+    const d = seamDrag.current;
+    if (!d) return;
+    if (d.raf != null) cancelAnimationFrame(d.raf);
+    seamDrag.current = null;
+    setInteracting(false);
+    if (commit) saveTree(tree ? cloneNode(tree) : null); // commit + persist (new identity)
+  }
+
+  // Safety net: if the seam element is removed mid-drag (e.g. its panel
+  // closed), the captured pointerup/pointercancel on that element may never
+  // fire. Window-level listeners guarantee the drag always ends.
+  useEffect(() => {
+    if (!interacting) return;
+    const onWindowUp = () => endDrag(true);
+    window.addEventListener('pointerup', onWindowUp);
+    window.addEventListener('pointercancel', onWindowUp);
+    return () => {
+      window.removeEventListener('pointerup', onWindowUp);
+      window.removeEventListener('pointercancel', onWindowUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interacting]);
+
+  // Unmount safety: cancel any pending rAF / drag state, no persist.
+  useEffect(() => () => endDrag(false), []);
 
   function onSeamPointerDown(e: React.PointerEvent, seamIdx: number) {
     const sm = layout.seams[seamIdx];
@@ -162,12 +203,7 @@ export default function GridView() {
   }
 
   function onSeamPointerUp() {
-    const d = seamDrag.current;
-    if (!d) return;
-    if (d.raf != null) cancelAnimationFrame(d.raf);
-    seamDrag.current = null;
-    setInteracting(false);
-    saveTree(tree ? cloneNode(tree) : null); // commit + persist (new identity)
+    endDrag(true);
   }
 
   function sourceRef(linkSrc: string): string {
