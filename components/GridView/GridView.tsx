@@ -63,6 +63,15 @@ export default function GridView() {
   const pendingSave = useRef<LayoutNode | null>(null);
   const configRef = useRef(state.config);
   configRef.current = state.config;
+  // Gates every disk PUT (debounced save, unmount flush, named-layout save)
+  // on the store's initial getConfig() having resolved. Before that, config
+  // is still the store DEFAULT — a preset built and PUT during that window
+  // (e.g. term tabs arriving before config in app/page.tsx) would overwrite
+  // the user's real config.json (pins, theme, everything) with defaults.
+  // In-memory setTree/setConfig above still runs unconditionally so the UI
+  // renders immediately; only the network write is gated.
+  const configLoadedRef = useRef(state.configLoaded);
+  configLoadedRef.current = state.configLoaded;
   function saveTree(t: LayoutNode | null) {
     setTree(t);
     // Dispatch into the store synchronously so any Settings/Rail putConfig
@@ -73,6 +82,14 @@ export default function GridView() {
     // to this tree.
     dispatch({ type: 'setConfig', config: { ...configRef.current, gridLayout: t } });
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    if (!configLoadedRef.current) {
+      // Config hasn't hydrated yet — nothing to PUT (would stomp the real
+      // config.json with defaults). The tree is still tracked in-memory
+      // above; the hydration effect will reconcile against it once the real
+      // config lands.
+      pendingSave.current = null;
+      return;
+    }
     pendingSave.current = t;
     saveTimer.current = setTimeout(() => {
       pendingSave.current = null;
@@ -83,9 +100,15 @@ export default function GridView() {
     // Flush, don't cancel: a bare clearTimeout would drop a pending PUT if the
     // user seam-drags then immediately switches away from grid view (unmount)
     // before the 500ms debounce fires — the resize would never hit disk.
+    // Still gated on configLoaded — an unflushed pending save only exists if
+    // saveTree scheduled it, which already requires configLoaded, but the
+    // check is repeated here defensively (single source of truth for "is it
+    // safe to PUT").
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
-      putConfig({ ...configRef.current, gridLayout: pendingSave.current });
+      if (configLoadedRef.current) {
+        putConfig({ ...configRef.current, gridLayout: pendingSave.current });
+      }
     }
   }, []);
 
@@ -115,6 +138,9 @@ export default function GridView() {
         // Persist, not a bare setTree — exiting focus restores the
         // pre-focus tree as the real layout and it must reach disk like any
         // other layout change, else a reload after exiting focus loses it.
+        // Mark as a genuine user touch (same as the other five mutation call
+        // sites) — a late config/tabs arrival must not stomp this restore.
+        userTouchedRef.current = true;
         saveTree(preFocus.current);
         preFocus.current = null;
       }
@@ -150,7 +176,10 @@ export default function GridView() {
     if (!name || !tree) return;
     const next = { ...configRef.current, gridNamedLayouts: { ...configRef.current.gridNamedLayouts, [name]: cloneNode(tree) } };
     dispatch({ type: 'setConfig', config: next });
-    putConfig(next);
+    // Same hydration gate as saveTree: pre-hydration configRef.current is
+    // still the store default, and PUTting it would overwrite the user's
+    // real config.json (pins, theme, everything) with defaults.
+    if (configLoadedRef.current) putConfig(next);
     setLayoutsOpen(false);
   }
 
@@ -174,7 +203,8 @@ export default function GridView() {
     delete nextLayouts[name];
     const next = { ...configRef.current, gridNamedLayouts: nextLayouts };
     dispatch({ type: 'setConfig', config: next });
-    putConfig(next);
+    // Same hydration gate as saveTree/saveNamed.
+    if (configLoadedRef.current) putConfig(next);
   }
 
   // Track workspace size (rail resize, window resize, sidebar toggle).
@@ -211,8 +241,12 @@ export default function GridView() {
     const next = reconcile(base, openIds);
     const changed = JSON.stringify(next) !== JSON.stringify(base);
     if (changed) {
-      // Genuine structural change (ids added/removed) — persist it.
-      userTouchedRef.current = true;
+      // Genuine structural change (ids added/removed) — persist it (saveTree
+      // itself gates the actual PUT on configLoaded). This is a
+      // system-generated reconcile/preset, NOT a user action — do NOT set
+      // userTouchedRef here, or a tabs-before-config race would permanently
+      // block the hydration effect below from ever adopting the real saved
+      // tree once config arrives.
       saveTree(next);
     } else if (JSON.stringify(next) !== JSON.stringify(tree)) {
       // Adopting the persisted tree unchanged (first hydration) — update
@@ -234,6 +268,26 @@ export default function GridView() {
   // config). Only adopts while the user hasn't touched the layout themselves
   // — once they have, a late config arrival must never stomp it. No saveTree
   // here: adopting the user's own already-persisted layout is not a change.
+  //
+  // Two load orderings, both handled:
+  // (A) config→tabs: getConfig resolves first, so the initial useState's
+  //     reconcile(parseTree(config.gridLayout), openIds) already seeds from
+  //     the saved tree. openKey's effect then reconciles that seeded tree
+  //     against the real openIds; only a genuine session-set change (tabs
+  //     added/removed vs the saved tree) triggers a save, gated on
+  //     configLoaded like everything else.
+  // (B) tabs→config: term tabs arrive before getConfig resolves. openKey's
+  //     effect builds a preset(openIds) from a null base and calls saveTree
+  //     — but WITHOUT marking userTouchedRef (it's a system reconcile, not a
+  //     user action) and WITHOUT persisting (configLoaded is still false, so
+  //     saveTree's PUT is skipped). When config then arrives, this effect
+  //     fires: userTouchedRef is still false, so it adopts the real saved
+  //     tree, cancels any pending save timer first (nothing should have been
+  //     scheduled pre-hydration, but this is the choke point that guarantees
+  //     it), and reconciles the adopted tree against the current openIds.
+  //     Any genuine difference (sessions changed since last save) is saved
+  //     now — configLoaded is true by the time this effect can observe a
+  //     changed state.config.gridLayout, so that save reaches disk.
   useEffect(() => {
     if (userTouchedRef.current) return;
     const persisted = parseTree(state.config.gridLayout);
@@ -241,8 +295,25 @@ export default function GridView() {
     const next = reconcile(persisted, openIds);
     if (!next) return;
     if (JSON.stringify(next) === JSON.stringify(tree)) return;
-    setTree(next);
-    dispatch({ type: 'setConfig', config: { ...configRef.current, gridLayout: next } });
+    // Cancel any pending save timer before adopting — a scheduled
+    // auto-preset PUT (from the tabs→config race, ordering B above) must not
+    // fire after we've just replaced the tree with the real persisted one.
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      pendingSave.current = null;
+    }
+    if (JSON.stringify(next) !== JSON.stringify(persisted)) {
+      // Reconciling the persisted tree against the CURRENT openIds produced
+      // a genuine difference (sessions changed since the last save) — save
+      // it, gated on configLoaded like every other write.
+      saveTree(next);
+    } else {
+      // Adopting the persisted tree unchanged — update local state/store so
+      // it renders, but no PUT: nothing to save that isn't already on disk.
+      setTree(next);
+      dispatch({ type: 'setConfig', config: { ...configRef.current, gridLayout: next } });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.config.gridLayout]);
 

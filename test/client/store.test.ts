@@ -149,6 +149,26 @@ describe('setConfig', () => {
     expect(state.config.pins).toEqual(['p1']);
     expect(state.config.settings).toEqual({});
   });
+
+  // Grid hydration race fix: configLoaded must be a distinct signal from
+  // "a setConfig action landed" — GridView/Settings/Rail all dispatch
+  // setConfig for in-memory syncs unrelated to the initial load, and none of
+  // those may fake "the server config has hydrated".
+  it('does not set configLoaded (only markConfigLoaded does)', () => {
+    let state = initialState();
+    expect(state.configLoaded).toBe(false);
+    state = reducer(state, { type: 'setConfig', config: { pins: [], projectOrder: [], theme: 'dark', accent: 'iris' } as never });
+    expect(state.configLoaded).toBe(false);
+  });
+});
+
+describe('markConfigLoaded', () => {
+  it('flips configLoaded to true', () => {
+    let state = initialState();
+    expect(state.configLoaded).toBe(false);
+    state = reducer(state, { type: 'markConfigLoaded' });
+    expect(state.configLoaded).toBe(true);
+  });
 });
 
 describe('setTermStatus', () => {

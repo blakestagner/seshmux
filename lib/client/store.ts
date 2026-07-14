@@ -57,6 +57,13 @@ export type AppState = {
   config: Config;
   // Session-local bypass for the rail's hidden-project filter — never persisted.
   showHidden: boolean;
+  // True once the initial getConfig() has resolved and its setConfig has been
+  // dispatched. GridView gates every disk PUT on this — a term tab arriving
+  // before config (tabs→config race) must never PUT a preset built from the
+  // store DEFAULT config over the user's real config.json. Only the initial
+  // load flips this; setConfig alone (GridView/Settings/Rail also dispatch it)
+  // must NOT, or a later in-memory setConfig would fake "loaded".
+  configLoaded: boolean;
 };
 
 export type Action =
@@ -96,7 +103,8 @@ export type Action =
   | { type: 'setShowHidden'; on: boolean }
   | { type: 'moveProject'; from: string; to: string }
   | { type: 'setProjects'; projects: Project[] }
-  | { type: 'setConfig'; config: Config };
+  | { type: 'setConfig'; config: Config }
+  | { type: 'markConfigLoaded' };
 
 const LOAD_CHUNK = 5;
 
@@ -111,6 +119,7 @@ export function initialState(overrides?: Partial<AppState>): AppState {
     projects: [],
     config: { pins: [], projectOrder: [], hidden: [], theme: 'dark', accent: 'iris', settings: {}, gridLayout: null, gridNamedLayouts: {} },
     showHidden: false,
+    configLoaded: false,
     ...overrides,
   };
 }
@@ -378,6 +387,8 @@ export function reducer(state: AppState, action: Action): AppState {
     }
     case 'setProjects':
       return { ...state, projects: action.projects };
+    case 'markConfigLoaded':
+      return { ...state, configLoaded: true };
     case 'setConfig':
       // Normalize at the store boundary: the server may be an OLDER version
       // than this client (stateless-server restarts/updates are a supported

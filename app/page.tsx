@@ -265,7 +265,16 @@ function AppShell() {
   }, [state.activeTab]);
 
   useEffect(() => {
-    getConfig().then((config) => dispatch({ type: 'setConfig', config }));
+    getConfig().then((config) => {
+      dispatch({ type: 'setConfig', config });
+      // Marks the store "hydrated" — GridView gates every disk PUT on this so
+      // a term tab arriving before this resolves (tabs→config race) can't PUT
+      // a preset built from the store DEFAULT config over the real
+      // config.json. Deliberately NOT set inside the setConfig reducer arm:
+      // GridView/Settings/Rail also dispatch setConfig for in-memory syncs,
+      // and those must not fake "loaded".
+      dispatch({ type: 'markConfigLoaded' });
+    });
 
     // Tab rehydrate on load (acceptance item 3): the daemon holds live PTYs
     // across a page reload, so reopen a term tab per live PTY — openTerm is
