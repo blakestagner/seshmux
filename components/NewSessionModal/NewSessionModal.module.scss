@@ -1,0 +1,51 @@
+@use '../../styles/typography' as *;
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+}
+
+.modal {
+  width: 440px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow-modal), var(--shadow);
+}
+
+.title {
+  @include t-heading;
+  margin-bottom: 4px;
+}
+
+.path {
+  @include t-meta;
+  margin-bottom: 16px;
+}
+
+.provSeg {
+  margin-bottom: 12px;
+}
+
+// .option/.icon/.optBody/.optTitle/.optDesc live in components/ui/OptionRow now
+// (shared with WorkspaceFinishPrompt — primitives-first rule).
+
+.cancel {
+  margin-top: 6px;
+  width: 100%;
+  text-align: center;
+  padding: 6px;
+  cursor: pointer;
+  @include t-row;
+  color: var(--text-faint);
+
+  &:hover {
+    color: var(--text);
+  }
+}

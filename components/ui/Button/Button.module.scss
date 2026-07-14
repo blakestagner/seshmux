@@ -1,0 +1,65 @@
+@use '../../../styles/typography' as *;
+
+// Button — mockup .btn / .btn.primary. Ghost has no mockup precedent yet
+// (used by later tasks) — borderless/transparent variant of default.
+
+.btn {
+  @include t-row;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-bright);
+  color: var(--text-dim);
+}
+
+.default:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.primary {
+  @include t-button-primary;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.primary:hover {
+  filter: brightness(1.1);
+}
+
+.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+.ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+  pointer-events: none;
+}
+
+// Compact bordered mono pill — terminal statusbar actions (bridge handoff/review,
+// workspace finish). Distinct visual family from default/primary/ghost.
+.chip {
+  @include t-mono-statusbar;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  white-space: nowrap;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.chip:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}

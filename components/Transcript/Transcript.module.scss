@@ -1,0 +1,213 @@
+@use '../../styles/typography' as *;
+
+// Ported from mockup.html .transcript/.tr-inner/.tr-header (~516-536),
+// .msg/.msg-role/.msg-body (~538-557), .toolcall* collapsible (~558-587).
+
+.transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: 40px 0 60px;
+}
+
+.transcript::-webkit-scrollbar {
+  width: 8px;
+}
+
+.transcript::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.inner {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.header {
+  padding-bottom: 14px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.title {
+  @include t-heading;
+  margin-bottom: 6px;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+
+.actionError {
+  @include t-sub;
+  color: var(--hot);
+  margin-top: 8px;
+}
+
+.loading {
+  @include t-sub;
+}
+
+.loadMore {
+  @include t-mono-micro;
+  display: block;
+  width: 100%;
+  text-align: center;
+  padding: 8px;
+  margin-bottom: 16px;
+  color: var(--text-faint);
+  border: 1px dashed var(--border-bright);
+  border-radius: var(--radius-sm);
+}
+
+.loadMore:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+// De-striped (mockup __af_html lines 124-131): no full-width role bands.
+// Role is shown by a small cue, not a background. USER = accent-soft card with
+// a 2px accent left border (border-left radius only). ASSISTANT = a small
+// accent dot beside flat text on --bg. Role labels are visually hidden — the
+// visual cue carries the role, the sr-only text keeps it accessible.
+.msg {
+  margin-bottom: 16px;
+}
+
+.role {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.body {
+  @include t-body;
+}
+
+.content {
+  min-width: 0;
+}
+
+// USER — accent-soft tinted card, 2px accent left border, right corners only.
+.user {
+  margin: 20px 0;
+}
+
+.user .body {
+  background: var(--accent-soft);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  padding: 13px 17px;
+  white-space: pre-wrap;
+}
+
+// ASSISTANT — 6px accent dot + flat text, no background.
+.assistant {
+  display: flex;
+  gap: 13px;
+  margin: 15px 0;
+}
+
+.dot {
+  margin-top: 7px;
+  width: 6px;
+  height: 6px;
+  border-radius: 99px;
+  background: var(--accent);
+  flex: 0 0 6px;
+}
+
+.assistant .content {
+  flex: 1;
+}
+
+.body :global(code) {
+  @include t-mono-data;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.body :global(pre) {
+  overflow-x: auto;
+}
+
+.body :global(pre code) {
+  border: none;
+  padding: 0;
+}
+
+.toolcall {
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.toolcallHead {
+  @include t-mono-micro;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  color: var(--text-dim);
+  background: var(--bg-panel);
+  text-align: left;
+}
+
+.toolcallHead:hover {
+  background: var(--bg-hover);
+}
+
+.caret {
+  @include t-caret;
+  color: var(--text-faint);
+  transition: transform 0.15s;
+  flex: 0 0 auto;
+}
+
+.open .caret {
+  transform: rotate(90deg);
+}
+
+.toolName {
+  @include t-button-primary;
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.argPreview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolcallBody {
+  @include t-mono-micro;
+  padding: 10px 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  white-space: pre-wrap;
+  max-height: 260px;
+  overflow-y: auto;
+}

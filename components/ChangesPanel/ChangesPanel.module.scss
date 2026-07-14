@@ -1,0 +1,171 @@
+@use '../../styles/typography' as *;
+
+// Changes panel — layout/spacing/state/color only; text via t-* mixins (hard
+// rule 1). Chrome mirrors SubagentViewer's head/tree so the right-pane slot
+// reads as one family. Green/red are STATUS tokens (--live/--hot), never
+// provider identity colors.
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.title {
+  @include t-section;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.totals {
+  @include t-mono-micro;
+  display: inline-flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.tree {
+  @include t-mono-micro;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+}
+
+.row:hover {
+  background: var(--bg-hover);
+}
+
+.rowChanged {
+  color: var(--text);
+}
+
+.caret {
+  @include t-caret;
+  flex: 0 0 auto;
+  width: 12px;
+  text-align: center;
+  color: var(--text-faint);
+}
+
+.caretSpacer {
+  flex: 0 0 auto;
+  width: 12px;
+}
+
+.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deleted {
+  text-decoration: line-through;
+  color: var(--text-faint);
+}
+
+.stats {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.added {
+  color: var(--live);
+}
+
+.removed {
+  color: var(--hot);
+}
+
+.empty {
+  padding: 12px;
+  color: var(--text-faint);
+}
+
+// ── File diff view (panel-swap) ────────────────────────────────────────────
+
+.backBtn {
+  flex: 0 0 auto;
+}
+
+.diff {
+  @include t-mono-micro;
+  overflow: auto;
+  flex: 1 1 auto;
+  padding: 8px 0;
+}
+
+.diffLine {
+  display: flex;
+  align-items: baseline;
+  padding: 0 12px 0 0;
+  color: var(--text-dim);
+}
+
+.diffAdd {
+  background: var(--diff-add-bg);
+  color: var(--text);
+}
+
+.diffDel {
+  background: var(--diff-del-bg);
+  color: var(--text);
+}
+
+.diffHunk {
+  padding: 6px 12px 2px;
+  color: var(--text-faint);
+}
+
+// Two number columns (old | new) — fixed width keeps code aligned; numbers
+// stay faint so the code carries the contrast.
+.diffGutter {
+  flex: 0 0 40px;
+  padding-right: 8px;
+  text-align: right;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.diffMarker {
+  flex: 0 0 14px;
+  text-align: center;
+  user-select: none;
+}
+
+.diffAdd .diffMarker {
+  color: var(--live);
+}
+
+.diffDel .diffMarker {
+  color: var(--hot);
+}
+
+// Long lines scroll horizontally inside the row (pre keeps indentation).
+.diffText {
+  white-space: pre;
+  flex: 1 1 auto;
+}

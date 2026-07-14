@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { escapeHtml, renderMarkdown } from '../../components/Transcript';
+import { escapeHtml, renderMarkdown } from '../../components/Transcript/Transcript';
 
 describe('escapeHtml', () => {
   it('encodes both double and single quotes', () => {

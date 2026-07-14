@@ -1,0 +1,16 @@
+@use '../../../styles/typography' as *;
+
+// CtxBadge — thresholds: >=80 hot(red) / >=60 warm(amber) / else green(--live).
+
+.badge {
+  @include t-mono-micro;
+  color: var(--live);
+}
+
+.warm {
+  color: var(--waiting);
+}
+
+.hot {
+  color: var(--hot);
+}
