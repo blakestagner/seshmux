@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { marked } from 'marked';
 import ProviderBadge, { PROV } from '../ui/ProviderBadge/ProviderBadge';
 import Button from '../ui/Button/Button';
+import BridgeMenu from '../BridgeMenu/BridgeMenu';
 import MetaLine from '../ui/MetaLine/MetaLine';
 import { getTranscript, startSession, bridgeHandoff, bridgeReview, getTeamMembers } from '../../lib/client/api';
 import type { Msg, Ctx, BridgeStart } from '../../lib/client/api';
@@ -210,15 +211,15 @@ export default function Transcript({ projectId, sessionId, title, provider }: Tr
             <Button variant="primary" disabled={resuming || !project} onClick={handleResume}>
               ↻ Resume session
             </Button>
-            {other && !state.tabs.some((t) => t.linked && t.linkedKind === 'handoff' && t.linkSrc === sessionId) ? (
-              <Button disabled={bridging || !project} onClick={() => runBridge(bridgeHandoff)}>
-                ⇄ Continue in {other.glyph} {otherProvider}
-              </Button>
-            ) : null}
             {other ? (
-              <Button disabled={bridging || !project} onClick={() => runBridge(bridgeReview)}>
-                ⊙ Review with {other.glyph} {otherProvider}
-              </Button>
+              <BridgeMenu
+                other={other}
+                otherProvider={otherProvider!}
+                hasHandoff={state.tabs.some((t) => t.linked && t.linkedKind === 'handoff' && t.linkSrc === sessionId)}
+                disabled={bridging || !project}
+                onHandoff={() => runBridge(bridgeHandoff)}
+                onReview={() => runBridge(bridgeReview)}
+              />
             ) : null}
             <Button onClick={copySessionId}>{copied ? 'Copied' : 'Copy session id'}</Button>
           </div>

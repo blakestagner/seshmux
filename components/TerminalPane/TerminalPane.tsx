@@ -36,6 +36,7 @@ import BranchLabel from '../ui/BranchLabel/BranchLabel';
 import MeterBar from '../ui/MeterBar/MeterBar';
 import CtxBadge from '../ui/CtxBadge/CtxBadge';
 import Button from '../ui/Button/Button';
+import BridgeMenu from '../BridgeMenu/BridgeMenu';
 import WorkspaceFinishPrompt from '../WorkspaceFinishPrompt/WorkspaceFinishPrompt';
 import styles from './TerminalPane.module.scss';
 
@@ -594,32 +595,23 @@ export default function TerminalPane({
     (t) => t.linked && t.linkedKind === 'handoff' && !!sessionId && t.linkSrc === sessionId,
   );
 
-  // Two compact bridge actions shared by both statusbar variants. Glyphs ⇄/⊙
-  // match LinkChip handoff/review; label flips to the opposite provider.
+  // Bridge actions collapsed into one dropdown shared by both statusbar
+  // variants. Glyphs ⇄/⊙ match LinkChip handoff/review; label flips to the
+  // opposite provider.
   const bridgeActions = canBridge ? (
     <span className={styles.bridge}>
-      {!hasHandoff ? (
-        <Button
-          variant="chip"
-          className={styles.bridgeBtn}
-          disabled={bridging}
-          title={bridgeError ?? `Continue this session in ${other.name}`}
-          onClick={() => runBridge(bridgeHandoff)}
-        >
-          ⇄ <span className={styles.verb}>Continue in </span>
-          {other.glyph} {otherProvider}
-        </Button>
-      ) : null}
-      <Button
+      <BridgeMenu
+        other={other}
+        otherProvider={otherProvider!}
+        hasHandoff={hasHandoff}
+        disabled={bridging}
+        title={bridgeError ?? undefined}
         variant="chip"
         className={styles.bridgeBtn}
-        disabled={bridging}
-        title={bridgeError ?? `Review this session with ${other.name}`}
-        onClick={() => runBridge(bridgeReview)}
-      >
-        ⊙ <span className={styles.verb}>Review with </span>
-        {other.glyph} {otherProvider}
-      </Button>
+        up
+        onHandoff={() => runBridge(bridgeHandoff)}
+        onReview={() => runBridge(bridgeReview)}
+      />
     </span>
   ) : null;
 
