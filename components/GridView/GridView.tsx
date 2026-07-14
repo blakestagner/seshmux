@@ -60,6 +60,7 @@ export default function GridView() {
   // Persist (debounced) — the whole config object rides along, same pattern as
   // Rail/Settings putConfig callers.
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSave = useRef<LayoutNode | null>(null);
   const configRef = useRef(state.config);
   configRef.current = state.config;
   function saveTree(t: LayoutNode | null) {
@@ -72,11 +73,27 @@ export default function GridView() {
     // to this tree.
     dispatch({ type: 'setConfig', config: { ...configRef.current, gridLayout: t } });
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    pendingSave.current = t;
     saveTimer.current = setTimeout(() => {
+      pendingSave.current = null;
       putConfig({ ...configRef.current, gridLayout: t });
     }, 500);
   }
-  useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
+  useEffect(() => () => {
+    // Flush, don't cancel: a bare clearTimeout would drop a pending PUT if the
+    // user seam-drags then immediately switches away from grid view (unmount)
+    // before the 500ms debounce fires — the resize would never hit disk.
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      putConfig({ ...configRef.current, gridLayout: pendingSave.current });
+    }
+  }, []);
+
+  // True once the user has made a layout change themselves (seam drag, panel
+  // drag/drop, or a toolbar action). Gates the hydration effect below: a late
+  // config/tabs arrival may adopt the persisted tree only while this is
+  // false, so it can never stomp a layout the user just made.
+  const userTouchedRef = useRef(false);
 
   // ── Focus mode (component-local — NOT persisted; a reload lands on the
   // saved tree, unfocused) ────────────────────────────────────────────────
@@ -95,7 +112,10 @@ export default function GridView() {
     if (focusId === id) {
       setFocusId(null);
       if (preFocus.current) {
-        setTree(preFocus.current);
+        // Persist, not a bare setTree — exiting focus restores the
+        // pre-focus tree as the real layout and it must reach disk like any
+        // other layout change, else a reload after exiting focus loses it.
+        saveTree(preFocus.current);
         preFocus.current = null;
       }
     } else {
@@ -136,7 +156,16 @@ export default function GridView() {
 
   function applyNamed(name: string) {
     const t = reconcile(parseTree(configRef.current.gridNamedLayouts[name]), openIds);
-    if (t) saveTree(t);
+    if (t) {
+      // Clear focus first (same as reset) — otherwise the persisted tree
+      // diverges from focus/preFocus state: preFocus.current would still
+      // point at the tree from before this named layout was applied, and
+      // exiting focus later would restore that stale tree over it.
+      userTouchedRef.current = true;
+      setFocusId(null);
+      preFocus.current = null;
+      saveTree(t);
+    }
     setLayoutsOpen(false);
   }
 
@@ -172,8 +201,26 @@ export default function GridView() {
     // may no longer exist post-reconcile).
     endDrag(false);
     endHeadDrag(false);
-    const next = reconcile(tree, openIds);
-    if (JSON.stringify(next) !== JSON.stringify(tree)) saveTree(next);
+    // Seed from the persisted config when there's no live tree yet. At first
+    // mount openIds is [] (tabs load async after getLive), so the initial
+    // useState's reconcile(parseTree(config.gridLayout), []) returns null and
+    // the saved tree looks lost. By the time tabs arrive here, fall back to
+    // the persisted tree instead of starting from null (which would preset()
+    // and PUT over the user's saved layout).
+    const base = tree ?? parseTree(configRef.current.gridLayout);
+    const next = reconcile(base, openIds);
+    const changed = JSON.stringify(next) !== JSON.stringify(base);
+    if (changed) {
+      // Genuine structural change (ids added/removed) — persist it.
+      userTouchedRef.current = true;
+      saveTree(next);
+    } else if (JSON.stringify(next) !== JSON.stringify(tree)) {
+      // Adopting the persisted tree unchanged (first hydration) — update
+      // local state/store so it renders, but no PUT: nothing to save that
+      // isn't already on disk.
+      setTree(next);
+      dispatch({ type: 'setConfig', config: { ...configRef.current, gridLayout: next } });
+    }
     if (focusId && !openIds.includes(focusId)) {
       setFocusId(null);
       preFocus.current = null;
@@ -181,6 +228,23 @@ export default function GridView() {
     if (preFocus.current) preFocus.current = reconcile(preFocus.current, openIds);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openKey]);
+
+  // Hydrate from persisted config whenever it changes after mount (getConfig
+  // can resolve after the tree was already seeded/preset from an empty/stale
+  // config). Only adopts while the user hasn't touched the layout themselves
+  // — once they have, a late config arrival must never stomp it. No saveTree
+  // here: adopting the user's own already-persisted layout is not a change.
+  useEffect(() => {
+    if (userTouchedRef.current) return;
+    const persisted = parseTree(state.config.gridLayout);
+    if (!persisted) return;
+    const next = reconcile(persisted, openIds);
+    if (!next) return;
+    if (JSON.stringify(next) === JSON.stringify(tree)) return;
+    setTree(next);
+    dispatch({ type: 'setConfig', config: { ...configRef.current, gridLayout: next } });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.config.gridLayout]);
 
   const ws: Rect = { x: PAD, y: PAD, w: wsSize.w - PAD * 2, h: wsSize.h - PAD * 2 };
 
@@ -241,7 +305,10 @@ export default function GridView() {
     if (d.raf != null) cancelAnimationFrame(d.raf);
     seamDrag.current = null;
     setInteracting(false);
-    if (commit) saveTree(tree ? cloneNode(tree) : null); // commit + persist (new identity)
+    if (commit) {
+      userTouchedRef.current = true;
+      saveTree(tree ? cloneNode(tree) : null); // commit + persist (new identity)
+    }
   }
 
   // Safety net: if the seam element is removed mid-drag (e.g. its panel
@@ -337,7 +404,10 @@ export default function GridView() {
       const cur = treeRef.current;
       if (cur) {
         const t = applyDrop(cloneNode(cur), d.id, z);
-        if (t) saveTree(t);
+        if (t) {
+          userTouchedRef.current = true;
+          saveTree(t);
+        }
       }
     }
   }
@@ -473,10 +543,25 @@ export default function GridView() {
       <div className={styles.toolbar}>
         <span className={styles.toolbarInfo}>{termTabs.length} sessions</span>
         <span className={styles.toolbarActions}>
-          <Button variant="chip" onClick={() => saveTree(preset(openIds))}>auto-arrange</Button>
           <Button
             variant="chip"
             onClick={() => {
+              // Clear focus first (same as reset) — otherwise focusId/preFocus
+              // keep pointing at pre-auto-arrange state while the persisted
+              // tree has moved on, and exiting focus later would restore the
+              // stale tree over the freshly auto-arranged one.
+              userTouchedRef.current = true;
+              setFocusId(null);
+              preFocus.current = null;
+              saveTree(preset(openIds));
+            }}
+          >
+            auto-arrange
+          </Button>
+          <Button
+            variant="chip"
+            onClick={() => {
+              userTouchedRef.current = true;
               setFocusId(null);
               preFocus.current = null;
               saveTree(preset(openIds));
@@ -626,11 +711,18 @@ export default function GridView() {
       {zone ? (
         <div className={styles.zone} style={{ left: zone.x, top: zone.y, width: zone.w, height: zone.h }} />
       ) : null}
-      {dragId && ghostPos ? (
-        <div className={styles.dragGhost} style={{ left: ghostPos.x, top: ghostPos.y }}>
-          {repoName(termTabs.find((t) => t.id === dragId)!, state.projects)}
-        </div>
-      ) : null}
+      {(() => {
+        // Resolve to a variable and only render if found — the dragged tab
+        // can be removed (session closed) mid-drag in the same render, and
+        // the old non-null assertion would throw instead of just skipping
+        // the ghost.
+        const dragTab = dragId ? termTabs.find((t) => t.id === dragId) : undefined;
+        return dragTab && ghostPos ? (
+          <div className={styles.dragGhost} style={{ left: ghostPos.x, top: ghostPos.y }}>
+            {repoName(dragTab, state.projects)}
+          </div>
+        ) : null;
+      })()}
       {dragId ? (
         <div className={styles.hint}>drop on an edge to split · center to swap · esc to cancel</div>
       ) : null}
