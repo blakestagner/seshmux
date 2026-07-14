@@ -1,33 +1,42 @@
 @use '../../styles/typography' as *;
 
-.grid {
+// Tiled workspace (design-3): fixed viewport, absolutely positioned panels
+// computed from the split tree. No scrolling — everything always visible.
+.workspace {
+    position: relative;
     flex: 1;
     min-height: 0;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-    grid-auto-rows: minmax(260px, 1fr);
     background: var(--bg);
-    overflow-y: auto;
+    overflow: hidden;
 }
 
-// Redesign (__af_html.txt line 178): 13px radius, --panel bg, flat border.
-.tile {
+.panel {
+    position: absolute;
     display: flex;
     flex-direction: column;
     min-height: 0;
-    text-align: left;
     background: var(--bg-panel);
     border: 1px solid var(--border);
     overflow: hidden;
-    cursor: pointer;
     transition:
-        border-color 0.15s,
-        transform 0.1s;
+        left 0.17s ease-out,
+        top 0.17s ease-out,
+        width 0.17s ease-out,
+        height 0.17s ease-out,
+        border-color 0.15s;
 
     &:hover {
         border-color: var(--accent);
-        transform: translateY(-1px);
+
+        .grip {
+            opacity: 1;
+        }
     }
+}
+
+// Panels being actively dragged/resized must track the pointer with zero lag.
+.noAnim {
+    transition: border-color 0.15s;
 }
 
 .selected {
@@ -55,21 +64,33 @@
     }
 }
 
-// Single-row header (design-markup L178): 46px, dot + name left, ctx cluster
-// right. gap 10 matches the mock; repo name flexes and ellipsizes.
+// Single-row header, 40px: grip + dot + name left, ctx cluster right. This is
+// the drag handle (Task 6) and the select control.
 .head {
     flex: 0 0 auto;
     width: 100%;
     display: flex;
     align-items: center;
     gap: 10px;
-    min-height: 46px;
-    height: 46px;
-    padding: 0 16px;
+    min-height: 40px;
+    height: 40px;
+    padding: 0 12px;
     background: var(--bg-panel);
     border-bottom: 1px solid var(--border);
     text-align: left;
-    cursor: pointer;
+    cursor: grab;
+    user-select: none;
+
+    &:active {
+        cursor: grabbing;
+    }
+}
+
+.grip {
+    @include t-mono-micro;
+    color: var(--text-faint);
+    opacity: 0;
+    transition: opacity 0.15s;
 }
 
 .repo {
@@ -94,8 +115,6 @@
     min-width: 0;
 }
 
-// ctx cluster (design-markup L181-183): mono "76k / 200k" faint, 46×5 meter,
-// mono pct muted. Pushed right; repo's flex:1 already fills the gap.
 .ctx {
     display: inline-flex;
     align-items: center;
@@ -122,6 +141,48 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
+}
+
+// Seam between sibling panels: the 10px gutter is the hit area, a 2px accent
+// line fades in centered on hover (Task 5 adds cursor + drag).
+.seam {
+    position: absolute;
+    z-index: 2;
+
+    &::before {
+        content: '';
+        position: absolute;
+        background: var(--accent);
+        opacity: 0;
+        transition: opacity 0.15s;
+    }
+
+    &:hover::before,
+    &.seamActive::before {
+        opacity: 1;
+    }
+}
+
+.seamH {
+    cursor: col-resize;
+
+    &::before {
+        left: 4px;
+        top: 0;
+        width: 2px;
+        height: 100%;
+    }
+}
+
+.seamV {
+    cursor: row-resize;
+
+    &::before {
+        top: 4px;
+        left: 0;
+        height: 2px;
+        width: 100%;
+    }
 }
 
 .empty {

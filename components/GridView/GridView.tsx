@@ -1,16 +1,16 @@
 'use client';
-// Grid layout over the open TERM tabs (not /api/sessions/live — that feeds rail
-// dots). The tabs⇄grid Segmented toggles this layout over the same tab set;
-// clicking a tile selects it in place (activateTab) and stays in grid.
-//
-// Single-row tile header per redesign (design-markup L178-184): pulsing dot +
-// repo name (13px/600) on the left; ctx text ("76k / 200k") + 46×5 meter + pct
-// on the right. Provider badge, bridge chip and from-ref are seshmux-functional
-// (not in the mock) — kept inline on the left so nothing functional is dropped.
-// `waiting` status + NEEDS INPUT wiring lands in the events-ws wave (Task 15);
-// the pulse CSS + flag exist here but nothing feeds 'waiting' yet.
+// Tiled grid workspace (design-3, docs/local/prototypes/grid-layout/design-3.html).
+// The split tree from lib/client/grid-layout.ts drives absolutely positioned
+// panels; panels are stable DOM nodes keyed by tab.id and are NEVER reparented
+// (xterm would remount with a backfill flash). Tree persists via /api/config.
 
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAppState, type Tab } from '../../lib/client/store';
+import { putConfig } from '../../lib/client/api';
+import {
+  computeLayout, reconcile, PAD,
+  type LayoutNode, type Rect,
+} from '../../lib/client/grid-layout';
 import TerminalPane from '../TerminalPane/TerminalPane';
 import StatusDot from '../ui/StatusDot/StatusDot';
 import ProviderBadge, { PROV } from '../ui/ProviderBadge/ProviderBadge';
@@ -27,13 +27,72 @@ function repoName(tab: Tab, projects: { id: string; name: string }[]): string {
   return p?.name ?? tab.label;
 }
 
+// Structural check on a persisted (untrusted JSON) tree.
+function parseTree(raw: unknown): LayoutNode | null {
+  const ok = (n: unknown): n is LayoutNode => {
+    if (!n || typeof n !== 'object') return false;
+    const o = n as Record<string, unknown>;
+    if (o.t === 'l') return typeof o.id === 'string';
+    if (o.t === 's')
+      return (
+        (o.dir === 'h' || o.dir === 'v') &&
+        Array.isArray(o.f) && o.f.every((x) => typeof x === 'number' && x > 0) &&
+        Array.isArray(o.c) && o.c.length === o.f.length && o.c.every(ok)
+      );
+    return false;
+  };
+  return ok(raw) ? raw : null;
+}
+
 export default function GridView() {
   const { state, dispatch } = useAppState();
   const termTabs = state.tabs.filter((t) => t.kind === 'term' && t.ptyId);
+  const openIds = termTabs.map((t) => t.id);
 
-  // Resolve a linkSrc (source sessionId) to "<glyph> <source title>" per the
-  // mockup, using the source tab still open in state. Falls back to a short id
-  // when the source tab isn't present (e.g. it was closed).
+  const wsRef = useRef<HTMLDivElement>(null);
+  const [wsSize, setWsSize] = useState({ w: 0, h: 0 });
+  const [tree, setTree] = useState<LayoutNode | null>(() =>
+    reconcile(parseTree(state.config.gridLayout), openIds),
+  );
+
+  // Persist (debounced) — the whole config object rides along, same pattern as
+  // Rail/Settings putConfig callers.
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const configRef = useRef(state.config);
+  configRef.current = state.config;
+  function saveTree(t: LayoutNode | null) {
+    setTree(t);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      putConfig({ ...configRef.current, gridLayout: t });
+    }, 500);
+  }
+  useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
+
+  // Track workspace size (rail resize, window resize, sidebar toggle).
+  useEffect(() => {
+    const el = wsRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setWsSize({ w: el.clientWidth, h: el.clientHeight }));
+    ro.observe(el);
+    setWsSize({ w: el.clientWidth, h: el.clientHeight });
+    return () => ro.disconnect();
+  }, []);
+
+  // Reconcile when the open tab set changes (session opened/closed elsewhere).
+  const openKey = openIds.join(',');
+  useEffect(() => {
+    const next = reconcile(tree, openIds);
+    if (JSON.stringify(next) !== JSON.stringify(tree)) saveTree(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openKey]);
+
+  const ws: Rect = { x: PAD, y: PAD, w: wsSize.w - PAD * 2, h: wsSize.h - PAD * 2 };
+  const layout = useMemo(
+    () => (tree && ws.w > 10 ? computeLayout(tree, ws) : { rects: new Map<string, Rect>(), seams: [] }),
+    [tree, wsSize.w, wsSize.h],
+  );
+
   function sourceRef(linkSrc: string): string {
     const src = state.tabs.find((t) => t.sessionId === linkSrc);
     if (src) {
@@ -54,21 +113,27 @@ export default function GridView() {
   }
 
   return (
-    <div className={styles.grid}>
+    <div ref={wsRef} className={styles.workspace}>
       {termTabs.map((tab) => {
+        const r = layout.rects.get(tab.id);
         const waiting = tab.status === 'waiting';
         const selected = tab.id === state.activeTab;
         return (
           <div
             key={tab.id}
             className={[
-              styles.tile,
+              styles.panel,
               waiting ? styles.waiting : '',
               tab.linkedKind ? styles.bridged : '',
               selected ? styles.selected : '',
             ]
               .filter(Boolean)
               .join(' ')}
+            style={
+              r
+                ? { left: r.x, top: r.y, width: r.w, height: r.h }
+                : { left: 0, top: 0, width: 0, height: 0, visibility: 'hidden' }
+            }
           >
             {/* Header is the select target — a live terminal can't sit inside a
                 <button>, so only the header row is the clickable control. */}
@@ -77,6 +142,7 @@ export default function GridView() {
               className={styles.head}
               onClick={() => dispatch({ type: 'activateTab', id: tab.id })}
             >
+              <span className={styles.grip}>⠿</span>
               <StatusDot status={waiting ? 'waiting' : 'live'} size={7} />
               <span className={styles.repo}>{repoName(tab, state.projects)}</span>
               {tab.linkedKind ? <LinkChip kind={tab.linkedKind} /> : null}
@@ -95,7 +161,6 @@ export default function GridView() {
                 </span>
               ) : null}
             </button>
-            {/* Each tile hosts a live terminal; selecting stays in grid. */}
             <div className={styles.body}>
               <TerminalPane
                 ptyId={tab.ptyId!}
@@ -109,6 +174,15 @@ export default function GridView() {
           </div>
         );
       })}
+      {/* Seams render inert in this task; Task 5 wires dragging. */}
+      {layout.seams.map((s, i) => (
+        <div
+          key={`seam-${i}`}
+          className={`${styles.seam} ${s.dir === 'h' ? styles.seamH : styles.seamV}`}
+          style={{ left: s.x, top: s.y, width: s.w, height: s.h }}
+          data-seam={i}
+        />
+      ))}
     </div>
   );
 }
