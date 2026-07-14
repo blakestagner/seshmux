@@ -172,11 +172,20 @@ export default function TerminalPane({
       // local scrollback and never reflows (the "shredded" scrollback bug).
       // Keeping the previous geometry while degenerate means incoming bytes
       // keep wrapping at the last real width.
+      //
+      // The floor is 24×3, not 10×3: fits that pass this gate get pushed to
+      // the SHARED PTY (one tmux session feeds every view of this session),
+      // and a momentarily ~100px pane at 12 cols is enough to shred every
+      // other view's history one word per line (observed: tmux history with
+      // the banner wrapped 1 char/row). Below 24 cols nothing is readable
+      // anyway — freezing at the last real width is strictly better than
+      // propagating it.
+      const MIN_FIT_COLS = 24;
       const safeFit = (): boolean => {
         if (disposed || !fit || !term) return false;
         try {
           const dims = fit.proposeDimensions();
-          if (!dims || !Number.isFinite(dims.cols) || dims.cols < 10 || dims.rows < 3) return false;
+          if (!dims || !Number.isFinite(dims.cols) || dims.cols < MIN_FIT_COLS || dims.rows < 3) return false;
           fit.fit();
           return true;
         } catch {
