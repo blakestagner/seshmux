@@ -62,6 +62,13 @@ export default function GridView() {
   configRef.current = state.config;
   function saveTree(t: LayoutNode | null) {
     setTree(t);
+    // Dispatch into the store synchronously so any Settings/Rail putConfig
+    // (a full overwrite) during the 500ms debounce window can't clobber this
+    // layout with a stale gridLayout. The debounced PUT rebuilds from
+    // configRef at fire time (not the object captured here) so it still
+    // carries whatever else changed in that window, with gridLayout pinned
+    // to this tree.
+    dispatch({ type: 'setConfig', config: { ...configRef.current, gridLayout: t } });
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       putConfig({ ...configRef.current, gridLayout: t });
