@@ -110,6 +110,11 @@ export default function GridView() {
   // ── Header drag (move panel → drop zones) ──────────────────────────────
   const [dragId, setDragId] = useState<string | null>(null);
   const [zone, setZone] = useState<DropZone | null>(null);
+  // Readable inside endHeadDrag without closing over stale `zone` state — the
+  // window-level pointerup fallback below captures endHeadDrag once when the
+  // drag starts, when zone is still null.
+  const zoneRef = useRef(zone);
+  zoneRef.current = zone;
   const [previewTree, setPreviewTree] = useState<LayoutNode | null>(null);
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null);
   const headDrag = useRef<{
@@ -249,7 +254,7 @@ export default function GridView() {
       previewTimer.current = null;
     }
     headDrag.current = null;
-    const z = zone;
+    const z = zoneRef.current;
     setDragId(null);
     setZone(null);
     setPreviewTree(null);
@@ -267,7 +272,9 @@ export default function GridView() {
   function onHeadPointerDown(e: React.PointerEvent, tab: Tab) {
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest('[data-nodrag]')) return; // future header buttons
-    if (termTabs.length < 2) return;
+    // Still arm the press even with <2 panels so pointerup's no-move branch
+    // can select — only drag activation (below, in onHeadPointerMove) is
+    // gated on having another panel to drop onto.
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     headDrag.current = { id: tab.id, sx: e.clientX, sy: e.clientY, active: false, pid: e.pointerId, raf: null, lastX: e.clientX, lastY: e.clientY };
   }
@@ -300,6 +307,7 @@ export default function GridView() {
     d.lastX = e.clientX;
     d.lastY = e.clientY;
     if (!d.active) {
+      if (termTabs.length < 2) return; // nothing to drop onto — press stays select-only
       if (Math.abs(e.clientX - d.sx) < 4 && Math.abs(e.clientY - d.sy) < 4) return;
       d.active = true;
       setDragId(d.id);
