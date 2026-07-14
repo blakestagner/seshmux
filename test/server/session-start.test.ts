@@ -105,6 +105,27 @@ describe('startSession firstPrompt seeding', () => {
     expect(writeCalls[0].data).toBe('hi\n');
   });
 
+  it('resolves argv[0] to an absolute path when the binary is on PATH; passes through when not', async () => {
+    const { getProviders } = await import('../../server/lib/providers/types');
+    const { startSession } = await import('../../server/session-start');
+
+    // `node` is guaranteed on the test process PATH — must resolve absolute.
+    (getProviders as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 'claude', commands: { ...makeProvider(false).commands, fresh: () => ['node'] } },
+    ]);
+    await startSession({ projectPath: '/tmp/repo', provider: 'claude', mode: 'new' });
+    expect(spawnCalls[0].args[0].startsWith('/')).toBe(true);
+    expect(spawnCalls[0].args[0].split('/').pop()).toBe('node');
+
+    // Unresolvable name must pass through unchanged (which fails, spawn still attempted).
+    spawnCalls.length = 0;
+    (getProviders as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 'claude', commands: { ...makeProvider(false).commands, fresh: () => ['seshmux-no-such-bin-xyz'] } },
+    ]);
+    await startSession({ projectPath: '/tmp/repo', provider: 'claude', mode: 'new' });
+    expect(spawnCalls[0].args).toEqual(['seshmux-no-such-bin-xyz']);
+  });
+
   it('falls back to the delayed write on resume, even when freshPrompt is supported', async () => {
     const { getProviders } = await import('../../server/lib/providers/types');
     (getProviders as ReturnType<typeof vi.fn>).mockResolvedValue([makeProvider(true)]);
