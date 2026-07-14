@@ -157,6 +157,12 @@ export default function TerminalPane({
       // output streams on top from there — one width, no reset races.
       let ptyCols = 0;
       let backfillTimer: ReturnType<typeof setTimeout> | null = null;
+      // True once the pane has provably painted (data frame, backfill success,
+      // or the degrade path settled). Until then, any resize that lands must
+      // also request a backfill: onSize's one-shot trigger can lose the race
+      // against a 0×0 grid mount, and without this the pane sits on
+      // "connecting…" with a healthy socket until something else repaints it.
+      let backfillDone = false;
 
       // Sanity-gated resize: never propagate teardown/zero-size fits (a
       // disposing grid pane firing its ResizeObserver once more must not
@@ -165,7 +171,10 @@ export default function TerminalPane({
         if (disposed || !fit || !term || !socket) return;
         try {
           fit.fit();
-          if (term.cols >= 10 && term.rows >= 3) socket.resize(term.cols, term.rows);
+          if (term.cols >= 10 && term.rows >= 3) {
+            socket.resize(term.cols, term.rows);
+            if (!backfillDone) scheduleBackfill();
+          }
         } catch {
           /* transient fit errors during teardown */
         }
@@ -199,6 +208,7 @@ export default function TerminalPane({
             () => (disposed || !term ? 0 : term.cols),
             forceRepaint,
             () => {
+              backfillDone = true;
               if (!disposed) setConnecting(false);
             },
             (cb) => requestAnimationFrame(cb),
@@ -213,6 +223,7 @@ export default function TerminalPane({
           // repaint outcome, so forceRepaint's cols<10 no-op was never
           // observable here.
           forceRepaint();
+          backfillDone = true;
           if (!disposed) setConnecting(false);
         } catch {
           degrade();
@@ -250,6 +261,7 @@ export default function TerminalPane({
       socket = openTermSocket(ptyId, {
         onData: (data) => {
           term?.write(data);
+          backfillDone = true;
           if (!disposed) setConnecting(false); // content on screen — overlay off
         },
         onSize: (cols) => {
