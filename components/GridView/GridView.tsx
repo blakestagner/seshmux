@@ -753,7 +753,10 @@ export default function GridView() {
                 >⛶</IconButton>
               </span>
             </div>
-            <div className={styles.body}>
+            <div
+              className={styles.body}
+              onClick={() => dispatch({ type: 'activateTab', id: tab.id })}
+            >
               <TerminalPane
                 ptyId={tab.ptyId!}
                 projectId={tab.projectId}
@@ -761,6 +764,7 @@ export default function GridView() {
                 provider={tab.provider}
                 branch={tab.branch}
                 variant="grid"
+                sizeAuthority={tab.id === state.activeTab || focusId === tab.id}
               />
             </div>
           </div>
