@@ -4,11 +4,11 @@
 // panels; panels are stable DOM nodes keyed by tab.id and are NEVER reparented
 // (xterm would remount with a backfill flash). Tree persists via /api/config.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAppState, type Tab } from '../../lib/client/store';
 import { putConfig } from '../../lib/client/api';
 import {
-  computeLayout, reconcile, PAD,
+  computeLayout, reconcile, cloneNode, seamFractions, PAD,
   type LayoutNode, type Rect,
 } from '../../lib/client/grid-layout';
 import TerminalPane from '../TerminalPane/TerminalPane';
@@ -95,10 +95,80 @@ export default function GridView() {
   }, [openKey]);
 
   const ws: Rect = { x: PAD, y: PAD, w: wsSize.w - PAD * 2, h: wsSize.h - PAD * 2 };
-  const layout = useMemo(
-    () => (tree && ws.w > 10 ? computeLayout(tree, ws) : { rects: new Map<string, Rect>(), seams: [] }),
-    [tree, wsSize.w, wsSize.h],
-  );
+  // Not memoized: seam drag mutates fractions in place on the tree (see
+  // seamDrag below) and bumps `tick` to force a recompute. computeLayout on
+  // <20 panels is microseconds; memoizing here risks rendering stale rects.
+  const layout = tree && ws.w > 10
+    ? computeLayout(tree, ws)
+    : { rects: new Map<string, Rect>(), seams: [] };
+
+  // ── Seam drag (resize) ─────────────────────────────────────────────────
+  const [, setTick] = useState(0);
+  const [interacting, setInteracting] = useState(false); // suppress panel transitions
+  const seamDrag = useRef<{
+    node: Extract<LayoutNode, { t: 's' }>;
+    i: number;
+    dir: 'h' | 'v';
+    start: number;
+    f0: number;
+    f1: number;
+    span: number;
+    raf: number | null;
+    lastPos: number;
+  } | null>(null);
+
+  function onSeamPointerDown(e: React.PointerEvent, seamIdx: number) {
+    const sm = layout.seams[seamIdx];
+    if (!sm || !tree) return;
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    // Clone up front so the committed `tree` stays untouched until pointer-up;
+    // find the matching seam on the CLONE (same index — computeLayout walks
+    // the tree deterministically) and mutate its fractions in place while
+    // dragging.
+    const t = cloneNode(tree);
+    setTree(t);
+    const cloneSeams = computeLayout(t, ws).seams;
+    const cs = cloneSeams[seamIdx];
+    if (!cs) return;
+    seamDrag.current = {
+      node: cs.node,
+      i: cs.i,
+      dir: cs.dir,
+      start: cs.dir === 'h' ? e.clientX : e.clientY,
+      f0: cs.node.f[cs.i],
+      f1: cs.node.f[cs.i + 1],
+      span: cs.span,
+      raf: null,
+      lastPos: 0,
+    };
+    setInteracting(true);
+  }
+
+  function onSeamPointerMove(e: React.PointerEvent) {
+    const d = seamDrag.current;
+    if (!d) return;
+    d.lastPos = d.dir === 'h' ? e.clientX : e.clientY;
+    if (d.raf == null) {
+      d.raf = requestAnimationFrame(() => {
+        d.raf = null;
+        const axis = d.dir === 'h' ? ws.w : ws.h;
+        const [f0, f1] = seamFractions(d.f0, d.f1, d.lastPos - d.start, d.span, axis);
+        d.node.f[d.i] = f0;
+        d.node.f[d.i + 1] = f1;
+        setTick((n) => n + 1); // re-render: computeLayout picks up mutated fractions
+      });
+    }
+  }
+
+  function onSeamPointerUp() {
+    const d = seamDrag.current;
+    if (!d) return;
+    if (d.raf != null) cancelAnimationFrame(d.raf);
+    seamDrag.current = null;
+    setInteracting(false);
+    saveTree(tree ? cloneNode(tree) : null); // commit + persist (new identity)
+  }
 
   function sourceRef(linkSrc: string): string {
     const src = state.tabs.find((t) => t.sessionId === linkSrc);
@@ -133,6 +203,7 @@ export default function GridView() {
               waiting ? styles.waiting : '',
               tab.linkedKind ? styles.bridged : '',
               selected ? styles.selected : '',
+              interacting ? styles.noAnim : '',
             ]
               .filter(Boolean)
               .join(' ')}
@@ -181,13 +252,22 @@ export default function GridView() {
           </div>
         );
       })}
-      {/* Seams render inert in this task; Task 5 wires dragging. */}
       {layout.seams.map((s, i) => (
         <div
           key={`seam-${i}`}
-          className={`${styles.seam} ${s.dir === 'h' ? styles.seamH : styles.seamV}`}
+          className={[
+            styles.seam,
+            s.dir === 'h' ? styles.seamH : styles.seamV,
+            seamDrag.current ? styles.seamActive : '',
+          ]
+            .filter(Boolean)
+            .join(' ')}
           style={{ left: s.x, top: s.y, width: s.w, height: s.h }}
           data-seam={i}
+          onPointerDown={(e) => onSeamPointerDown(e, i)}
+          onPointerMove={onSeamPointerMove}
+          onPointerUp={onSeamPointerUp}
+          onPointerCancel={onSeamPointerUp}
         />
       ))}
     </div>
