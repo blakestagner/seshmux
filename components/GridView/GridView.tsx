@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAppState, type Tab } from '../../lib/client/store';
 import { putConfig } from '../../lib/client/api';
 import {
-  computeLayout, reconcile, cloneNode, seamFractions, hitZone, applyDrop, PAD,
+  computeLayout, reconcile, cloneNode, seamFractions, hitZone, applyDrop, focusRects, preset, PAD,
   type LayoutNode, type Rect, type DropZone,
 } from '../../lib/client/grid-layout';
 import TerminalPane from '../TerminalPane/TerminalPane';
@@ -16,6 +16,8 @@ import StatusDot from '../ui/StatusDot/StatusDot';
 import ProviderBadge, { PROV } from '../ui/ProviderBadge/ProviderBadge';
 import MeterBar from '../ui/MeterBar/MeterBar';
 import LinkChip from '../ui/LinkChip/LinkChip';
+import Button from '../ui/Button/Button';
+import IconButton from '../ui/IconButton/IconButton';
 import styles from './GridView.module.scss';
 
 function fmtK(n: number): string {
@@ -76,6 +78,68 @@ export default function GridView() {
   }
   useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
 
+  // ── Focus mode (component-local — NOT persisted; a reload lands on the
+  // saved tree, unfocused) ────────────────────────────────────────────────
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const preFocus = useRef<LayoutNode | null>(null);
+
+  function toggleFocus(id: string) {
+    if (focusId === id) {
+      setFocusId(null);
+      if (preFocus.current) {
+        setTree(preFocus.current);
+        preFocus.current = null;
+      }
+    } else {
+      if (!focusId) preFocus.current = cloneNode(tree!);
+      setFocusId(id);
+      dispatch({ type: 'activateTab', id });
+    }
+  }
+
+  // ── Named layouts menu ──────────────────────────────────────────────────
+  const [layoutsOpen, setLayoutsOpen] = useState(false);
+  const layoutsRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!layoutsOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (layoutsRef.current && !layoutsRef.current.contains(e.target as Node)) setLayoutsOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLayoutsOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [layoutsOpen]);
+
+  function saveNamed() {
+    const name = window.prompt('Layout name');
+    if (!name || !tree) return;
+    const next = { ...configRef.current, gridNamedLayouts: { ...configRef.current.gridNamedLayouts, [name]: cloneNode(tree) } };
+    dispatch({ type: 'setConfig', config: next });
+    putConfig(next);
+    setLayoutsOpen(false);
+  }
+
+  function applyNamed(name: string) {
+    const t = reconcile(parseTree(configRef.current.gridNamedLayouts[name]), openIds);
+    if (t) saveTree(t);
+    setLayoutsOpen(false);
+  }
+
+  function deleteNamed(name: string) {
+    const nextLayouts = { ...configRef.current.gridNamedLayouts };
+    delete nextLayouts[name];
+    const next = { ...configRef.current, gridNamedLayouts: nextLayouts };
+    dispatch({ type: 'setConfig', config: next });
+    putConfig(next);
+  }
+
   // Track workspace size (rail resize, window resize, sidebar toggle).
   useEffect(() => {
     const el = wsRef.current;
@@ -102,6 +166,11 @@ export default function GridView() {
     endHeadDrag(false);
     const next = reconcile(tree, openIds);
     if (JSON.stringify(next) !== JSON.stringify(tree)) saveTree(next);
+    if (focusId && !openIds.includes(focusId)) {
+      setFocusId(null);
+      preFocus.current = null;
+    }
+    if (preFocus.current) preFocus.current = reconcile(preFocus.current, openIds);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openKey]);
 
@@ -133,7 +202,9 @@ export default function GridView() {
   // seamDrag below) and bumps `tick` to force a recompute. computeLayout on
   // <20 panels is microseconds; memoizing here risks rendering stale rects.
   const layout = renderTree && ws.w > 10
-    ? computeLayout(renderTree, ws)
+    ? focusId && !dragId
+      ? { rects: focusRects(renderTree, focusId, ws), seams: [] }
+      : computeLayout(renderTree, ws)
     : { rects: new Map<string, Rect>(), seams: [] };
 
   // ── Seam drag (resize) ─────────────────────────────────────────────────
@@ -307,6 +378,7 @@ export default function GridView() {
     d.lastX = e.clientX;
     d.lastY = e.clientY;
     if (!d.active) {
+      if (focusId) return; // focus mode: header press is select/toggle only, never a drag
       if (termTabs.length < 2) return; // nothing to drop onto — press stays select-only
       if (Math.abs(e.clientX - d.sx) < 4 && Math.abs(e.clientY - d.sy) < 4) return;
       d.active = true;
@@ -333,25 +405,33 @@ export default function GridView() {
     const d = headDrag.current;
     if (!d) return;
     if (!d.active) {
-      // Click without move: plain select, no drag ever started.
+      // Click without move: plain select — or, in focus mode, toggle focus
+      // (refocus another panel's header, exit on the focused panel's own).
       headDrag.current = null;
+      if (focusId) {
+        toggleFocus(tab.id);
+        return;
+      }
       dispatch({ type: 'activateTab', id: tab.id });
       return;
     }
     endHeadDrag(true);
   }
 
-  // Esc cancels an active header drag — calls the same choke point directly
-  // rather than fabricating a synthetic pointer event.
+  // Esc priority: cancel an in-flight header drag first, else exit focus mode.
+  // Single listener — not duplicated per state — calls the same choke points
+  // (endHeadDrag / toggleFocus) directly rather than fabricating pointer events.
   useEffect(() => {
-    if (!dragId) return;
+    if (!dragId && !focusId) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') endHeadDrag(false);
+      if (e.key !== 'Escape') return;
+      if (dragId) { endHeadDrag(false); return; }
+      if (focusId) toggleFocus(focusId);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dragId]);
+  }, [dragId, focusId]);
 
   // Safety net mirroring the seam drag: if the header element loses the
   // pointer (e.g. capture lost, element unmounted mid-drag) the captured
@@ -393,7 +473,38 @@ export default function GridView() {
   }
 
   return (
-    <div ref={wsRef} className={styles.workspace}>
+    <div className={styles.view}>
+      <div className={styles.toolbar}>
+        <span className={styles.toolbarInfo}>{termTabs.length} sessions</span>
+        <span className={styles.toolbarActions}>
+          <Button variant="chip" onClick={() => saveTree(preset(openIds))}>auto-arrange</Button>
+          <Button
+            variant="chip"
+            onClick={() => {
+              setFocusId(null);
+              preFocus.current = null;
+              saveTree(preset(openIds));
+            }}
+          >
+            reset
+          </Button>
+          <span className={styles.layoutsWrap} ref={layoutsRef}>
+            <Button variant="chip" onClick={() => setLayoutsOpen((v) => !v)}>layouts ▾</Button>
+            {layoutsOpen ? (
+              <div className={styles.layoutsMenu}>
+                {Object.keys(state.config.gridNamedLayouts).map((name) => (
+                  <div key={name} className={styles.layoutRow}>
+                    <button type="button" className={styles.layoutApply} onClick={() => applyNamed(name)}>{name}</button>
+                    <button type="button" className={styles.layoutDel} onClick={() => deleteNamed(name)}>×</button>
+                  </div>
+                ))}
+                <button type="button" className={styles.layoutSave} onClick={saveNamed}>save current as…</button>
+              </div>
+            ) : null}
+          </span>
+        </span>
+      </div>
+      <div ref={wsRef} className={styles.workspace}>
       {termTabs.map((tab) => {
         const r = layout.rects.get(tab.id);
         const waiting = tab.status === 'waiting';
@@ -419,16 +530,27 @@ export default function GridView() {
           >
             {/* Header is the select target and the drag handle — a live
                 terminal can't sit inside a <button>, so only the header row
-                is the clickable/draggable control. Selection happens on
-                pointerup with no movement (see onHeadPointerUp); there's no
-                onClick so a completed drag never also fires a select. */}
-            <button
-              type="button"
+                is the clickable/draggable control. It's a div (not a
+                <button>) because it now hosts the nested ⛶ focus IconButton
+                — a <button> can't nest another interactive control. Selection
+                happens on pointerup with no movement (see onHeadPointerUp);
+                there's no onClick so a completed drag never also fires a
+                select. Dblclick and the ⛶ button both toggle focus mode. */}
+            <div
+              role="button"
+              tabIndex={0}
               className={styles.head}
               onPointerDown={(e) => onHeadPointerDown(e, tab)}
               onPointerMove={onHeadPointerMove}
               onPointerUp={(e) => onHeadPointerUp(e, tab)}
               onPointerCancel={() => endHeadDrag(false)}
+              onDoubleClick={() => toggleFocus(tab.id)}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                e.preventDefault();
+                if (focusId) toggleFocus(tab.id);
+                else dispatch({ type: 'activateTab', id: tab.id });
+              }}
             >
               <span className={styles.grip}>⠿</span>
               <StatusDot status={waiting ? 'waiting' : 'live'} size={7} />
@@ -448,7 +570,14 @@ export default function GridView() {
                   <span className={styles.pct}>{Math.round((tab.ctx.tokens / tab.ctx.window) * 100)}%</span>
                 </span>
               ) : null}
-            </button>
+              <span data-nodrag className={styles.headBtns}>
+                <IconButton
+                  label={focusId === tab.id ? 'Exit focus' : 'Focus'}
+                  variant="bare"
+                  onClick={() => toggleFocus(tab.id)}
+                >⛶</IconButton>
+              </span>
+            </div>
             <div className={styles.body}>
               <TerminalPane
                 ptyId={tab.ptyId!}
@@ -491,6 +620,7 @@ export default function GridView() {
       {dragId ? (
         <div className={styles.hint}>drop on an edge to split · center to swap · esc to cancel</div>
       ) : null}
+      </div>
     </div>
   );
 }

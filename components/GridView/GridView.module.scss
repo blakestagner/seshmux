@@ -1,5 +1,102 @@
 @use '../../styles/typography' as *;
 
+// View-level wrapper: toolbar row + the tiled workspace below it.
+.view {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.toolbar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 40px;
+    padding: 0 14px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+}
+
+.toolbarInfo {
+    @include t-mono-micro;
+    color: var(--text-faint);
+}
+
+.toolbarActions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.layoutsWrap {
+    position: relative;
+}
+
+.layoutsMenu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    z-index: 20;
+    min-width: 180px;
+    padding: 4px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-bright);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-dropdown);
+}
+
+.layoutRow {
+    display: flex;
+    align-items: center;
+}
+
+.layoutApply {
+    @include t-body;
+    flex: 1;
+    text-align: left;
+    padding: 6px 8px;
+    border-radius: var(--radius-xs);
+
+    &:hover {
+        background: var(--bg-hover);
+    }
+}
+
+.layoutDel {
+    @include t-mono-micro;
+    color: var(--text-faint);
+    padding: 4px 8px;
+
+    &:hover {
+        color: var(--hot);
+    }
+}
+
+.layoutSave {
+    @include t-meta;
+    width: 100%;
+    text-align: left;
+    padding: 6px 8px;
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+
+    &:hover {
+        background: var(--bg-hover);
+    }
+}
+
+.headBtns {
+    display: inline-flex;
+    opacity: 0;
+    transition: opacity 0.15s;
+
+    .panel:hover & {
+        opacity: 1;
+    }
+}
+
 // Tiled workspace (design-3): fixed viewport, absolutely positioned panels
 // computed from the split tree. No scrolling — everything always visible.
 .workspace {
