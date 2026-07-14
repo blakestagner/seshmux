@@ -15,9 +15,16 @@ export interface Config {
   theme: string;
   accent: string;
   settings: Record<string, unknown>;
+  // Grid workspace (design-3 tiled layout). Opaque JSON tree — the client
+  // validates structure at load; the server only type-gates the disk write.
+  gridLayout: unknown | null;
+  gridNamedLayouts: Record<string, unknown>;
 }
 
-const DEFAULT_CONFIG: Config = { pins: [], projectOrder: [], hidden: [], theme: 'dark', accent: 'iris', settings: {} };
+const DEFAULT_CONFIG: Config = {
+  pins: [], projectOrder: [], hidden: [], theme: 'dark', accent: 'iris', settings: {},
+  gridLayout: null, gridNamedLayouts: {},
+};
 
 function configDir(): string {
   return join(homedir(), '.config', 'seshmux');
@@ -44,7 +51,7 @@ async function writeConfig(cfg: Config): Promise<void> {
 }
 
 // Coerce an arbitrary body into a valid Config (trust boundary — this endpoint writes disk).
-function sanitize(body: unknown): Config {
+export function sanitizeConfig(body: unknown): Config {
   const b = (body ?? {}) as Partial<Config>;
   return {
     pins: Array.isArray(b.pins) ? b.pins.filter((x) => typeof x === 'string') : [],
@@ -55,6 +62,11 @@ function sanitize(body: unknown): Config {
     theme: typeof b.theme === 'string' ? b.theme : DEFAULT_CONFIG.theme,
     accent: typeof b.accent === 'string' ? b.accent : DEFAULT_CONFIG.accent,
     settings: b.settings && typeof b.settings === 'object' ? (b.settings as Record<string, unknown>) : {},
+    gridLayout: b.gridLayout && typeof b.gridLayout === 'object' ? b.gridLayout : null,
+    gridNamedLayouts:
+      b.gridNamedLayouts && typeof b.gridNamedLayouts === 'object' && !Array.isArray(b.gridNamedLayouts)
+        ? (b.gridNamedLayouts as Record<string, unknown>)
+        : {},
   };
 }
 
@@ -62,7 +74,7 @@ export default async function configRoutes(f: FastifyInstance) {
   f.get('/api/config', async () => readConfig());
 
   f.put<{ Body: unknown }>('/api/config', async (req) => {
-    const cfg = sanitize(req.body);
+    const cfg = sanitizeConfig(req.body);
     await writeConfig(cfg);
     return cfg;
   });

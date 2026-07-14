@@ -41,6 +41,8 @@ export type Config = {
   theme: string;
   accent: string;
   settings: Record<string, unknown>;
+  gridLayout: unknown | null;
+  gridNamedLayouts: Record<string, unknown>;
 };
 
 // Mirror of server/lib/providers/types.ts SubagentNode/Detail — client never

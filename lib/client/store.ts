@@ -109,7 +109,7 @@ export function initialState(overrides?: Partial<AppState>): AppState {
     provFilter: 'all',
     railSort: 'updated',
     projects: [],
-    config: { pins: [], projectOrder: [], hidden: [], theme: 'dark', accent: 'iris', settings: {} },
+    config: { pins: [], projectOrder: [], hidden: [], theme: 'dark', accent: 'iris', settings: {}, gridLayout: null, gridNamedLayouts: {} },
     showHidden: false,
     ...overrides,
   };
