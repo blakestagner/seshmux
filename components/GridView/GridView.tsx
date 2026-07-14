@@ -208,6 +208,11 @@ export default function GridView() {
   }
 
   // Track workspace size (rail resize, window resize, sidebar toggle).
+  // Keyed on hasTabs, not []: on a reload in grid view the first mount renders
+  // the empty state (tabs load async), so wsRef is null and a []-dep effect
+  // would never attach the observer — wsSize stays 0×0 and every panel renders
+  // hidden even after tabs arrive.
+  const hasTabs = termTabs.length > 0;
   useEffect(() => {
     const el = wsRef.current;
     if (!el) return;
@@ -215,7 +220,7 @@ export default function GridView() {
     ro.observe(el);
     setWsSize({ w: el.clientWidth, h: el.clientHeight });
     return () => ro.disconnect();
-  }, []);
+  }, [hasTabs]);
 
   // Reconcile when the open tab set changes (session opened/closed elsewhere).
   const openKey = openIds.join(',');
