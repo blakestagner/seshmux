@@ -261,7 +261,36 @@ export default function TerminalPane({
           } catch {
             return;
           }
-          if (term.cols < 10) return;
+          if (term.cols < 10) {
+            // Mount not laid out yet (grid mounts N panes at once — this pane
+            // can still measure 0 wide when the size frame lands). This is the
+            // ONLY trigger for the initial backfill, so a bare return leaves
+            // the pane stuck on "connecting…" forever (BUG B's unpatched
+            // success-path twin). Poll until fit yields a paintable width,
+            // then run the same resize+backfill; bounded so a genuinely
+            // hidden pane gives up without wedging the overlay.
+            retryRepaintUntilReady(
+              () => {
+                if (disposed || !fit || !term) return 0;
+                try {
+                  fit.fit();
+                } catch {
+                  return 0;
+                }
+                return term.cols;
+              },
+              () => {
+                if (disposed || !term || !socket) return;
+                socket.resize(term.cols, term.rows);
+                scheduleBackfill();
+              },
+              () => {
+                if (!disposed) setConnecting(false);
+              },
+              (cb) => requestAnimationFrame(cb),
+            );
+            return;
+          }
           // Resize tmux to OUR width immediately — all live output from here
           // on is correct-width — then paint the atomic snapshot once tmux
           // has rewrapped (scheduleBackfill's small delay).
