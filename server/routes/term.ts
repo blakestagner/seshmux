@@ -236,11 +236,32 @@ export default async function termRoutes(f: FastifyInstance, deps: TermRouteDeps
 
       // The daemon BROADCASTS events to every connection — filter to our ptyId,
       // else another PTY's output bleeds into this terminal.
+      // Data frames COALESCE within a tick: a fast-printing session (build/log
+      // spew) otherwise becomes a flood of tiny JSON-escaped WS frames, each with
+      // its own frame + escaping overhead. One concatenated frame per tick is
+      // byte-identical on the client (xterm writes chunks in order regardless).
+      let pending = '';
+      let flushScheduled = false;
+      const flush = () => {
+        flushScheduled = false;
+        if (!pending) return;
+        const data = pending;
+        pending = '';
+        if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ t: 'out', data }));
+      };
       daemon.onEvent((e) => {
         if (e.ptyId !== ptyId) return;
         if (socket.readyState !== socket.OPEN) return;
-        if (e.event === 'data') socket.send(JSON.stringify({ t: 'out', data: e.data }));
-        else if (e.event === 'exit') socket.send(JSON.stringify({ t: 'exit', code: e.code }));
+        if (e.event === 'data') {
+          pending += e.data;
+          if (!flushScheduled) {
+            flushScheduled = true;
+            setImmediate(flush);
+          }
+        } else if (e.event === 'exit') {
+          flush(); // buffered output must precede the exit frame
+          socket.send(JSON.stringify({ t: 'exit', code: e.code }));
+        }
       });
       daemon.onClose(() => {
         // Daemon connection dropped (daemon restart) — the PTY may well still
