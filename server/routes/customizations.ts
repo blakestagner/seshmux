@@ -3,6 +3,8 @@
 // write endpoints; v2 editing PUTs against item.filePath (see roadmap doc).
 
 import type { FastifyInstance } from 'fastify';
+import { mkdir, writeFile, realpath } from 'node:fs/promises';
+import { dirname, sep } from 'node:path';
 import type { AgentProvider } from '../lib/providers/types';
 import type { CustomizationItem, CustomizationScope, CustomizationScanners } from '../lib/providers/customizations';
 import { getProviders } from '../lib/providers/types';
@@ -62,4 +64,53 @@ export default async function customizationsRoutes(f: FastifyInstance, opts: Cus
     for (const k of Object.keys(out)) out[k].sort((a, b) => a.title.localeCompare(b.title));
     return out;
   });
+
+  const NAME_RE = /^[a-z0-9-]{1,64}$/;
+  const MAX_CONTENT = 256 * 1024;
+
+  f.put<{ Body: { projectId?: string; provider?: string; section?: string; name?: string; content?: string } }>(
+    '/api/customizations/item',
+    async (req, reply) => {
+      const { projectId, provider: providerId, section, name, content } = req.body ?? {};
+      if (section !== 'agents' && section !== 'skills') return reply.code(400).send({ error: 'bad section' });
+      if (typeof name !== 'string' || !NAME_RE.test(name)) return reply.code(400).send({ error: 'bad name' });
+      if (typeof content !== 'string' || content.length > MAX_CONTENT)
+        return reply.code(400).send({ error: 'bad content' });
+
+      const repoPath = projectId ? await resolveRepo(projectId) : null;
+      if (!repoPath) return reply.code(404).send({ error: 'unknown project' });
+
+      const providers = await listProviders();
+      const provider = providers.find((p) => p.id === providerId);
+      if (!provider?.customizationWriteTarget)
+        return reply.code(400).send({ error: 'provider does not support authoring' });
+
+      const target = provider.customizationWriteTarget({ kind: 'project', repoPath }, section, name);
+
+      // Containment, symlink-proof: the deepest EXISTING ancestor of the target must
+      // realpath-resolve inside the real repo root. Fail closed on any fs error.
+      try {
+        const repoReal = await realpath(repoPath);
+        let probe = dirname(target);
+        for (;;) {
+          try {
+            const real = await realpath(probe);
+            if (real !== repoReal && !real.startsWith(repoReal + sep)) {
+              return reply.code(400).send({ error: 'target escapes project' });
+            }
+            break;
+          } catch {
+            const parent = dirname(probe);
+            if (parent === probe) return reply.code(400).send({ error: 'target escapes project' });
+            probe = parent;
+          }
+        }
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, content, 'utf8');
+      } catch (e) {
+        return reply.code(400).send({ error: (e as Error).message || 'write failed' });
+      }
+      return { ok: true, filePath: target };
+    },
+  );
 }
