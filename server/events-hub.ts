@@ -255,10 +255,37 @@ export async function createEventsHub(): Promise<EventsHub> {
   // a new one nothing will ever close (leaked socket keeps the daemon's
   // server.close() from resolving — see test/events-hub.test.ts afterAll).
   let closing = false;
-  async function ensureMonitor() {
-    if (monitor) return monitor;
-    monitor = await dial(socketPath());
-    monitor.onEvent((e) => {
+  // In-flight dial memo: `monitor = await dial()` left `monitor` null for the
+  // whole dial, so a trackPty racing reattachAll (boot, or the 500ms reconnect
+  // window) dialed a SECOND monitor — both subscribed to every PTY broadcast,
+  // double-classifying each chunk against the same shared NIState, and the
+  // loser leaked (an open subscriber blocks the daemon's server.close()).
+  let monitorDial: Promise<DaemonConnection> | null = null;
+  function ensureMonitor(): Promise<DaemonConnection> {
+    if (monitor) return Promise.resolve(monitor);
+    if (monitorDial) return monitorDial;
+    const p = dialMonitor();
+    monitorDial = p;
+    // Clear on settle (identity-guarded like scan.ts's cache) so a dropped
+    // monitor re-dials instead of returning the stale resolved connection.
+    p.then(
+      () => {
+        if (monitorDial === p) monitorDial = null;
+      },
+      () => {
+        if (monitorDial === p) monitorDial = null;
+      },
+    );
+    return p;
+  }
+  async function dialMonitor(): Promise<DaemonConnection> {
+    const conn = await dial(socketPath());
+    if (closing) {
+      // close() landed while the dial was in flight — never wire or store it.
+      conn.close();
+      return conn;
+    }
+    conn.onEvent((e) => {
       if (e.event === 'data' && typeof e.data === 'string') {
         const st = stateFor(e.ptyId);
         // classifyExplain() delegates the actual status decision to classify()
@@ -303,23 +330,36 @@ export async function createEventsHub(): Promise<EventsHub> {
         settleWaiters(e.ptyId, 'idle');
       }
     });
-    monitor.onClose(() => {
+    conn.onClose(() => {
       monitor = null;
       attached.clear();
       if (closing) return; // intentional shutdown — don't reconnect
       // Daemon connection dropped (e.g. server-side hiccup) — re-dial + re-attach.
       setTimeout(() => void reattachAll(), 500);
     });
-    return monitor;
+    monitor = conn;
+    return conn;
   }
 
   async function attachPty(ptyId: string) {
     if (attached.has(ptyId)) return;
-    const m = await ensureMonitor();
+    // Add BEFORE the awaits: dedupes concurrent attaches for the same PTY, and —
+    // critically — lets the exit handler's `attached.delete` signal that the PTY
+    // died mid-attach. The old order re-added after the await, resurrecting a
+    // dead PTY as a permanent 'working' ghost (exit already broadcast 'idle',
+    // and no further exit would ever clean it up).
+    attached.add(ptyId);
+    let m: DaemonConnection;
+    try {
+      m = await ensureMonitor();
+    } catch {
+      attached.delete(ptyId); // daemon unreachable — reattachAll retries later
+      return;
+    }
     // fromScrollback:false — the monitor wants LIVE output for classification,
     // not a scrollback replay (which would re-classify stale frames).
     await m.attach(ptyId, false).catch(() => {});
-    attached.add(ptyId);
+    if (!attached.has(ptyId)) return; // exit broadcast landed mid-attach — stay dead
     if (!statusByPty.has(ptyId)) setStatus(ptyId, 'working');
     // Seed hooksActive immediately (don't wait up to TICK_MS) — matters for a
     // resumed/rehydrated session whose hook file may already exist at attach.
