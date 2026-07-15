@@ -91,11 +91,31 @@ async function defaultReadSettings(): Promise<Record<string, unknown>> {
   return cfg.settings;
 }
 
-function treeUrl(owner: string, repo: string): string {
-  return `https://api.github.com/repos/${owner}/${repo}/git/trees/HEAD?recursive=1`;
+const SHA_RE = /^[0-9a-f]{40}$/i;
+
+function commitsHeadUrl(owner: string, repo: string): string {
+  return `https://api.github.com/repos/${owner}/${repo}/commits/HEAD`;
 }
-function rawUrl(owner: string, repo: string, path: string): string {
-  return `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/${path}`;
+
+// Resolve the source's HEAD commit sha once (browse time), so browse → preview
+// → install all pin to the same immutable content (closes the preview/install
+// TOCTOU where a repo push between preview and install could change bytes).
+async function resolveHeadSha(
+  owner: string,
+  repo: string,
+  fetchText: (url: string) => Promise<string>,
+): Promise<string> {
+  const raw = await cachedFetch(commitsHeadUrl(owner, repo), fetchText);
+  const sha = (JSON.parse(raw) as { sha?: string }).sha;
+  if (!sha || !SHA_RE.test(sha)) throw new Error('bad HEAD sha from github');
+  return sha;
+}
+
+function treeUrl(owner: string, repo: string, sha: string): string {
+  return `https://api.github.com/repos/${owner}/${repo}/git/trees/${sha}?recursive=1`;
+}
+function rawUrl(owner: string, repo: string, sha: string, path: string): string {
+  return `https://raw.githubusercontent.com/${owner}/${repo}/${sha}/${path}`;
 }
 
 function parseSource(source: unknown): [string, string] | null {
@@ -107,9 +127,10 @@ function parseSource(source: unknown): [string, string] | null {
 async function loadTree(
   owner: string,
   repo: string,
+  sha: string,
   fetchText: (url: string) => Promise<string>,
 ): Promise<TreeEntry[]> {
-  const raw = await cachedFetch(treeUrl(owner, repo), fetchText);
+  const raw = await cachedFetch(treeUrl(owner, repo, sha), fetchText);
   const parsed = JSON.parse(raw);
   return Array.isArray(parsed.tree) ? parsed.tree : [];
 }
@@ -117,11 +138,12 @@ async function loadTree(
 async function describeFile(
   owner: string,
   repo: string,
+  sha: string,
   path: string,
   fetchText: (url: string) => Promise<string>,
 ): Promise<string> {
   try {
-    const raw = await cachedFetch(rawUrl(owner, repo, path), fetchText);
+    const raw = await cachedFetch(rawUrl(owner, repo, sha, path), fetchText);
     return parseFrontmatter(raw).attrs.description ?? '';
   } catch {
     return '';
@@ -138,14 +160,15 @@ function isSafeRelPath(rel: string): boolean {
   return rel.split('/').every((part) => part !== '' && part !== '..');
 }
 
-// Stamp `source: owner/repo` into a SKILL.md's frontmatter, appended before the
-// closing `---`, so an installed skill records where it came from. No-op if the
-// file has no (or an unterminated) frontmatter block.
-function stampSource(content: string, source: string): string {
+// Stamp `source: owner/repo` + `sourceSha: <sha>` into a SKILL.md's frontmatter,
+// appended before the closing `---`, so an installed skill records where it came
+// from AND the exact pinned commit (answers "what exactly did I install" later).
+// No-op if the file has no (or an unterminated) frontmatter block.
+function stampSource(content: string, source: string, sha: string): string {
   if (!content.startsWith('---\n')) return content;
   const end = content.indexOf('\n---', 4);
   if (end === -1) return content;
-  return `${content.slice(0, end)}\nsource: ${source}${content.slice(end)}`;
+  return `${content.slice(0, end)}\nsource: ${source}\nsourceSha: ${sha}${content.slice(end)}`;
 }
 
 const PLUGIN_NAME_RE = /^[A-Za-z0-9@/._-]{1,128}$/;
@@ -162,9 +185,16 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
     if (!parsed) return reply.code(400).send({ error: 'bad source' });
     const [owner, repo] = parsed;
 
+    let sha: string;
+    try {
+      sha = await resolveHeadSha(owner, repo, fetchText);
+    } catch {
+      return reply.code(502).send({ error: 'fetch failed' });
+    }
+
     let tree: TreeEntry[];
     try {
-      tree = await loadTree(owner, repo, fetchText);
+      tree = await loadTree(owner, repo, sha, fetchText);
     } catch {
       return reply.code(502).send({ error: 'fetch failed' });
     }
@@ -206,22 +236,24 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
         path: m.section === 'skills' ? m.path.replace(/\/SKILL\.md$/, '') : m.path,
         name: m.name,
         section: m.section,
-        description: await describeFile(owner, repo, m.path, fetchText),
+        description: await describeFile(owner, repo, sha, m.path, fetchText),
       })),
     );
-    return { items };
+    return { items, sha, curated: DEFAULT_SOURCES.includes(`${owner}/${repo}`) };
   });
 
-  f.get<{ Querystring: { source?: string; path?: string } }>('/api/marketplace/item', async (req, reply) => {
+  f.get<{ Querystring: { source?: string; path?: string; sha?: string } }>('/api/marketplace/item', async (req, reply) => {
     const parsed = parseSource(req.query.source);
     if (!parsed) return reply.code(400).send({ error: 'bad source' });
     const [owner, repo] = parsed;
     const dirPath = req.query.path;
     if (typeof dirPath !== 'string' || !dirPath) return reply.code(400).send({ error: 'bad path' });
+    const sha = req.query.sha;
+    if (!sha || !SHA_RE.test(sha)) return reply.code(400).send({ error: 'bad sha' });
 
     let tree: TreeEntry[];
     try {
-      tree = await loadTree(owner, repo, fetchText);
+      tree = await loadTree(owner, repo, sha, fetchText);
     } catch {
       return reply.code(502).send({ error: 'fetch failed' });
     }
@@ -238,7 +270,7 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
       // If this ever gets refactored to fetch a client-controlled path instead,
       // that reopens SSRF against the raw.githubusercontent.com fetch below.
       for (const entry of matches) {
-        const content = await cachedFetch(rawUrl(owner, repo, entry.path), fetchText);
+        const content = await cachedFetch(rawUrl(owner, repo, sha, entry.path), fetchText);
         if (Buffer.byteLength(content, 'utf8') > MAX_CONTENT) {
           return reply.code(400).send({ error: 'file too large' });
         }
@@ -258,15 +290,17 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
       section?: 'skills' | 'agents';
       name?: string;
       target?: 'project' | 'user';
+      sha?: string;
     };
   }>('/api/marketplace/install', async (req, reply) => {
-    const { projectId, source, path: dirPath, section, name, target = 'project' } = req.body ?? {};
+    const { projectId, source, path: dirPath, section, name, target = 'project', sha } = req.body ?? {};
     if (section !== 'skills' && section !== 'agents') return reply.code(400).send({ error: 'bad section' });
     if (typeof name !== 'string' || !INSTALL_NAME_RE.test(name)) return reply.code(400).send({ error: 'bad name' });
     const parsed = parseSource(source);
     if (!parsed) return reply.code(400).send({ error: 'bad source' });
     const [owner, repo] = parsed;
     if (typeof dirPath !== 'string' || !dirPath) return reply.code(400).send({ error: 'bad path' });
+    if (!sha || !SHA_RE.test(sha)) return reply.code(400).send({ error: 'bad sha' });
 
     // target 'user' is cwd/project-independent (global modal has no projectId);
     // target 'project' (default) keeps the existing 404-on-unknown-project gate.
@@ -286,7 +320,7 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
     // Re-fetch the item's files ourselves (never trust client-supplied contents).
     let tree: TreeEntry[];
     try {
-      tree = await loadTree(owner, repo, fetchText);
+      tree = await loadTree(owner, repo, sha, fetchText);
     } catch {
       return reply.code(502).send({ error: 'fetch failed' });
     }
@@ -315,11 +349,11 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
     try {
       for (let i = 0; i < matches.length; i++) {
         const entry = matches[i];
-        let content = await cachedFetch(rawUrl(owner, repo, entry.path), fetchText);
+        let content = await cachedFetch(rawUrl(owner, repo, sha, entry.path), fetchText);
         if (Buffer.byteLength(content, 'utf8') > MAX_CONTENT) {
           return reply.code(400).send({ error: 'file too large' });
         }
-        if (basename(entry.path) === 'SKILL.md') content = stampSource(content, sourceLabel);
+        if (basename(entry.path) === 'SKILL.md') content = stampSource(content, sourceLabel, sha);
         staged.push({ relPath: relPaths[i], content });
       }
     } catch {
@@ -508,6 +542,10 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
     const extra = Array.isArray(settings.marketplaceSources)
       ? settings.marketplaceSources.filter((s): s is string => typeof s === 'string')
       : [];
-    return { sources: [...new Set([...DEFAULT_SOURCES, ...extra])] };
+    const sources = [...new Set([...DEFAULT_SOURCES, ...extra])].map((source) => ({
+      source,
+      curated: DEFAULT_SOURCES.includes(source),
+    }));
+    return { sources };
   });
 }
