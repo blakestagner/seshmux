@@ -327,6 +327,22 @@ describe('bridge uses the session\'s own cwd for folded worktree sessions', () =
     expect(existsSync(join(repo, '.seshmux', 'handoff-brief.md'))).toBe(false);
   });
 
+  it('review writes review.md in the session cwd but the scratchpad seed in the PARENT repo', async () => {
+    const wt = join(repo, '.claude', 'worktrees', 'agent-a');
+    mkdirSync(wt, { recursive: true });
+    const { f } = makeApp({ resolveSessionCwd: async () => wt });
+    const res = await f.inject({
+      method: 'POST', url: '/api/bridge/review', headers: { origin },
+      payload: { projectId: 'demo', sessionId: 's1' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(existsSync(join(wt, '.seshmux', 'review.md'))).toBe(true);
+    // one scratchpad per repo — the UI/watcher only read the parent's handoff.md
+    expect(existsSync(join(wt, '.seshmux', 'handoff.md'))).toBe(false);
+    const sp = readFileSync(join(repo, '.seshmux', 'handoff.md'), 'utf8');
+    expect(sp).toContain('Review requested');
+  });
+
   it('falls back to the repo when the session cwd no longer exists (worktree removed)', async () => {
     const gone = join(repo, '.claude', 'worktrees', 'gone');
     const { f, calls } = makeApp({ resolveSessionCwd: async () => gone });

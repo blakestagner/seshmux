@@ -110,4 +110,19 @@ describe('composeDiffReview', () => {
     expect(review.toLowerCase()).toContain('unavailable');
     expect(review.toLowerCase()).not.toContain('no uncommitted changes');
   });
+
+  it('points the verdict at the passed scratchpad path (worktree → parent repo handoff.md)', async () => {
+    const review = await composeDiffReview(
+      'p', 's',
+      { loadTranscript, gitDiff: async () => '' },
+      '/repo/.claude/worktrees/wt',
+      '/repo/.seshmux/handoff.md',
+    );
+    expect(review).toContain('Write your verdict to `/repo/.seshmux/handoff.md`');
+  });
+
+  it('defaults the verdict target to the cwd-relative .seshmux/handoff.md', async () => {
+    const review = await composeDiffReview('p', 's', { loadTranscript, gitDiff: async () => '' });
+    expect(review).toContain('Write your verdict to `.seshmux/handoff.md`');
+  });
 });

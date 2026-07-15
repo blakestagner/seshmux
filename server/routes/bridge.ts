@@ -172,12 +172,14 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
   // Both composers accept the route's resolved repo as a 3rd arg; only the real review
   // composer uses it (to run git diff against the true cwd — R2-1). Injected test composers
   // keep their (projectId, sessionId) shape; the repo arg is simply not forwarded to them.
-  const brief: (p: string, s: string, repo: string) => Promise<string> = deps.composeBrief
-    ? (p, s) => deps.composeBrief!(p, s)
-    : (p, s) => realBrief(p, s);
-  const review: (p: string, s: string, repo: string) => Promise<string> = deps.composeDiffReview
-    ? (p, s) => deps.composeDiffReview!(p, s)
-    : (p, s, repo) => realReview(p, s, {}, repo);
+  const brief: (p: string, s: string, repo: string, scratchpadRef: string) => Promise<string> =
+    deps.composeBrief
+      ? (p, s) => deps.composeBrief!(p, s)
+      : (p, s, _repo, ref) => realBrief(p, s, {}, ref);
+  const review: (p: string, s: string, repo: string, scratchpadRef: string) => Promise<string> =
+    deps.composeDiffReview
+      ? (p, s) => deps.composeDiffReview!(p, s)
+      : (p, s, repo, ref) => realReview(p, s, {}, repo, ref);
   const planoff = deps.runPlanoff ?? ((path: string, task: string) => realPlanoff(path, task));
   const registerBridge = deps.registerBridge ?? (() => realRegister());
   const bridgeStatus = deps.bridgeStatus ?? (() => realBridgeStatus());
@@ -221,7 +223,7 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
     projectId: string,
     sessionId: string,
     kind: 'handoff' | 'review',
-    compose: (p: string, s: string, repo: string) => Promise<string>,
+    compose: (p: string, s: string, repo: string, scratchpadRef: string) => Promise<string>,
     filename: string,
   ) {
     const repo = await repoOrNull(projectId);
@@ -254,9 +256,14 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
     // repo when the meta has no cwd or the dir is gone (worktree since removed).
     const sessionCwd = await resolveSessionCwd(projectId, sessionId).catch(() => null);
     const workDir = sessionCwd && sessionCwd !== repo && (await isDir(sessionCwd)) ? sessionCwd : repo;
+    // One scratchpad per repo: handoff.md always lives in the PARENT repo (the UI +
+    // watcher only read there), so a worktree session's brief must point the spawned
+    // agent — whose cwd is the worktree — at the parent's copy by absolute path.
+    const scratchpadRef =
+      workDir === repo ? '.seshmux/handoff.md' : join(repo, '.seshmux', 'handoff.md');
     let md: string;
     try {
-      md = await compose(projectId, sessionId, workDir);
+      md = await compose(projectId, sessionId, workDir, scratchpadRef);
     } catch {
       reply.code(404);
       return { error: 'session not found' };
@@ -264,10 +271,11 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
     await atomicWrite(join(workDir, '.seshmux', filename), md);
     // Post a scratchpad entry so cross-review is visible in the shared handoff log from the
     // moment it's requested (the reviewing agent fills in its verdict below, per its prompt).
+    // Always the PARENT repo's handoff.md — the scratchpad UI/watcher never read a worktree's.
     if (kind === 'review') {
       const ts = new Date(deps.now ? deps.now() : Date.now()).toISOString();
       await appendScratchpad(
-        workDir,
+        repo,
         `## Review requested — ${providerName(target)} reviewing ${providerName(source)}'s work · ${ts}\n\n(Verdict to follow — ${providerName(target)} writes it here.)`,
       );
     }
