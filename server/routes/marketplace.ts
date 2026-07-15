@@ -56,15 +56,18 @@ const cache = new Map<string, { at: number; value: Promise<string> }>();
 function cachedFetch(url: string, fetchText: (url: string) => Promise<string>): Promise<string> {
   const hit = cache.get(url);
   if (hit) {
-    if (Date.now() - hit.at < CACHE_TTL_MS) return hit.value;
+    if (Date.now() - hit.at < CACHE_TTL_MS) {
+      // LRU: re-insert so Map insertion order tracks recency, not first-fetch.
+      cache.delete(url);
+      cache.set(url, hit);
+      return hit.value;
+    }
     cache.delete(url); // expired: evict on read, don't serve stale
   }
   const value = fetchText(url).catch((err) => {
     cache.delete(url);
     throw err;
   });
-  // ponytail: FIFO eviction via Map insertion order, not true LRU; upgrade if
-  // hit-rate under real traffic ever matters.
   if (cache.size >= CACHE_MAX_ENTRIES) {
     const oldestKey = cache.keys().next().value;
     if (oldestKey !== undefined) cache.delete(oldestKey);
