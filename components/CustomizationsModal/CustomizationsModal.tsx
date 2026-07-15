@@ -591,6 +591,10 @@ function MarketplaceSection({
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
   const [installedItem, setInstalledItem] = useState<MarketplaceItem | null>(null);
+  const [installedTo, setInstalledTo] = useState<string>('');
+  // Install targets: user level plus every ENABLED (non-hidden, non-missing)
+  // project — the Projects section's visibility toggles double as the opt-in.
+  const enabledProjects = state.projects.filter((p) => !state.config.hidden.includes(p.id) && !p.missing);
 
   useEffect(() => {
     setSourcesError(null);
@@ -632,6 +636,7 @@ function MarketplaceSection({
     setFileError(null);
     setInstallError(null);
     setInstalledItem(null);
+    setInstalledTo('');
     openItemPathRef.current = item.path;
     getMarketplaceItem(source, item.path)
       .then((r) => {
@@ -660,21 +665,21 @@ function MarketplaceSection({
     }
   }
 
-  async function handleInstall(target: 'project' | 'user') {
+  async function handleInstall(target: 'user' | { id: string; name: string }) {
     if (!selected || installing) return;
-    if (target === 'project' && !projectId) return;
     setInstalling(true);
     setInstallError(null);
     try {
       await installMarketplaceItem({
-        projectId,
+        projectId: target === 'user' ? undefined : target.id,
         source,
         path: selected.path,
         section: selected.section,
         name: selected.name,
-        target,
+        target: target === 'user' ? 'user' : 'project',
       });
       setInstalledItem(selected);
+      setInstalledTo(target === 'user' ? 'user' : target.name);
       onInstalled();
     } catch (e) {
       setInstallError((e as Error).message || 'install failed');
@@ -811,16 +816,22 @@ function MarketplaceSection({
                     </div>
                   ))}
                 </div>
-                <pre className={styles.pre}>{files[0]?.content ?? ''}</pre>
+                {/* Preview the item's own markdown (SKILL.md / the agent file),
+                    not the alphabetically-first file — that's usually a huge
+                    LICENSE.txt that buries the Install button. */}
+                <pre className={`${styles.pre} ${styles.mpPreview}`}>
+                  {(files.find((f) => f.path.endsWith('SKILL.md')) ?? files.find((f) => f.path.endsWith('.md')) ?? files[0])
+                    ?.content ?? ''}
+                </pre>
               </>
             )}
             {installError ? <div className={styles.badge}>{installError}</div> : null}
             {installedItem === selected ? (
-              <div className={styles.empty}>Installed — source: {source}</div>
+              <div className={styles.empty}>Installed to {installedTo || 'user'} — source: {source}</div>
             ) : null}
             <InstallMenu
-              projectId={projectId}
-              projectName={projectName}
+              currentProjectId={projectId}
+              projects={enabledProjects}
               installing={installing}
               disabled={!files}
               onInstall={handleInstall}
@@ -977,62 +988,55 @@ function SourceMenu({
 }
 
 // Install button for a selected skill/agent preview. With a projectId, "Install"
-// is a primary action plus a small useDropdown menu (mirrors PluginRow's scope
-// menu) offering "project" (default click) / "user". With no projectId (global
-// modal), there's no project to install into — a plain primary button installs
-// to user scope directly.
+// is a primary action plus a useDropdown menu of install targets: user level
+// first, then every ENABLED project (the modal's current project pinned to the
+// top of that list). Same menu in project and global scope — only the pin
+// differs.
 function InstallMenu({
-  projectId,
-  projectName,
+  currentProjectId,
+  projects,
   installing,
   disabled,
   onInstall,
 }: {
-  projectId?: string;
-  projectName?: string;
+  currentProjectId?: string;
+  projects: Project[];
   installing: boolean;
   disabled: boolean;
-  onInstall: (target: 'project' | 'user') => void;
+  onInstall: (target: 'user' | { id: string; name: string }) => void;
 }) {
   const { open, setOpen, wrapRef } = useDropdown();
+  const current = projects.find((p) => p.id === currentProjectId);
+  const others = projects.filter((p) => p.id !== currentProjectId);
+  const ordered = current ? [current, ...others] : others;
 
-  if (!projectId) {
-    return (
-      <Button variant="primary" disabled={installing || disabled} onClick={() => onInstall('user')}>
-        {installing ? 'Installing…' : 'Install to user'}
-      </Button>
-    );
-  }
+  const pick = (target: 'user' | { id: string; name: string }) => {
+    setOpen(false);
+    onInstall(target);
+  };
 
   return (
     <span className={styles.assistMenuWrap} ref={wrapRef}>
       <Button variant="primary" disabled={installing || disabled} onClick={() => setOpen((v) => !v)}>
-        {installing ? 'Installing…' : `Install to ${projectName ?? 'project'}`} <span>{open ? '▴' : '▾'}</span>
+        {installing ? 'Installing…' : 'Install to'} <span>{open ? '▴' : '▾'}</span>
       </Button>
       {open ? (
-        <div className={`${menu.menu} ${styles.mpScopeMenu}`} role="menu">
-          <button
-            type="button"
-            className={menu.item}
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onInstall('project');
-            }}
-          >
-            project
+        <div className={`${menu.menu} ${styles.mpScopeMenu} ${styles.mpInstallMenu}`} role="menu">
+          <button type="button" className={menu.item} role="menuitem" onClick={() => pick('user')}>
+            user (all projects)
           </button>
-          <button
-            type="button"
-            className={menu.item}
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onInstall('user');
-            }}
-          >
-            user
-          </button>
+          {ordered.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              className={menu.item}
+              role="menuitem"
+              onClick={() => pick({ id: p.id, name: p.name })}
+            >
+              {p.name}
+              {p.id === currentProjectId ? ' · current' : ''}
+            </button>
+          ))}
         </div>
       ) : null}
     </span>
