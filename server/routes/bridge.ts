@@ -217,6 +217,15 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
     return hit?.ptyId ?? null;
   }
 
+  // A folded worktree session lists under the PARENT projectId but ran in the
+  // worktree — spawn/exec there, not the parent tree. Falls back to the repo when
+  // there's no sessionId, the meta has no cwd, or the dir is gone (worktree removed).
+  async function sessionWorkDir(repo: string, projectId: string, sessionId?: string): Promise<string> {
+    if (typeof sessionId !== 'string' || !sessionId) return repo;
+    const cwd = await resolveSessionCwd(projectId, sessionId).catch(() => null);
+    return cwd && cwd !== repo && (await isDir(cwd)) ? cwd : repo;
+  }
+
   // Shared handler for handoff + review: compose → write file → spawn opposite provider.
   async function bridgeStart(
     reply: import('fastify').FastifyReply,
@@ -252,10 +261,8 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
     const target = OTHER[source];
     // Spawn + diff + brief/scratchpad files all use the SESSION'S OWN cwd: a folded
     // worktree session ran in <repo>/.claude/worktrees/<x>, and handing off in the
-    // parent tree would diff/execute against the wrong checkout. Falls back to the
-    // repo when the meta has no cwd or the dir is gone (worktree since removed).
-    const sessionCwd = await resolveSessionCwd(projectId, sessionId).catch(() => null);
-    const workDir = sessionCwd && sessionCwd !== repo && (await isDir(sessionCwd)) ? sessionCwd : repo;
+    // parent tree would diff/execute against the wrong checkout.
+    const workDir = await sessionWorkDir(repo, projectId, sessionId);
     // One scratchpad per repo: handoff.md always lives in the PARENT repo (the UI +
     // watcher only read there), so a worktree session's brief must point the spawned
     // agent — whose cwd is the worktree — at the parent's copy by absolute path.
@@ -300,7 +307,7 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
       bridgeStart(reply, req.body.projectId, req.body.sessionId, 'review', review, 'review.md'),
   );
 
-  f.post<{ Body: { projectId: string; task: string } }>(
+  f.post<{ Body: { projectId: string; sessionId?: string; task: string } }>(
     '/api/bridge/planoff',
     async (req, reply) => {
       const repo = await repoOrNull(req.body.projectId);
@@ -313,12 +320,14 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
         reply.code(400);
         return { error: 'task may not start with "-"' };
       }
-      return planoff(repo, req.body.task);
+      // sessionId is optional: with one, planners run in that session's own cwd
+      // (worktree); without, plan-off keeps working at the repo root.
+      return planoff(await sessionWorkDir(repo, req.body.projectId, req.body.sessionId), req.body.task);
     },
   );
 
   f.post<{
-    Body: { projectId: string; provider: PlanoffProvider; task: string; planoff: PlanoffResult };
+    Body: { projectId: string; sessionId?: string; provider: PlanoffProvider; task: string; planoff: PlanoffResult };
   }>('/api/bridge/planoff/pick', async (req, reply) => {
     const repo = await repoOrNull(req.body.projectId);
     if (!repo) {
@@ -347,13 +356,16 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
       return { error: 'winning plan is empty or the planner failed — nothing to execute' };
     }
 
+    // Winner file + scratchpad stay in the PARENT repo (one scratchpad per repo —
+    // the UI/watcher only read there); only the execution session runs in the
+    // requesting session's own cwd (worktree).
     await atomicWrite(join(repo, '.seshmux', 'planoff-winner.md'), winnerMarkdown(winner, req.body.task));
     if (loser?.plan) {
       await appendScratchpad(repo, `## Plan-off runner-up (${loser.provider})\n\n${loser.plan}`);
     }
 
     const { ptyId, tabMeta } = await deps.startSession({
-      projectPath: repo,
+      projectPath: await sessionWorkDir(repo, req.body.projectId, req.body.sessionId),
       provider,
       firstPrompt: `Execute the approved plan:\n\n${winner.plan}`,
     });

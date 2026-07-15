@@ -87,7 +87,8 @@ export type Action =
   | { type: 'openSettings' }
   | { type: 'closeSettings' }
   | { type: 'openScratchpad'; projectId: string; label: string }
-  | { type: 'openPlanoff'; projectId: string; label: string }
+  // sessionId (optional): the requesting session — plan-off runs in its own cwd (worktree).
+  | { type: 'openPlanoff'; projectId: string; label: string; sessionId?: string }
   | { type: 'closeTab'; id: string }
   | { type: 'activateTab'; id: string }
   | { type: 'moveTabBlock'; from: string; to: string }
@@ -306,7 +307,7 @@ export function reducer(state: AppState, action: Action): AppState {
     }
     case 'openPlanoff': {
       const id = 'tab-planoff-' + action.projectId + '-' + Date.now();
-      const tab: Tab = { id, kind: 'planoff', projectId: action.projectId, label: action.label };
+      const tab: Tab = { id, kind: 'planoff', projectId: action.projectId, label: action.label, sessionId: action.sessionId };
       return { ...state, tabs: [...state.tabs, tab], activeTab: id, settingsOpen: false };
     }
     case 'closeTab': {

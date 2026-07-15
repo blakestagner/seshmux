@@ -56,6 +56,9 @@ function PlanColumn({ result, onPick, picking }: { result: PlanResult; onPick: (
 export type PlanoffProps = {
   projectId: string;
   repo: string;
+  // Optional requesting-session id: the server runs plan-off in that session's own
+  // cwd (worktree) instead of the parent repo. Absent → repo root, as before.
+  sessionId?: string;
   // Called with the winning provider once execution starts (parent opens the term tab).
   onExecute?: (provider: ProviderId, ptyId: string) => void;
 };
@@ -66,7 +69,7 @@ type Phase =
   | { state: 'done'; task: string; result: PlanoffResult }
   | { state: 'error'; task: string; message: string };
 
-export default function Planoff({ projectId, repo, onExecute }: PlanoffProps) {
+export default function Planoff({ projectId, repo, sessionId, onExecute }: PlanoffProps) {
   const [phase, setPhase] = useState<Phase>({ state: 'input' });
   const [task, setTask] = useState('');
   const [picking, setPicking] = useState(false);
@@ -76,7 +79,7 @@ export default function Planoff({ projectId, repo, onExecute }: PlanoffProps) {
     if (!t || t.startsWith('-')) return; // server rejects leading-dash (flag injection)
     setPhase({ state: 'running', task: t });
     try {
-      const result = await bridgePlanoff(projectId, t);
+      const result = await bridgePlanoff(projectId, t, sessionId);
       setPhase({ state: 'done', task: t, result });
     } catch (e) {
       setPhase({ state: 'error', task: t, message: e instanceof Error ? e.message : 'plan-off failed' });
@@ -87,7 +90,7 @@ export default function Planoff({ projectId, repo, onExecute }: PlanoffProps) {
     if (phase.state !== 'done' || picking) return;
     setPicking(true);
     try {
-      const { ptyId } = await bridgePlanoffPick(projectId, provider, phase.task, phase.result);
+      const { ptyId } = await bridgePlanoffPick(projectId, provider, phase.task, phase.result, sessionId);
       onExecute?.(provider, ptyId);
     } catch {
       setPicking(false);
