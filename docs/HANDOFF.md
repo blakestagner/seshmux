@@ -103,7 +103,7 @@ Five bugs lived in this path. **Every one was invisible to a green test suite** 
 
 ## Known gaps (written down so they aren't rediscovered)
 
-- **Flaky suite.** One `events-hub` hook-timing test fails occasionally and passes on rerun. `EMFILE` from the file watcher appears under parallel load (fd exhaustion, likely). Not chased.
+- **Flaky suite — events-hub part FIXED 2026-07-15.** The hook-timing flakes were write→sleep(300ms)→assert races (two stacked: a chunk written before the monitor attached was lost forever, and the async hook-read classify could outrun the sleep on loaded CI). Replaced with condition-based waiting + a re-writing probe (`writeUntil` in `test/server/events-hub.test.ts`); conditions key on `getStatusExplain` because attachPty's `'working'` seed makes bare status broadcasts a false signal. Still open: `EMFILE` from the file watcher under parallel load (fd exhaustion, likely). Not chased.
 - **Daemon fan-out.** `attach` subscribes the *socket*, and the daemon writes **every** PTY's output to **every** subscribed client; the ptyId filter lives in the client. Correct but wasteful with many sessions. (An old test asserted otherwise — that guarantee never existed; it passed by winning a race.)
 - **Pre-holder sessions.** Anyone on ≤0.1.4 with a running plain PTY still has a fragile session. The update defers rather than killing it, so it heals once that session ends.
 - **`mockup.html` is retired** as a design reference — it holds four mutually exclusive variants and cannot be a spec. Source of truth is `styles/tokens.scss`: theme (dark|light) × accent (teal|iris), default **iris**.
