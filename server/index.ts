@@ -129,6 +129,7 @@ export async function startServer({ port = 4700, dev = false } = {}) {
   await f.register((await import('./routes/usage')).default);
   await f.register((await import('./routes/config')).default);
   await f.register((await import('./routes/customizations')).default);
+  await f.register((await import('./routes/marketplace')).default);
   // Status-hook install (Spec 2 — Settings "Deep agent integration" toggle).
   await f.register((await import('./routes/hooks')).default);
 
