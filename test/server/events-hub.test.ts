@@ -23,10 +23,59 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { startDaemon } = require('../../daemon/index.js');
 
+// Condition-based waiting (kills the CI flake): the old write → sleep(300) →
+// assert pattern raced BOTH the monitor attach (a chunk written before the hub
+// attaches is never delivered — nothing to wait for) and the async
+// readHookStatus().then(setStatus) classify. waitForCond polls a condition to
+// a deadline; writeUntil additionally RE-WRITES the probe chunk every 250ms so
+// a lost pre-attach chunk self-heals. Verified: shrinking the old sleeps to
+// 10ms reproduced the exact CI failures; these helpers pass at any speed.
+async function waitForCond<T>(
+  cond: () => T | null | undefined | false,
+  what: string,
+  timeoutMs = 5000,
+): Promise<T> {
+  const start = Date.now();
+  for (;;) {
+    const v = cond();
+    if (v) return v;
+    if (Date.now() - start > timeoutMs) throw new Error(`timeout waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
 describe('events-hub — hook status precedence (Spec 2)', () => {
   let daemon: any;
   let configDir: string;
   let prevConfigDir: string | undefined;
+
+  // Write `chunk` to the PTY, re-writing every ~250ms, until `cond` is truthy.
+  // cat echoes the chunk back; each re-write is idempotent for classification.
+  async function writeUntil<T>(
+    ptyId: string,
+    chunk: string,
+    cond: () => T | null | undefined | false,
+    what: string,
+  ): Promise<T> {
+    const { dial } = await import('../../server/daemon-client');
+    const conn = await dial();
+    try {
+      const start = Date.now();
+      let lastWrite = 0;
+      for (;;) {
+        if (Date.now() - lastWrite >= 250 || lastWrite === 0) {
+          lastWrite = Date.now();
+          await conn.write(ptyId, chunk);
+        }
+        const v = cond();
+        if (v) return v;
+        if (Date.now() - start > 5000) throw new Error(`timeout waiting for ${what}`);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    } finally {
+      conn.close();
+    }
+  }
 
   beforeAll(async () => {
     configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'seshmux-hub-test-'));
@@ -73,16 +122,10 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       );
 
       hub.trackPty(ptyId);
-      // Let the hub attach (+ seed hooksActive).
-      await new Promise((r) => setTimeout(r, 200));
 
-      const writeConn = await dial();
-      await writeConn.write(ptyId, 'plain non-matching output\n');
-      writeConn.close();
-
-      // Poll statusByPty indirectly via a fresh events-ws snapshot substitute:
-      // the hub doesn't expose statusByPty directly, so we open a raw daemon
-      // connection is not enough — use the hub's own broadcast via a fake ws.
+      // Subscribe BEFORE writing so the classify broadcast can't be missed;
+      // writeUntil re-writes the probe until a status event lands (heals the
+      // pre-attach lost-chunk race — see helper comment).
       const seen: any[] = [];
       const fakeWs = {
         readyState: 1,
@@ -91,13 +134,17 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
         on: () => {},
         close: () => {},
       } as any;
-
-      // Give the async readHookStatus().then(setStatus) a moment to land, then
-      // snapshot via addClient (replays current statusByPty synchronously).
-      await new Promise((r) => setTimeout(r, 300));
       hub.addClient(fakeWs);
-      const status = seen.find((e) => e.event === 'status' && e.ptyId === ptyId);
-      expect(status?.status).toBe('waiting');
+
+      // Wait for 'waiting' specifically — attachPty seeds a fresh PTY to
+      // 'working', so "any status event" would trip on the seed replay.
+      const status = await writeUntil(
+        ptyId,
+        'plain non-matching output\n',
+        () => seen.find((e) => e.event === 'status' && e.ptyId === ptyId && e.status === 'waiting'),
+        "hook-driven 'waiting' broadcast after plain output",
+      );
+      expect(status.status).toBe('waiting');
 
       const killConn = await dial();
       await killConn.kill(ptyId);
@@ -131,24 +178,23 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       );
 
       hub.trackPty(ptyId);
-      await new Promise((r) => setTimeout(r, 200));
 
-      const writeConn = await dial();
-      await writeConn.write(ptyId, 'esc to interrupt\n'); // matched working pattern = genuine resume
-      writeConn.close();
-
-      await new Promise((r) => setTimeout(r, 300));
-      const seen: any[] = [];
-      const fakeWs = {
-        readyState: 1, OPEN: 1,
-        send: (frame: string) => seen.push(JSON.parse(frame)),
-        on: () => {}, close: () => {},
-      } as any;
-      hub.addClient(fakeWs);
-      const status = seen.find((e) => e.event === 'status' && e.ptyId === ptyId);
-      expect(status?.status).toBe('working');
+      // matched working pattern = genuine resume. Key the wait on the CLASSIFY
+      // evidence (getStatusExplain), not the status broadcast — attachPty seeds
+      // a fresh PTY to 'working', so a 'working' broadcast alone could be the
+      // seed replay, not the R2-4 precedence decision under test.
+      const explain = await writeUntil(
+        ptyId,
+        'esc to interrupt\n',
+        () => {
+          const e = hub.getStatusExplain(ptyId);
+          return e?.status === 'working' ? e : null;
+        },
+        "classified 'working' overriding the fresh waiting hook",
+      );
+      expect(explain.status).toBe('working');
       // status-explain: the hook did NOT win, so no hookOverride is claimed.
-      expect(hub.getStatusExplain(ptyId)?.hookOverride).toBeNull();
+      expect(explain.hookOverride).toBeNull();
 
       const killConn = await dial();
       await killConn.kill(ptyId);
@@ -179,25 +225,20 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       );
 
       hub.trackPty(ptyId);
-      await new Promise((r) => setTimeout(r, 200));
 
-      const writeConn = await dial();
-      // A working-signal frame so heuristics classify it as 'working'.
-      await writeConn.write(ptyId, 'esc to interrupt\n');
-      writeConn.close();
-
-      await new Promise((r) => setTimeout(r, 300));
-      const seen: any[] = [];
-      const fakeWs = {
-        readyState: 1,
-        OPEN: 1,
-        send: (frame: string) => seen.push(JSON.parse(frame)),
-        on: () => {},
-        close: () => {},
-      } as any;
-      hub.addClient(fakeWs);
-      const status = seen.find((e) => e.event === 'status' && e.ptyId === ptyId);
-      expect(status?.status).toBe('working');
+      // A working-signal frame so heuristics classify it as 'working' (the
+      // stale hook must NOT win). Explain-keyed, not broadcast-keyed: the
+      // attach seed also broadcasts 'working', which would false-pass this.
+      const explain = await writeUntil(
+        ptyId,
+        'esc to interrupt\n',
+        () => {
+          const e = hub.getStatusExplain(ptyId);
+          return e?.status === 'working' ? e : null;
+        },
+        "heuristic 'working' beating the stale hook",
+      );
+      expect(explain.status).toBe('working');
 
       const killConn = await dial();
       await killConn.kill(ptyId);
@@ -272,25 +313,20 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       spawnConn.close();
 
       hub.trackPty(ptyId);
-      await new Promise((r) => setTimeout(r, 200));
 
-      // No hook file written at all for this ptyId — statusDir may not even exist.
-      const writeConn = await dial();
-      await writeConn.write(ptyId, 'esc to interrupt\n');
-      writeConn.close();
-
-      await new Promise((r) => setTimeout(r, 300));
-      const seen: any[] = [];
-      const fakeWs = {
-        readyState: 1,
-        OPEN: 1,
-        send: (frame: string) => seen.push(JSON.parse(frame)),
-        on: () => {},
-        close: () => {},
-      } as any;
-      hub.addClient(fakeWs);
-      const status = seen.find((e) => e.event === 'status' && e.ptyId === ptyId);
-      expect(status?.status).toBe('working');
+      // No hook file written at all for this ptyId — statusDir may not even
+      // exist. Explain-keyed (see stale-hook test — the attach seed also
+      // broadcasts 'working').
+      const explain = await writeUntil(
+        ptyId,
+        'esc to interrupt\n',
+        () => {
+          const e = hub.getStatusExplain(ptyId);
+          return e?.status === 'working' ? e : null;
+        },
+        "heuristic-only classified 'working'",
+      );
+      expect(explain.status).toBe('working');
 
       const killConn = await dial();
       await killConn.kill(ptyId);
@@ -394,26 +430,28 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       expect(hub.getStatusExplain(ptyId)).toBeNull(); // never classified yet
 
       hub.trackPty(ptyId);
-      await new Promise((r) => setTimeout(r, 200));
 
-      const writeConn = await dial();
-      await writeConn.write(ptyId, 'esc to interrupt\n');
-      writeConn.close();
-
-      await new Promise((r) => setTimeout(r, 300));
-      const explain = hub.getStatusExplain(ptyId);
-      expect(explain?.status).toBe('working');
-      expect(explain?.evidence.branch).toBe('working-activity');
-      expect(explain?.evidence.matchedPattern).toBe('esc to interrupt');
-      expect(explain?.hookOverride).toBeNull();
-      expect(explain?.lastLines.some((l) => l.includes('esc to interrupt'))).toBe(true);
+      const explain = await writeUntil(
+        ptyId,
+        'esc to interrupt\n',
+        () => {
+          const e = hub.getStatusExplain(ptyId);
+          return e?.status === 'working' ? e : null;
+        },
+        "explain to reach 'working'",
+      );
+      expect(explain.status).toBe('working');
+      expect(explain.evidence.branch).toBe('working-activity');
+      expect(explain.evidence.matchedPattern).toBe('esc to interrupt');
+      expect(explain.hookOverride).toBeNull();
+      expect(explain.lastLines.some((l) => l.includes('esc to interrupt'))).toBe(true);
 
       const killConn = await dial();
       await killConn.kill(ptyId);
       killConn.close();
 
       // Evidence is cleared on exit (no history kept for a dead PTY).
-      await new Promise((r) => setTimeout(r, 100));
+      await waitForCond(() => hub.getStatusExplain(ptyId) === null, 'explain cleared on exit');
       expect(hub.getStatusExplain(ptyId)).toBeNull();
     } finally {
       await hub.close();
@@ -437,17 +475,19 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       );
 
       hub.trackPty(ptyId);
-      await new Promise((r) => setTimeout(r, 200));
 
-      const writeConn = await dial();
-      await writeConn.write(ptyId, 'plain non-matching output\n');
-      writeConn.close();
-
-      await new Promise((r) => setTimeout(r, 300));
-      const explain = hub.getStatusExplain(ptyId);
-      expect(explain?.status).toBe('waiting');
-      expect(explain?.hookOverride).toMatchObject({ hookStatus: 'waiting' });
-      expect(explain?.hookOverride?.path).toContain(ptyId);
+      const explain = await writeUntil(
+        ptyId,
+        'plain non-matching output\n',
+        () => {
+          const e = hub.getStatusExplain(ptyId);
+          return e?.status === 'waiting' ? e : null;
+        },
+        "explain to reach hook-driven 'waiting'",
+      );
+      expect(explain.status).toBe('waiting');
+      expect(explain.hookOverride).toMatchObject({ hookStatus: 'waiting' });
+      expect(explain.hookOverride?.path).toContain(ptyId);
       // Underlying heuristic evidence is still there for comparison — the
       // override didn't reclassify, it just won the precedence decision.
       expect(explain?.evidence.status).toBe('working');
