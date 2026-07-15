@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
 import { useDragResize } from '../../lib/client/use-drag-resize';
 import { clampSize, readPersistedSize } from '../../lib/client/drag-resize';
+import { persistDebounced } from '../../lib/client/persist';
 import TextInput from '../ui/TextInput/TextInput';
 import StatusDot from '../ui/StatusDot/StatusDot';
 import IconButton from '../ui/IconButton/IconButton';
@@ -377,7 +378,7 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
         return;
       }
     }
-    localStorage.setItem('seshmux-rail-sessions-height', String(sessionsH));
+    persistDebounced('seshmux-rail-sessions-height', String(sessionsH));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionsH]);
   // Dock side (default bottom). Dragging either section's header across the

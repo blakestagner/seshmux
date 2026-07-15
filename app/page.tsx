@@ -27,6 +27,7 @@ import { DetectedProvidersProvider, providersFromEnv } from '../lib/client/provi
 import Card from '../components/ui/Card/Card';
 import Button from '../components/ui/Button/Button';
 import { clampSize, readPersistedSize, clampSplit } from '../lib/client/drag-resize';
+import { persistDebounced } from '../lib/client/persist';
 import { useDragResize } from '../lib/client/use-drag-resize';
 import styles from './page.module.scss';
 
@@ -197,7 +198,7 @@ function AppShell() {
         return;
       }
     }
-    localStorage.setItem('seshmux-rail-width', String(railWidth));
+    persistDebounced('seshmux-rail-width', String(railWidth));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [railWidth]);
 
@@ -231,7 +232,7 @@ function AppShell() {
         return;
       }
     }
-    localStorage.setItem('seshmux-viewer-split', String(viewerRatio));
+    persistDebounced('seshmux-viewer-split', String(viewerRatio));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewerRatio]);
 
