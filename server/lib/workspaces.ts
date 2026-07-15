@@ -135,6 +135,7 @@ export async function git(cwd: string, args: string[]): Promise<string> {
 async function preserveIgnoredFiles(project: string, dir: string, files: string[]): Promise<string | null> {
   if (files.length === 0) return null;
   const dest = path.join(project, '.seshmux', 'leftovers', path.basename(dir));
+  const failed: string[] = [];
   for (const rel of files) {
     const from = path.join(dir, rel);
     const to = path.join(dest, rel);
@@ -143,10 +144,21 @@ async function preserveIgnoredFiles(project: string, dir: string, files: string[
       await rename(from, to);
     } catch {
       // rename fails across filesystems (the worktrees root can live on a different volume
-      // than the repo) — fall back to a copy. Best effort: a file we cannot preserve must not
-      // abort the finish, but it must also not be silently forgotten, so it stays listed.
-      await copyFile(from, to).catch(() => {});
+      // than the repo) — fall back to a copy. A file that BOTH paths fail on must abort the
+      // finish (fail closed, hard rule 7): the old swallow here reported the leftovers dir
+      // while the file was still in the worktree the caller was about to force-remove.
+      try {
+        await copyFile(from, to);
+      } catch {
+        failed.push(rel);
+      }
     }
+  }
+  if (failed.length > 0) {
+    throw new Error(
+      `could not preserve ${failed.join(', ')} from the workspace — refusing to remove it; ` +
+        `move the file(s) out of ${dir} by hand and retry`,
+    );
   }
   return dest;
 }
@@ -168,29 +180,42 @@ async function preserveIgnoredFiles(project: string, dir: string, files: string[
 async function worktreeState(dir: string): Promise<{
   trackedDirty: boolean;
   untracked: number;
+  untrackedFiles: string[];
   ignoredFiles: string[];
 } | null> {
   if (!existsSync(dir)) return null; // nothing to lose — let the caller clean up the record
-  const out = await git(dir, ['status', '--porcelain', '--ignored', '-unormal']);
+  // -z: NUL-separated, UNQUOTED paths. Plain porcelain quotes/octal-escapes any path with
+  // non-ASCII/quote/backslash/tab (core.quotepath) — the quoted literal then never resolved
+  // on disk, preserveIgnoredFiles' rename+copy both ENOENT'd, and the force-remove destroyed
+  // the real file while reporting the leftovers dir. -z emits the raw bytes.
+  const out = await git(dir, ['status', '--porcelain', '-z', '--ignored', '-unormal']);
   let trackedDirty = false;
-  let untracked = 0;
+  const untrackedFiles: string[] = [];
   const ignoredFiles: string[] = [];
-  for (const line of out.split('\n')) {
-    if (!line.trim()) continue;
-    const code = line.slice(0, 2);
-    const file = line.slice(3);
+  const entries = out.split('\0');
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (!entry) continue;
+    const code = entry.slice(0, 2);
+    const file = entry.slice(3);
+    // Renames/copies carry a SECOND NUL-separated field (the origin path) — consume it so
+    // it isn't misread as a standalone status entry.
+    if (code[0] === 'R' || code[0] === 'C') i++;
     if (code === '!!') {
       // A trailing '/' is a collapsed ignored DIR (rebuildable, not preserved). Everything
       // else is an individual ignored FILE — preserved rather than judged (see
       // preserveIgnoredFiles).
       if (!file.endsWith('/')) ignoredFiles.push(file);
     } else if (code === '??') {
-      untracked++;
+      // Unlike ignored dirs (rebuildable by definition), an untracked dir is real work the
+      // agent never staged — keep the collapsed 'dir/' entry too; rename() moves a whole
+      // directory, and a cross-fs fallback failure now fails closed in preserveIgnoredFiles.
+      untrackedFiles.push(file.endsWith('/') ? file.slice(0, -1) : file);
     } else {
       trackedDirty = true;
     }
   }
-  return { trackedDirty, untracked, ignoredFiles };
+  return { trackedDirty, untracked: untrackedFiles.length, untrackedFiles, ignoredFiles };
 }
 
 // Branch names already present in the repo under our `agent/` namespace. A 'keep'-finished
@@ -443,10 +468,15 @@ export async function remove(
       throw e;
     }
     // Merge succeeded and (per the guards above) the worktree holds no tracked edits and the
-    // branch's commits are now in the parent. Move its ignored files to safety, then
-    // force-remove: a plain remove refuses on untracked leftovers, which would misreport a DONE
-    // merge as a 409 and wedge every retry (the re-merge is a no-op, the remove fails again).
-    if (state) leftovers = await preserveIgnoredFiles(record.project, dir, state.ignoredFiles);
+    // branch's commits are now in the parent. Move its ignored files AND untracked files to
+    // safety, then force-remove: a plain remove refuses on untracked leftovers, which would
+    // misreport a DONE merge as a 409 and wedge every retry (the re-merge is a no-op, the
+    // remove fails again). Untracked files are the other half of R5-1: a merge moves COMMITS,
+    // so a never-staged file the agent wrote (`?? newfeature.ts`) is in none of them — the old
+    // ignored-only preserve let the force-remove destroy it while reporting success.
+    if (state) {
+      leftovers = await preserveIgnoredFiles(record.project, dir, [...state.ignoredFiles, ...state.untrackedFiles]);
+    }
     await git(record.project, ['worktree', 'remove', '--force', dir]);
   } else if (opts.mode === 'keep') {
     // `worktree remove` deletes ignored files too, even without --force (R6-1). A vanished

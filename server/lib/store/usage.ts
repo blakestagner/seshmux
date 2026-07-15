@@ -7,7 +7,7 @@ import { createReadStream } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { scanProjects, type ProviderId } from './scan';
+import { projectSessionDirs, scanProjects, type ProviderId } from './scan';
 import { Lru } from './lru';
 
 export interface UsageSummary {
@@ -176,16 +176,20 @@ export async function aggregateUsage(
   const perProjectTokens = new Map<string, number>();
 
   for (const project of projects) {
-    const dirPath = join(root, project.id);
-    let files: string[];
-    try {
-      files = (await readdir(dirPath)).filter((f) => f.endsWith('.jsonl'));
-    } catch {
-      continue;
+    // projectSessionDirs, not readdir(join(root, project.id)): a project's sessions can
+    // live in FOLDED worktree dirents (and a workspace-only parent's id is synthesized,
+    // with no dirent of its own — the direct readdir threw and skipped the whole
+    // project). Listing and usage must resolve ids identically or they disagree.
+    const filePaths: string[] = [];
+    for (const dirPath of await projectSessionDirs(project.id, root, provider)) {
+      try {
+        filePaths.push(...(await readdir(dirPath)).filter((f) => f.endsWith('.jsonl')).map((f) => join(dirPath, f)));
+      } catch {
+        continue; // dirent vanished mid-scan — skip it, not the project
+      }
     }
 
-    for (const file of files) {
-      const filePath = join(dirPath, file);
+    for (const filePath of filePaths) {
       let mtime: number;
       let touchedAt: number;
       try {
