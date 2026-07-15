@@ -8,8 +8,7 @@ import menu from '../ui/Menu/Menu.module.scss';
 import styles from './FilterMenu.module.scss';
 
 // Floating sort/group menu anchored to the filter button at the right of the
-// tab row. Sort + Collapse-All are wired against the rail; group-by / show-recent
-// render for parity but are inert until their backends exist.
+// tab row. Sort, Show-Hidden and Collapse-All are wired against the rail.
 const FILTER_SVG = (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="4" y1="6" x2="20" y2="6" />
@@ -71,29 +70,6 @@ export default function FilterMenu() {
 
           <div className={menu.sep} />
 
-          {/* ponytail: group-by is display-only — rail groups by workspace already;
-              time-grouping needs a bucketing backend. Wire when added. */}
-          <button type="button" className={menu.item} role="menuitemradio" aria-checked disabled>
-            <Check on />
-            <span className={styles.itemLabel}>Group by Workspace</span>
-          </button>
-          <button type="button" className={menu.item} role="menuitemradio" aria-checked={false} disabled>
-            <span className={styles.check} />
-            <span className={styles.itemLabel}>Group by Time</span>
-          </button>
-
-          <div className={menu.sep} />
-
-          {/* ponytail: show-recent/all is display-only — rail already paginates
-              (load more); a distinct "all" fetch mode is a separate feature. */}
-          <button type="button" className={menu.item} role="menuitemradio" aria-checked disabled>
-            <Check on />
-            <span className={styles.itemLabel}>Show Recent Sessions</span>
-          </button>
-          <button type="button" className={menu.item} role="menuitemradio" aria-checked={false} disabled>
-            <span className={styles.check} />
-            <span className={styles.itemLabel}>Show All Sessions</span>
-          </button>
           <button
             type="button"
             className={menu.item}

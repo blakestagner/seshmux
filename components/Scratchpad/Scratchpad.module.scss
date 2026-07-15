@@ -55,6 +55,13 @@
   @include t-sub;
 }
 
+// Raw-markdown edit mode (Edit/Save/Cancel in the header) — layout only,
+// chrome + focus ring stay owned by the TextInput primitive.
+.editor {
+  width: 100%;
+  min-height: 320px;
+}
+
 .entry {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);

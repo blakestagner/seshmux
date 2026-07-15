@@ -322,7 +322,9 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'moveTabBlock':
       return { ...state, tabs: moveTabBlock(state.tabs, action.from, action.to) };
     case 'setView':
-      return { ...state, view: action.view };
+      // Picking a view always leaves settings (same as activateTab) — otherwise
+      // the segmented control changes state under a settings overlay that stays.
+      return { ...state, view: action.view, settingsOpen: false };
     case 'setProvFilter':
       return { ...state, provFilter: action.filter };
     case 'setRailSort':

@@ -720,11 +720,9 @@ export default function GridView() {
                 else dispatch({ type: 'activateTab', id: tab.id });
               }}
             >
-              <span className={styles.grip}>⠿</span>
               <StatusDot status={waiting ? 'waiting' : 'live'} size={7} />
               <span className={styles.repo}>{repoName(tab, state.projects)}</span>
               {tab.linkedKind ? <LinkChip kind={tab.linkedKind} /> : null}
-              {tab.provider ? <ProviderBadge provider={tab.provider} /> : null}
               {tab.linkSrc ? <span className={styles.from}>from {sourceRef(tab.linkSrc)}</span> : null}
               {waiting ? <span className={styles.flag}>needs input</span> : null}
               {tab.ctx ? (
@@ -752,6 +750,10 @@ export default function GridView() {
                   onClick={() => toggleFocus(tab.id)}
                 >⛶</IconButton>
               </span>
+              {/* Provider icon LAST so it sits flush right, aligned with the
+                  footer's bridge dropdown; the hover-revealed ⛶ fills in to
+                  its left without shifting it. */}
+              {tab.provider ? <ProviderBadge provider={tab.provider} /> : null}
             </div>
             <div className={styles.body}>
               <TerminalPane

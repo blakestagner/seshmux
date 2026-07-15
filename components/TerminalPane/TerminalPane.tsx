@@ -627,15 +627,20 @@ export default function TerminalPane({
         ) : null}
       </div>
       <div className={`${styles.statusbar} ${variant === 'grid' ? styles.grid : ''}`}>
-        <span className={styles.state}>
-          {/* Single-pane statusbar dot pulses (design L160); the compact grid
-              footer dot is static (design L205). */}
-          <StatusDot status={status === 'live' ? 'live' : 'done'} size={7} pulse={variant !== 'grid'} />
-          <span className={status === 'live' ? styles.live : styles.done}>
-            {status === 'live' ? 'live' : 'exited'}
+        {/* Grid footer stays minimal: the tile HEADER already carries the provider
+            icon + status dot, so repeat neither — only a dead PTY ("exited") is
+            worth a footer flag there. Single-pane keeps the full state + badge. */}
+        {variant !== 'grid' || status !== 'live' ? (
+          <span className={styles.state}>
+            {/* Single-pane statusbar dot pulses (design L160); the compact grid
+                footer dot is static (design L205). */}
+            <StatusDot status={status === 'live' ? 'live' : 'done'} size={7} pulse={variant !== 'grid'} />
+            <span className={status === 'live' ? styles.live : styles.done}>
+              {status === 'live' ? 'live' : 'exited'}
+            </span>
           </span>
-        </span>
-        {provider ? <ProviderBadge provider={provider} withName /> : null}
+        ) : null}
+        {provider && variant !== 'grid' ? <ProviderBadge provider={provider} withName /> : null}
         {/* Grid tiles show branch + ctx in the tile HEADER, so the footer stays
             minimal there. Single-pane keeps the rich statusbar. */}
         {variant !== 'grid' ? (

@@ -22,6 +22,11 @@ const fx = (name: string) => readFileSync(join(new URL('../fixtures/tui', import
 const claudePermission = fx('claude-permission.raw');
 const claudeWorking = fx('claude-working.raw');
 const codexTrust = fx('codex-trust-and-boot.raw');
+// Captured live from a real daemon PTY (pty-26, 2026-07-15): the --resume
+// "Resume from summary / Enter to confirm · Esc to cancel" prompt. Claude's
+// renderer draws the SPACES as cursor-forward escapes (`Esc<ESC>[Cto<ESC>[Ccancel`),
+// so stripAnsi must translate CSI-C to a space or "Esc to cancel" never matches.
+const claudeResumePrompt = fx('claude-resume-prompt.raw');
 
 const claudeWaiting = new ClaudeProvider().needsInputPatterns;
 const codexWaiting = new CodexProvider().needsInputPatterns;
@@ -47,6 +52,15 @@ describe('classify — waiting detection (permission / question prompts)', () =>
     // A permission prompt is drawn once then output stops — feed it as the latest frame.
     const status = classify(claudePermission, s, claudeWaiting);
     expect(status).toBe('waiting');
+  });
+
+  it('classifies the claude resume-from-summary prompt as waiting (cursor-forward spaces)', () => {
+    const s = initState(0);
+    const status = classify(claudeResumePrompt, s, claudeWaiting);
+    expect(status).toBe('waiting');
+    // and a repaint-less silence tick keeps it waiting, never working/idle
+    s.now = () => 60_000;
+    expect(classify('', s, claudeWaiting)).toBe('waiting');
   });
 
   it('classifies the codex trust prompt as waiting', () => {

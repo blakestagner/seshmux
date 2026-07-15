@@ -229,7 +229,6 @@ export function getScratchpad(projectId: string): Promise<{ content: string }> {
 export function putScratchpad(projectId: string, content: string): Promise<{ ok: boolean; content: string }> {
   return req(`/api/scratchpad/${projectId}`, { method: 'PUT', body: JSON.stringify({ content }) });
 }
-
 // ── Subagent viewer ─────────────────────────────────────────────────────────
 // GET the flat subagent node tree for a session (empty for codex / no subagents).
 export function getSubagents(project: string, session: string): Promise<{ nodes: SubagentNode[] }> {

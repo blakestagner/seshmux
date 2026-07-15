@@ -1,7 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
+import { useDragResize } from '../../lib/client/use-drag-resize';
+import { clampSize, readPersistedSize } from '../../lib/client/drag-resize';
 import TextInput from '../ui/TextInput/TextInput';
 import StatusDot from '../ui/StatusDot/StatusDot';
 import IconButton from '../ui/IconButton/IconButton';
@@ -24,6 +26,30 @@ const PIN_SVG = (
   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M12 17v5" />
     <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z" />
+  </svg>
+);
+
+// All rail-row icons are same-box SVGs (11×11, stroke 2) so they baseline-align
+// — mixing text glyphs (≡ +) with SVGs misaligned the row.
+const LINES_SVG = (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <line x1="4" y1="6" x2="20" y2="6" />
+    <line x1="4" y1="12" x2="20" y2="12" />
+    <line x1="4" y1="18" x2="20" y2="18" />
+  </svg>
+);
+
+const PLUS_SVG = (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <path d="M12 5v14M5 12h14" />
+  </svg>
+);
+
+const DOTS_V_SVG = (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <circle cx="12" cy="5" r="2" />
+    <circle cx="12" cy="12" r="2" />
+    <circle cx="12" cy="19" r="2" />
   </svg>
 );
 
@@ -51,6 +77,17 @@ function sessDotStatus(s: SessionMeta, projTabs: Tab[]): 'waiting' | 'unviewed' 
   if (tab?.unviewed) return 'unviewed';
   return s.live ? 'live' : 'neutral';
 }
+
+// Open-tab row dot: same rollup precedence as sessDotStatus, but straight off the tab.
+function tabDotStatus(t: Tab): 'waiting' | 'unviewed' | 'live' | 'neutral' {
+  if (t.status === 'waiting') return 'waiting';
+  if (t.unviewed) return 'unviewed';
+  return t.status === 'live' ? 'live' : 'neutral';
+}
+
+const SESSIONS_H_MIN = 76;
+const SESSIONS_H_MAX = 480;
+const SESSIONS_H_DEFAULT = 180;
 
 function formatDuration(ms: number): string {
   const totalMin = Math.round(ms / 60_000);
@@ -188,12 +225,6 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
     }
   }
 
-  // Rail hover-cluster ⊕ button: one click, no dialog.
-  async function handleCreateWorkspace(e: React.MouseEvent, p: Project) {
-    e.stopPropagation();
-    await doCreateWorkspace(p);
-  }
-
   async function loadFirstPage(projectId: string) {
     const sessions = await getSessions(projectId, { limit: CHUNK });
     setByProject((prev) => ({
@@ -326,9 +357,142 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
   const totalProjects = projects.length;
   const hasAnySessions = projects.some((p) => p.sessionCount > 0);
 
+  // Open-sessions panel (VS Code Outline-style): every open tab across
+  // tabs/grid/agents, resizable via a drag handle on its top edge. Same
+  // SSR-safe read+write-in-one-effect persistence pattern as railWidth.
+  const openTabs = state.tabs;
+  const [sessionsH, setSessionsH] = useState(SESSIONS_H_DEFAULT);
+  const sessionsHLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!sessionsHLoadedRef.current) {
+      sessionsHLoadedRef.current = true;
+      const saved = readPersistedSize(
+        localStorage.getItem('seshmux-rail-sessions-height'),
+        SESSIONS_H_MIN,
+        SESSIONS_H_MAX,
+        SESSIONS_H_DEFAULT,
+      );
+      if (saved !== sessionsH) {
+        setSessionsH(saved);
+        return;
+      }
+    }
+    localStorage.setItem('seshmux-rail-sessions-height', String(sessionsH));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionsH]);
+  // Dock side (default bottom). Dragging either section's header across the
+  // other swaps them — same idea as VS Code sidebar section reordering.
+  const [sessionsPos, setSessionsPos] = useState<'top' | 'bottom'>('bottom');
+  const sessionsPosLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!sessionsPosLoadedRef.current) {
+      sessionsPosLoadedRef.current = true;
+      const saved = localStorage.getItem('seshmux-rail-sessions-pos');
+      if (saved === 'top' && sessionsPos !== 'top') {
+        setSessionsPos('top');
+        return;
+      }
+    }
+    localStorage.setItem('seshmux-rail-sessions-pos', sessionsPos);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionsPos]);
+  const [sectionDrag, setSectionDrag] = useState<'sessions' | 'projects' | null>(null);
+  // Drop-zone highlight while a section header is dragged over the other
+  // section — same accent-soft + outline treatment as GridView's .zone.
+  const [sectionDragOver, setSectionDragOver] = useState<'sessions' | 'projects' | null>(null);
+  function sectionDropProps(self: 'sessions' | 'projects') {
+    return {
+      onDragOver: (e: DragEvent) => {
+        if (sectionDrag && sectionDrag !== self) {
+          e.preventDefault();
+          setSectionDragOver(self);
+        }
+      },
+      onDragLeave: () => setSectionDragOver((cur) => (cur === self ? null : cur)),
+      onDrop: (e: DragEvent) => {
+        setSectionDragOver(null);
+        if (!sectionDrag || sectionDrag === self) return;
+        e.preventDefault();
+        setSessionsPos((p) => (p === 'top' ? 'bottom' : 'top'));
+        setSectionDrag(null);
+      },
+    };
+  }
+  const sectionZone = (self: 'sessions' | 'projects') =>
+    sectionDragOver === self && sectionDrag && sectionDrag !== self ? styles.sectionDropZone : '';
+
+  const sessionsDragStartRef = useRef(SESSIONS_H_DEFAULT);
+  const sessionsDrag = useDragResize({
+    axis: 'y',
+    onDragStart: () => {
+      sessionsDragStartRef.current = sessionsH;
+    },
+    // The handle sits on the edge FACING the project list: bottom-docked panel
+    // grows when dragged up (-deltaY), top-docked grows when dragged down.
+    onDrag: (deltaY) => {
+      const grown = sessionsPos === 'bottom' ? -deltaY : deltaY;
+      setSessionsH(clampSize(sessionsDragStartRef.current + grown, SESSIONS_H_MIN, SESSIONS_H_MAX));
+    },
+  });
+
+  function handleOpenTab(t: Tab) {
+    dispatch({ type: 'activateTab', id: t.id });
+    // Agents view has no tab surface — jump to tabs so the click lands somewhere visible.
+    if (state.view === 'agents') dispatch({ type: 'setView', view: 'tabs' });
+  }
+
+  const sessionsPanel = openTabs.length ? (
+    <div
+      className={`${styles.openSessions} ${sessionsPos === 'top' ? styles.dockTop : styles.dockBottom} ${sectionZone('sessions')}`}
+      style={{ height: sessionsH }}
+      {...sectionDropProps('sessions')}
+    >
+      <div
+        className={`${styles.sessionsHandle} ${sessionsPos === 'top' ? styles.handleBottom : styles.handleTop}`}
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize sessions panel"
+        onPointerDown={sessionsDrag.onPointerDown}
+      />
+      <div
+        className={styles.sessionsHead}
+        draggable
+        onDragStart={() => setSectionDrag('sessions')}
+        onDragEnd={() => setSectionDrag(null)}
+      >
+        <h2>Sessions</h2>
+        <span className={styles.scan}>{openTabs.length}</span>
+      </div>
+      <div className={styles.sessionsList}>
+        {openTabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            className={`${styles.openTab} ${t.id === state.activeTab ? styles.selected : ''}`}
+            title={t.label}
+            onClick={() => handleOpenTab(t)}
+          >
+            <StatusDot status={tabDotStatus(t)} size={7} />
+            <span className={styles.openTabLabel}>{t.label}</span>
+            {showProvider && t.provider ? (
+              <span className={`${styles.sessAgent} ${styles[t.provider]}`}>{t.provider}</span>
+            ) : null}
+          </button>
+        ))}
+      </div>
+    </div>
+  ) : null;
+
   return (
     <aside className={styles.rail} style={width != null ? { width, flex: `0 0 ${width}px` } : undefined}>
-      <div className={styles.head}>
+      {sessionsPos === 'top' ? sessionsPanel : null}
+      <div className={`${styles.projectsSection} ${sectionZone('projects')}`} {...sectionDropProps('projects')}>
+      <div
+        className={styles.head}
+        draggable
+        onDragStart={() => setSectionDrag('projects')}
+        onDragEnd={() => setSectionDrag(null)}
+      >
         <h2>Projects</h2>
         <span className={styles.scan}>{totalProjects}</span>
       </div>
@@ -353,7 +517,7 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
             per-project gear opens, unscoped. Its Projects section carries the
             show/hide list the old ProjectVisibilityModal held. */}
         <IconButton label="User customizations & marketplace" variant="boxed" size={28} onClick={() => onOpenGlobalCustomizations?.()}>
-          ⋯
+          {DOTS_V_SVG}
         </IconButton>
       </div>
       <div className={styles.railFilter}>
@@ -437,6 +601,15 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                     <span className={styles.count}>
                       {provFilter === 'all' ? p.sessionCount : p.sessionCountByProvider?.[provFilter] ?? 0}
                     </span>
+                    <IconButton
+                      label="Customizations"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onOpenCustomizations?.({ projectId: p.id, projectName: p.name });
+                      }}
+                    >
+                      {DOTS_V_SVG}
+                    </IconButton>
                   </span>
                   <span className={styles.actionsRow}>
                     {!pinned ? (
@@ -451,7 +624,7 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                         dispatch({ type: 'openScratchpad', projectId: p.id, label: `${p.name} · scratchpad` });
                       }}
                     >
-                      ≡
+                      {LINES_SVG}
                     </IconButton>
                     <IconButton
                       label="New session"
@@ -460,35 +633,7 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                         setModalProject(p);
                       }}
                     >
-                      +
-                    </IconButton>
-                    <IconButton
-                      label="New workspace (isolated worktree)"
-                      onClick={(e) => handleCreateWorkspace(e, p)}
-                    >
-                      {workspaceBusy === p.id ? '…' : '⊕'}
-                    </IconButton>
-                    {p.provider === 'claude' ? (
-                      <IconButton
-                        label="Team…"
-                        disabled={!teamsGateOk}
-                        disabledReason="Teams needs teammateMode: tmux"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setTeamProject(p);
-                        }}
-                      >
-                        ⚑
-                      </IconButton>
-                    ) : null}
-                    <IconButton
-                      label="Customizations"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onOpenCustomizations?.({ projectId: p.id, projectName: p.name });
-                      }}
-                    >
-                      ▦
+                      {PLUS_SVG}
                     </IconButton>
                   </span>
                 </div>
@@ -559,6 +704,8 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
           })
         )}
       </div>
+      </div>
+      {sessionsPos === 'bottom' ? sessionsPanel : null}
       {modalProject ? (
         <NewSessionModal
           projectPath={modalProject.path}

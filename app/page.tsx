@@ -79,7 +79,9 @@ function SetupGate({ onRescan }: { onRescan: () => void }) {
 function AppShell() {
   const { state, dispatch } = useAppState();
   const [jumpTo, setJumpTo] = useState<{ projectId: string; sessionId: string } | null>(null);
-  const [toast, setToast] = useState<{ ptyId: string; repo: string } | null>(null);
+  // ALL currently-waiting sessions, oldest first — the toast aggregates them
+  // ("2 sessions need input") and Jump walks the queue front-to-back.
+  const [waitingToasts, setWaitingToasts] = useState<{ ptyId: string; repo: string }[]>([]);
   const [custOpen, setCustOpen] = useState<{ projectId?: string; projectName?: string } | null>(null);
   const [approval, setApproval] = useState<Extract<EventMessage, { event: 'approval' }> | null>(null);
   // Subagent viewer: which term tab has its viewer open (synthetic right-pane, NOT a Tab —
@@ -357,15 +359,17 @@ function AppShell() {
           prevNIRef.current[e.ptyId] = e.status;
 
           if (e.status === 'waiting') {
-            setToast({ ptyId: e.ptyId, repo });
+            setWaitingToasts((cur) =>
+              cur.some((w) => w.ptyId === e.ptyId) ? cur : [...cur, { ptyId: e.ptyId, repo }],
+            );
             // OS-level surface only when the tab is backgrounded; the server
             // decides delivery (darwin + config), so call unconditionally.
             if (document.hidden && notifyOnRef.current) {
               notify(`${repo} needs input`, 'A session is waiting for your input.').catch(() => {});
             }
           } else {
-            // clear the toast once the session it referenced is no longer waiting
-            setToast((cur) => (cur && cur.ptyId === e.ptyId ? null : cur));
+            // drop the session from the toast once it's no longer waiting
+            setWaitingToasts((cur) => cur.filter((w) => w.ptyId !== e.ptyId));
           }
           break;
         }
@@ -431,11 +435,15 @@ function AppShell() {
     };
   }, [dispatch]);
 
+  // Activate the OLDEST waiting session and pop it — the toast stays up with
+  // the rest so repeated clicks chain through the queue. A vanished tab
+  // (closed while waiting) just pops and the next click moves on.
   function jumpToWaiting() {
-    if (!toast) return;
-    const tab = state.tabs.find((t) => t.kind === 'term' && t.ptyId === toast.ptyId);
+    const next = waitingToasts[0];
+    if (!next) return;
+    const tab = state.tabs.find((t) => t.kind === 'term' && t.ptyId === next.ptyId);
     if (tab) dispatch({ type: 'activateTab', id: tab.id });
-    setToast(null);
+    setWaitingToasts((cur) => cur.filter((w) => w.ptyId !== next.ptyId));
   }
 
   function resolveApprovalToast(approved: boolean) {
@@ -728,11 +736,11 @@ function AppShell() {
         </main>
       </div>
       <Toast
-        open={!!toast}
-        repo={toast?.repo ?? ''}
+        open={waitingToasts.length > 0}
+        repos={waitingToasts.map((w) => w.repo)}
         reason="permission prompt"
         onJump={jumpToWaiting}
-        onClose={() => setToast(null)}
+        onClose={() => setWaitingToasts([])}
       />
       {approval ? (
         <ApprovalToast

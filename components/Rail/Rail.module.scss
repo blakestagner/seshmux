@@ -183,7 +183,7 @@
 .actionsRow {
   display: none;
   align-items: center;
-  gap: 2px;
+  justify-content: space-around;
   padding: 3px 0 0 17px; // indent past the caret so buttons align with the name
 }
 
@@ -303,4 +303,112 @@
 
 .loadMore:hover {
   color: var(--accent);
+}
+
+// Open-sessions panel (VS Code Outline-style) pinned under the project list.
+// Height is inline (drag-resized); the project list above keeps flex:1 +
+// overflow-y so it stays fully scrollable however tall this gets.
+.openSessions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  position: relative;
+}
+
+// Border sits on the edge facing the project list (dock-side aware).
+.dockBottom {
+  border-top: 1px solid var(--border);
+}
+
+.dockTop {
+  border-bottom: 1px solid var(--border);
+}
+
+// The resize handle straddles whichever edge faces the project list.
+.sessionsHandle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 7px;
+  cursor: row-resize;
+  z-index: 1;
+}
+
+.handleTop {
+  top: -3px;
+}
+
+.handleBottom {
+  bottom: -3px;
+}
+
+// Wrapper so the whole projects half (head + filters + list) is ONE drop
+// zone — per-element highlights read as patchy padding/borders.
+.projectsSection {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+// Section drag drop-zone — mirrors GridView's .zone treatment.
+.sectionDropZone {
+  background: var(--accent-soft);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.sessionsHandle:hover {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.sessionsHead {
+  padding: 10px 18px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: grab;
+}
+
+.sessionsHead h2 {
+  @include t-section;
+  margin: 0;
+}
+
+.sessionsList {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 10px 10px;
+}
+
+.openTab {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  text-align: left;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.openTab:hover {
+  background: var(--bg-hover);
+}
+
+.openTab.selected {
+  background: var(--accent-soft);
+}
+
+.openTabLabel {
+  @include t-row;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
