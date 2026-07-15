@@ -26,6 +26,7 @@ import {
   installMarketplaceItem,
   getMarketplacePlugins,
   installMarketplacePlugin,
+  uninstallMarketplacePlugin,
   type CustomizationsPayload,
   type MarketplaceItem,
   type MarketplaceFile,
@@ -700,7 +701,10 @@ function MarketplaceSection({
   } | null>(null);
   const [pluginsError, setPluginsError] = useState<string | null>(null);
   const [pluginsReloadKey, setPluginsReloadKey] = useState(0);
-  const [pluginInstalling, setPluginInstalling] = useState<string | null>(null);
+  // Tracks the plugin key currently mid-flight for EITHER install or uninstall
+  // (only one op per key at a time) — renamed from pluginInstalling since it now
+  // gates both operations; PluginRow's 'busy' label covers both.
+  const [pluginBusyKey, setPluginBusyKey] = useState<string | null>(null);
   const [pluginInstallError, setPluginInstallError] = useState<string | null>(null);
   // Keyed by the plugin's full id ("name@marketplace") when a row exposes pluginId;
   // bare name only for rows that don't (installed[] entries from the server always
@@ -759,8 +763,8 @@ function MarketplaceSection({
   async function handleInstallPlugin(pluginKey: string, scope: 'user' | 'project') {
     // user-scope installs are project-independent (global modal); project scope
     // requires one (the PluginRow menu hides it otherwise).
-    if (pluginInstalling || (scope === 'project' && !projectId)) return;
-    setPluginInstalling(pluginKey);
+    if (pluginBusyKey || (scope === 'project' && !projectId)) return;
+    setPluginBusyKey(pluginKey);
     setPluginInstallError(null);
     try {
       await installMarketplacePlugin({ projectId, plugin: pluginKey, scope });
@@ -774,7 +778,31 @@ function MarketplaceSection({
     } catch (e) {
       setPluginInstallError((e as Error).message || 'install failed');
     } finally {
-      setPluginInstalling(null);
+      setPluginBusyKey(null);
+    }
+  }
+
+  // Same guards as handleInstallPlugin (user scope allowed without projectId,
+  // project needs it); on success remove the scope from installedScopes,
+  // deleting the map entry entirely once its scope set empties.
+  async function handleUninstallPlugin(pluginKey: string, scope: 'user' | 'project') {
+    if (pluginBusyKey || (scope === 'project' && !projectId)) return;
+    setPluginBusyKey(pluginKey);
+    setPluginInstallError(null);
+    try {
+      await uninstallMarketplacePlugin({ projectId, plugin: pluginKey, scope });
+      setInstalledScopes((prev) => {
+        const next = new Map(prev);
+        const set = new Set(next.get(pluginKey) ?? []);
+        set.delete(scope);
+        if (set.size === 0) next.delete(pluginKey);
+        else next.set(pluginKey, set);
+        return next;
+      });
+    } catch (e) {
+      setPluginInstallError((e as Error).message || 'uninstall failed');
+    } finally {
+      setPluginBusyKey(null);
     }
   }
 
@@ -900,11 +928,12 @@ function MarketplaceSection({
           plugins={pluginsResult?.plugins ?? []}
           marketplaces={pluginsResult?.marketplaces ?? []}
           error={pluginsError}
-          installing={pluginInstalling}
+          busyKey={pluginBusyKey}
           installError={pluginInstallError}
           installedScopes={installedScopes}
           projectId={projectId}
           onInstall={handleInstallPlugin}
+          onUninstall={handleUninstallPlugin}
           onRetry={() => setPluginsReloadKey((k) => k + 1)}
         />
       )}
@@ -1049,11 +1078,12 @@ function PluginsPane({
   error,
   plugins,
   marketplaces,
-  installing,
+  busyKey,
   installError,
   installedScopes,
   projectId,
   onInstall,
+  onUninstall,
   onRetry,
 }: {
   loading: boolean;
@@ -1061,11 +1091,12 @@ function PluginsPane({
   error: string | null;
   plugins: MarketplacePlugin[];
   marketplaces: MarketplaceInfo[];
-  installing: string | null;
+  busyKey: string | null;
   installError: string | null;
   installedScopes: Map<string, Set<string>>;
   projectId?: string;
   onInstall: (pluginKey: string, scope: 'user' | 'project') => void;
+  onUninstall: (pluginKey: string, scope: 'user' | 'project') => void;
   onRetry: () => void;
 }) {
   if (loading) return <div className={styles.empty}>Loading…</div>;
@@ -1112,9 +1143,10 @@ function PluginsPane({
               key={key}
               plugin={p}
               installedScopes={installedScopes.get(key) ?? EMPTY_SCOPE_SET}
-              busy={installing === key}
+              busy={busyKey === key}
               projectId={projectId}
               onInstall={(scope) => onInstall(key, scope)}
+              onUninstall={(scope) => onUninstall(key, scope)}
             />
           );
         })
@@ -1126,28 +1158,29 @@ function PluginsPane({
 const EMPTY_SCOPE_SET: Set<string> = new Set();
 
 // Install scope defaults to 'user'; a project-scoped modal offers a small
-// useDropdown menu to pick 'user' vs 'project' instead. The menu stays enabled
-// even when the plugin is installed somewhere — only the scope(s) already
-// installed get disabled, since installing "user" doesn't cover "project" or
-// vice versa.
+// useDropdown menu to pick 'user' vs 'project' instead. An installed scope's
+// menu item is no longer disabled — it becomes an uninstall action for that
+// scope, so the same menu drives both install and uninstall per scope.
 function PluginRow({
   plugin,
   installedScopes,
   busy,
   projectId,
   onInstall,
+  onUninstall,
 }: {
   plugin: MarketplacePlugin;
   installedScopes: Set<string>;
   busy: boolean;
   projectId?: string;
   onInstall: (scope: 'user' | 'project') => void;
+  onUninstall: (scope: 'user' | 'project') => void;
 }) {
   const { open, setOpen, wrapRef } = useDropdown();
-  // Global (no-project) modal can still install at USER scope — that's
-  // cwd-independent. Project scope needs a project to install into.
+  // Global (no-project) modal can still install/uninstall at USER scope —
+  // that's cwd-independent. Project scope needs a project to act on.
   const canProjectScope = !!projectId;
-  const allScopesInstalled = installedScopes.has('user') && (!canProjectScope || installedScopes.has('project'));
+  const anyInstalled = installedScopes.size > 0;
 
   return (
     <div className={styles.mpPluginRow}>
@@ -1165,9 +1198,8 @@ function PluginRow({
       />
       {(
         <span className={styles.assistMenuWrap} ref={wrapRef}>
-          <Button disabled={busy || allScopesInstalled} onClick={() => setOpen((v) => !v)}>
-            {busy ? 'Installing…' : allScopesInstalled ? 'Installed' : 'Install'}{' '}
-            {!allScopesInstalled ? <span>{open ? '▴' : '▾'}</span> : null}
+          <Button disabled={busy} onClick={() => setOpen((v) => !v)}>
+            {busy ? 'Working…' : anyInstalled ? 'Manage' : 'Install'} <span>{open ? '▴' : '▾'}</span>
           </Button>
           {open ? (
             <div className={`${menu.menu} ${styles.mpScopeMenu}`} role="menu">
@@ -1175,26 +1207,26 @@ function PluginRow({
                 type="button"
                 className={menu.item}
                 role="menuitem"
-                disabled={installedScopes.has('user')}
                 onClick={() => {
                   setOpen(false);
-                  onInstall('user');
+                  if (installedScopes.has('user')) onUninstall('user');
+                  else onInstall('user');
                 }}
               >
-                user{installedScopes.has('user') ? ' ✓' : ''}
+                {installedScopes.has('user') ? 'uninstall (user)' : 'user'}
               </button>
               {canProjectScope ? (
                 <button
                   type="button"
                   className={menu.item}
                   role="menuitem"
-                  disabled={installedScopes.has('project')}
                   onClick={() => {
                     setOpen(false);
-                    onInstall('project');
+                    if (installedScopes.has('project')) onUninstall('project');
+                    else onInstall('project');
                   }}
                 >
-                  project{installedScopes.has('project') ? ' ✓' : ''}
+                  {installedScopes.has('project') ? 'uninstall (project)' : 'project'}
                 </button>
               ) : null}
             </div>

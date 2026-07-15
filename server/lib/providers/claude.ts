@@ -219,6 +219,17 @@ export class ClaudeProvider implements AgentProvider {
       '--',
       plugin,
     ],
+    // Same argv shape + `--` shielding rationale as install above: `claude plugin
+    // uninstall|remove -s <scope> -- <plugin>`, default scope 'user'.
+    uninstall: (plugin: string, scope: 'user' | 'project'): string[] => [
+      CLAUDE_BIN,
+      'plugin',
+      'uninstall',
+      '-s',
+      scope,
+      '--',
+      plugin,
+    ],
   };
 
   private custRoot(s: CustomizationScope, kind: 'agents' | 'skills'): string {

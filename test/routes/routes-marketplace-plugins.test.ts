@@ -10,6 +10,7 @@ function fakeProvider(overrides: Partial<AgentProvider> = {}): AgentProvider {
       listAvailable: () => ['claude', 'plugin', 'list', '--available', '--json'],
       listMarketplaces: () => ['claude', 'plugin', 'marketplace', 'list', '--json'],
       install: (plugin: string, scope: 'user' | 'project') => ['claude', 'plugin', 'install', '-s', scope, '--', plugin],
+      uninstall: (plugin: string, scope: 'user' | 'project') => ['claude', 'plugin', 'uninstall', '-s', scope, '--', plugin],
     },
     ...overrides,
   } as AgentProvider;
@@ -221,5 +222,73 @@ describe('POST /api/marketplace/plugins/install', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(argv).toEqual(['claude', 'plugin', 'install', '-s', 'user', '--', 'foo@mkt']);
+  });
+});
+
+describe('POST /api/marketplace/plugins/uninstall', () => {
+  it('uninstalls and returns ok:true with output, argv passthrough', async () => {
+    let argv: string[] = [];
+    const f = app(async (a: string[]) => {
+      argv = a;
+      return { ok: true, text: 'Uninstalled plugin "foo"' };
+    });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/marketplace/plugins/uninstall',
+      payload: { projectId: 'proj-1', plugin: 'foo', scope: 'user' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, output: 'Uninstalled plugin "foo"' });
+    expect(argv).toEqual(['claude', 'plugin', 'uninstall', '-s', 'user', '--', 'foo']);
+  });
+
+  it('502s with CLI output text on uninstall failure', async () => {
+    const f = app(async () => ({ ok: false, text: 'Failed to uninstall plugin "foo": not installed' }));
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/marketplace/plugins/uninstall',
+      payload: { projectId: 'proj-1', plugin: 'foo', scope: 'user' },
+    });
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toContain('not installed');
+  });
+
+  it('400s a bad plugin name', async () => {
+    const f = app(async () => {
+      throw new Error('should not be called');
+    });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/marketplace/plugins/uninstall',
+      payload: { projectId: 'proj-1', plugin: 'bad plugin!', scope: 'user' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('404s an unknown project for PROJECT-scope uninstalls', async () => {
+    const f = app(async () => {
+      throw new Error('should not be called');
+    });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/marketplace/plugins/uninstall',
+      payload: { projectId: 'nope', plugin: 'foo', scope: 'project' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('user-scope uninstall works without a project (global modal), cwd-independent', async () => {
+    let argv: string[] = [];
+    const f = app(async (a: string[]) => {
+      argv = a;
+      return { text: 'uninstalled', ok: true };
+    });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/marketplace/plugins/uninstall',
+      payload: { plugin: 'foo@mkt', scope: 'user' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(argv).toEqual(['claude', 'plugin', 'uninstall', '-s', 'user', '--', 'foo@mkt']);
   });
 });

@@ -145,6 +145,7 @@ export interface AgentProvider {
     listAvailable(): string[];
     listMarketplaces(): string[];
     install(plugin: string, scope: 'user' | 'project'): string[];
+    uninstall(plugin: string, scope: 'user' | 'project'): string[];
   };
 }
 

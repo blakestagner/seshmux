@@ -443,6 +443,28 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
     },
   );
 
+  f.post<{ Body: { projectId?: string; plugin?: string; scope?: string } }>(
+    '/api/marketplace/plugins/uninstall',
+    async (req, reply) => {
+      const { projectId, plugin, scope } = req.body ?? {};
+      if (typeof plugin !== 'string' || !PLUGIN_NAME_RE.test(plugin))
+        return reply.code(400).send({ error: 'bad plugin' });
+      if (scope !== 'user' && scope !== 'project') return reply.code(400).send({ error: 'bad scope' });
+
+      // Same project-scope gate as install: project-scope uninstalls need a real
+      // project; user-scope is cwd-independent (global modal).
+      const repoPath = projectId ? await resolveRepo(projectId) : null;
+      if (!repoPath && scope === 'project') return reply.code(404).send({ error: 'unknown project' });
+
+      const provider = (await listProviders()).find((p) => p.pluginCommands);
+      if (!provider?.pluginCommands) return reply.code(400).send({ error: 'provider does not support plugins' });
+
+      const { text, ok } = await runArgv(provider.pluginCommands.uninstall(plugin, scope), repoPath ?? process.cwd());
+      if (!ok) return reply.code(502).send({ error: text || 'uninstall failed' });
+      return { ok: true, output: text };
+    },
+  );
+
   f.get('/api/marketplace/sources', async () => {
     const settings = await readSettings();
     const extra = Array.isArray(settings.marketplaceSources)

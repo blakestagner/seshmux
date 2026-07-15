@@ -35,4 +35,28 @@ describe('claude pluginCommands argv', () => {
       'foo',
     ]);
   });
+
+  it('uninstall: scope flag before -- so it is parsed as an option, plugin shielded after --', () => {
+    expect(p.pluginCommands?.uninstall('my-plugin', 'user')).toEqual([
+      'claude',
+      'plugin',
+      'uninstall',
+      '-s',
+      'user',
+      '--',
+      'my-plugin',
+    ]);
+  });
+
+  it('uninstall: project scope', () => {
+    expect(p.pluginCommands?.uninstall('foo', 'project')).toEqual([
+      'claude',
+      'plugin',
+      'uninstall',
+      '-s',
+      'project',
+      '--',
+      'foo',
+    ]);
+  });
 });

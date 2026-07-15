@@ -403,6 +403,15 @@ export function installMarketplacePlugin(body: {
   return req('/api/marketplace/plugins/install', { method: 'POST', body: JSON.stringify(body) });
 }
 
+export function uninstallMarketplacePlugin(body: {
+  // Optional: user-scope uninstalls are project-independent (global modal).
+  projectId?: string;
+  plugin: string;
+  scope: 'user' | 'project';
+}): Promise<{ ok: true; output: string }> {
+  return req('/api/marketplace/plugins/uninstall', { method: 'POST', body: JSON.stringify(body) });
+}
+
 // ── Teams (v1, Task 5) ───────────────────────────────────────────────────────
 export type TeamMemberTemplate = { name: string; role: string; model?: 'opus' | 'sonnet' | 'haiku' };
 export type TeamTemplate = { name: string; members: TeamMemberTemplate[]; createdAt: number };
