@@ -4,6 +4,16 @@ import next from 'next';
 import { AuthError, requireAuth } from './lib/auth';
 
 export async function startServer({ port = 4700, dev = false } = {}) {
+  // Safety net: one missed rejection anywhere (a fire-and-forget `.then` body
+  // throwing, a watcher callback rejecting) must not take down the whole control
+  // plane — PTYs survive in the daemon, but every open UI dies with the server.
+  // Log-and-continue is the deliberate choice: this server is stateless and
+  // local-only, so a crashed request is strictly worse than a logged one.
+  if (process.listenerCount('unhandledRejection') === 0) {
+    process.on('unhandledRejection', (reason) => {
+      console.error('[seshmux] unhandled rejection:', reason);
+    });
+  }
   // Per-process auth token: prefer the one bin/seshmux.js generated (shared via env so the
   // Next-rendered HTML can embed it); otherwise mint one here so `tsx server/index.ts` dev
   // runs are still guarded. Never written to disk.

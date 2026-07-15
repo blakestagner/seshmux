@@ -257,6 +257,13 @@ module.exports = { startDaemon };
 // Run as a standalone process when invoked directly (Task 13 spawns this
 // detached). In-process tests call startDaemon() instead.
 if (require.main === module) {
+  // Safety net (standalone only — in-process tests want loud failures): this
+  // process OWNS every live PTY, so one missed rejection crashing it kills every
+  // agent session at once — the exact failure the daemon exists to prevent.
+  // Log-and-continue; the JSON-RPC layer already catches per-request errors.
+  process.on('unhandledRejection', (reason) => {
+    process.stderr.write('[seshmuxd] unhandled rejection: ' + reason + '\n');
+  });
   startDaemon().then(
     ({ sockPath }) => {
       process.stderr.write('[seshmuxd] listening on ' + sockPath + '\n');
