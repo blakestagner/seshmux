@@ -55,6 +55,11 @@ export function stripAnsi(raw: string): string {
     // Cursor-down (B), next/prev-line (E/F), absolute position (H/f) and vertical-position (d)
     // land the cursor on a different row — a row break. Every other CSI is chrome.
     .replace(/\x1b\[[0-9;?]*[ -/]*[BEFHfd]/g, '\n')
+    // Cursor-forward (C) is how Claude's renderer draws the SPACES between words
+    // ("Esc<ESC>[Cto<ESC>[Ccancel") — deleting it glues words together and no
+    // space-bearing waiting pattern ("Esc to cancel") can ever match (real
+    // fixture: claude-resume-prompt.raw). Translate to one space, not nothing.
+    .replace(/\x1b\[[0-9;?]*[ -/]*C/g, ' ')
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC
     .replace(/\x1b[()][0-9A-B]/g, '') // charset select

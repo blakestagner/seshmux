@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import ProviderBadge from '../ui/ProviderBadge/ProviderBadge';
 import BranchLabel from '../ui/BranchLabel/BranchLabel';
 import Button from '../ui/Button/Button';
+import TextInput from '../ui/TextInput/TextInput';
 import { renderMarkdown } from '../Transcript/Transcript';
 import { getScratchpad, putScratchpad } from '../../lib/client/api';
 import type { ProviderId } from '../../lib/client/types';
@@ -12,8 +13,7 @@ import styles from './Scratchpad.module.scss';
 // Ported from mockup.html scratchpadHTML() (~1782-1804). Header: title, path
 // meta, Open in editor / Clear actions. Body: parsed entries (provider badge,
 // optional branch chip, timestamp) each with a markdown body, plus a footer
-// note. Route (GET /api/scratchpad/:projectId) isn't landed yet — see TODO
-// below; a 404/fetch failure just falls back to the empty state.
+// note. A 404/fetch failure just falls back to the empty state.
 
 export type ScratchEntry = {
   provider: ProviderId;
@@ -59,16 +59,20 @@ export type ScratchpadProps = {
 
 export default function Scratchpad({ projectId, path, refreshKey }: ScratchpadProps) {
   const [entries, setEntries] = useState<ScratchEntry[] | null>(null);
+  const [raw, setRaw] = useState('');
   const [clearing, setClearing] = useState(false);
+  // In-app markdown editing: draft !== null means edit mode is open.
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setEntries(null);
-    // Route may not be registered yet server-side — 404/network failure both
-    // just render the empty state below, no crash.
     getScratchpad(projectId)
       .then(({ content }) => {
-        if (!cancelled) setEntries(content ? parseScratchpad(content) : []);
+        if (cancelled) return;
+        setRaw(content);
+        setEntries(content ? parseScratchpad(content) : []);
       })
       .catch(() => {
         if (!cancelled) setEntries([]);
@@ -78,12 +82,35 @@ export default function Scratchpad({ projectId, path, refreshKey }: ScratchpadPr
     };
   }, [projectId, refreshKey]);
 
+  // A live scratchpad event (refreshKey) must NOT wipe an in-progress draft —
+  // only switching projects abandons it.
+  useEffect(() => setDraft(null), [projectId]);
+
   function handleClear() {
     setClearing(true);
     putScratchpad(projectId, '')
-      .then(() => setEntries([]))
+      .then(({ content }) => {
+        setRaw(content);
+        setEntries([]);
+        setDraft(null);
+      })
       .catch(() => {})
       .finally(() => setClearing(false));
+  }
+
+  function handleSave() {
+    if (draft === null) return;
+    setSaving(true);
+    // PUT may seed the scratchpad template on first write — trust the returned
+    // content, not the draft, so the view matches the file on disk.
+    putScratchpad(projectId, draft)
+      .then(({ content }) => {
+        setRaw(content);
+        setEntries(content ? parseScratchpad(content) : []);
+        setDraft(null);
+      })
+      .catch(() => {})
+      .finally(() => setSaving(false));
   }
 
   return (
@@ -96,15 +123,29 @@ export default function Scratchpad({ projectId, path, refreshKey }: ScratchpadPr
             <span>both agents read &amp; write this file</span>
           </div>
           <div className={styles.actions}>
-            {/* TODO(wire): $EDITOR open is server-side, not landed */}
-            <Button onClick={() => {}}>Open in editor</Button>
-            <Button onClick={handleClear} disabled={clearing}>
+            {draft === null ? (
+              <Button onClick={() => setDraft(raw)} disabled={entries === null}>
+                Edit
+              </Button>
+            ) : (
+              <>
+                <Button onClick={handleSave} disabled={saving}>
+                  Save
+                </Button>
+                <Button onClick={() => setDraft(null)} disabled={saving}>
+                  Cancel
+                </Button>
+              </>
+            )}
+            <Button onClick={handleClear} disabled={clearing || draft !== null}>
               Clear
             </Button>
           </div>
         </div>
 
-        {entries === null ? (
+        {draft !== null ? (
+          <TextInput multiline={16} className={styles.editor} value={draft} onChange={setDraft} />
+        ) : entries === null ? (
           <div className={styles.loading}>Loading scratchpad…</div>
         ) : entries.length === 0 ? (
           <div className={styles.loading}>No entries yet — agents append notes here after handoffs and reviews.</div>

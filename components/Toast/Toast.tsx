@@ -11,22 +11,40 @@ import styles from './Toast.module.scss';
 
 export type ToastProps = {
   open: boolean;
-  repo: string;
+  // Repos of ALL currently-waiting sessions, oldest first. One renders the
+  // classic single-session line; more aggregate into a counter.
+  repos: string[];
   reason: string;
   onJump: () => void;
   onClose: () => void;
 };
 
-export default function Toast({ open, repo, reason, onJump, onClose }: ToastProps) {
+// "repo-a · repo-b +2" — first two names, the rest as a count.
+function repoSummary(repos: string[]): string {
+  const shown = repos.slice(0, 2).join(' · ');
+  return repos.length > 2 ? `${shown} +${repos.length - 2}` : shown;
+}
+
+export default function Toast({ open, repos, reason, onJump, onClose }: ToastProps) {
+  const many = repos.length > 1;
   return (
     <div className={`${styles.toast} ${open ? styles.show : ''}`}>
       <StatusDot status="waiting" size={9} />
       <span className={styles.text}>
-        <strong className={styles.repo}>{repo}</strong> needs your input — {reason}
+        {many ? (
+          <>
+            <strong className={styles.repo}>{repos.length} sessions</strong> need your input —{' '}
+            {repoSummary(repos)}
+          </>
+        ) : (
+          <>
+            <strong className={styles.repo}>{repos[0] ?? ''}</strong> needs your input — {reason}
+          </>
+        )}
       </span>
       <span className={styles.jump}>
         <Button variant="primary" onClick={onJump}>
-          Jump to it
+          {many ? 'Jump to next' : 'Jump to it'}
         </Button>
       </span>
       <IconButton label="Dismiss" onClick={onClose}>

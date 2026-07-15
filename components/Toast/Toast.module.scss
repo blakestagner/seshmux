@@ -1,14 +1,15 @@
 @use '../../styles/typography' as *;
 
-// Toast — mockup .toast (~697-719) + .to-* children. Bottom-right, slide-up
-// entrance, waiting-amber border. Button primary override below recolors it
-// to --waiting (mockup .to-jump) instead of --accent — identity/status only,
+// Toast — top-center slide-down (was mockup's bottom-right: it covered the
+// bottom-right terminal in grid view; top-center overlaps only tile headers).
+// Waiting-amber border; Button primary override below recolors it to
+// --waiting (mockup .to-jump) instead of --accent — identity/status only,
 // not a Button primitive change.
 
 .toast {
   position: fixed;
-  bottom: 20px;
-  right: 20px;
+  top: 14px;
+  left: 50%;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -19,14 +20,14 @@
   // shares the floating-overlay shadow token with the search dropdown
   box-shadow: var(--shadow-dropdown), var(--shadow);
   z-index: 400;
-  transform: translateY(120px);
+  transform: translateX(-50%) translateY(-120px);
   opacity: 0;
   transition: transform 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.2), opacity 0.3s;
   pointer-events: none;
 }
 
 .show {
-  transform: translateY(0);
+  transform: translateX(-50%) translateY(0);
   opacity: 1;
   pointer-events: auto;
 }

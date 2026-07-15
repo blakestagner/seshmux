@@ -62,7 +62,7 @@
   min-height: 38px;
   flex-wrap: nowrap;
   gap: 12px;
-  padding: 0 16px;
+  padding: 0 12px; // matches the tile header (GridView .head) so both rows align
   @include t-mono-micro;
   color: var(--text-faint);
 }

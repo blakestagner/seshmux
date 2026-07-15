@@ -87,13 +87,13 @@
     }
 }
 
+// Collapsed (not just transparent) when idle — a reserved-width ghost reads
+// as a hole between the needs-input flag and the provider icon.
 .headBtns {
-    display: inline-flex;
-    opacity: 0;
-    transition: opacity 0.15s;
+    display: none;
 
     .panel:hover & {
-        opacity: 1;
+        display: inline-flex;
     }
 }
 
@@ -124,10 +124,6 @@
 
     &:hover {
         border-color: var(--accent);
-
-        .grip {
-            opacity: 1;
-        }
     }
 }
 
@@ -181,13 +177,6 @@
     &:active {
         cursor: grabbing;
     }
-}
-
-.grip {
-    @include t-mono-micro;
-    color: var(--text-faint);
-    opacity: 0;
-    transition: opacity 0.15s;
 }
 
 .repo {

@@ -1,15 +1,16 @@
 'use client';
 import { useCallback, useRef } from 'react';
 
-// A generic pointer-drag hook for horizontal resize handles.
-// - onDrag(deltaX) is called on each pointermove with the x-delta from drag start.
+// A generic pointer-drag hook for resize handles (axis 'x' default, or 'y').
+// - onDrag(delta) is called on each pointermove with the axis-delta from drag start.
 // - onDragEnd() called on pointerup/cancel.
 // Uses setPointerCapture so the drag survives crossing an xterm canvas/iframe.
 // Returns handlers to spread onto the handle element: { onPointerDown }.
 export function useDragResize(opts: {
   onDragStart?: () => void;
-  onDrag: (deltaX: number, startX: number, currentX: number) => void;
+  onDrag: (delta: number, start: number, current: number) => void;
   onDragEnd?: () => void;
+  axis?: 'x' | 'y';
 }): { onPointerDown: (e: React.PointerEvent) => void } {
   const optsRef = useRef(opts);
   optsRef.current = opts;
@@ -19,12 +20,14 @@ export function useDragResize(opts: {
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
+    const axis = optsRef.current.axis ?? 'x';
+    const coord = (ev: { clientX: number; clientY: number }) => (axis === 'y' ? ev.clientY : ev.clientX);
     const target = e.currentTarget as HTMLElement;
     const pointerId = e.pointerId;
-    startXRef.current = e.clientX;
-    latestXRef.current = e.clientX;
+    startXRef.current = coord(e);
+    latestXRef.current = coord(e);
     target.setPointerCapture(pointerId);
-    document.body.style.cursor = 'col-resize';
+    document.body.style.cursor = axis === 'y' ? 'row-resize' : 'col-resize';
     document.body.style.userSelect = 'none';
     optsRef.current.onDragStart?.();
 
@@ -34,7 +37,7 @@ export function useDragResize(opts: {
     }
 
     function onPointerMove(ev: PointerEvent) {
-      latestXRef.current = ev.clientX;
+      latestXRef.current = coord(ev);
       if (rafRef.current == null) rafRef.current = requestAnimationFrame(runFrame);
     }
 
