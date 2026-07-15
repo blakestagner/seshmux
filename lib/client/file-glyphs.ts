@@ -1,50 +1,64 @@
-// Filetype → glyph + color-token for the changes-panel tree. Generic glyphs
-// only (hard rule 5). Colors are --ft-* tokens (tokens.scss, both themes).
+// Filetype → glyph + category for the changes-panel tree. Generic glyphs
+// only (hard rule 5). Categories map to `.ft*` classes in
+// ChangesPanel.module.scss, which resolve to --ft-* tokens (tokens.scss,
+// both themes).
+
+export type FileGlyphCategory =
+  | 'styles'
+  | 'scriptTs'
+  | 'scriptJs'
+  | 'test'
+  | 'config'
+  | 'docs'
+  | 'image'
+  | 'shell'
+  | 'markup'
+  | 'dim';
 
 export interface FileGlyph {
   glyph: string;
-  colorVar: string;
+  category: FileGlyphCategory;
 }
 
-const FALLBACK: FileGlyph = { glyph: '·', colorVar: '--ft-dim' };
+const FALLBACK: FileGlyph = { glyph: '·', category: 'dim' };
 
 const BY_NAME: Record<string, FileGlyph> = {
-  'dockerfile': { glyph: '⚙', colorVar: '--ft-config' },
-  'makefile': { glyph: '⚙', colorVar: '--ft-config' },
+  'dockerfile': { glyph: '⚙', category: 'config' },
+  'makefile': { glyph: '⚙', category: 'config' },
   'package-lock.json': FALLBACK,
   'yarn.lock': FALLBACK,
   'pnpm-lock.yaml': FALLBACK,
 };
 
 const BY_EXT: Record<string, FileGlyph> = {
-  scss: { glyph: '✿', colorVar: '--ft-styles' }, css: { glyph: '✿', colorVar: '--ft-styles' },
-  sass: { glyph: '✿', colorVar: '--ft-styles' }, less: { glyph: '✿', colorVar: '--ft-styles' },
-  ts: { glyph: '◆', colorVar: '--ft-script-ts' }, tsx: { glyph: '◆', colorVar: '--ft-script-ts' },
-  mts: { glyph: '◆', colorVar: '--ft-script-ts' }, cts: { glyph: '◆', colorVar: '--ft-script-ts' },
-  js: { glyph: '◆', colorVar: '--ft-script-js' }, jsx: { glyph: '◆', colorVar: '--ft-script-js' },
-  mjs: { glyph: '◆', colorVar: '--ft-script-js' }, cjs: { glyph: '◆', colorVar: '--ft-script-js' },
-  json: { glyph: '⚙', colorVar: '--ft-config' }, jsonc: { glyph: '⚙', colorVar: '--ft-config' },
-  yml: { glyph: '⚙', colorVar: '--ft-config' }, yaml: { glyph: '⚙', colorVar: '--ft-config' },
-  toml: { glyph: '⚙', colorVar: '--ft-config' }, ini: { glyph: '⚙', colorVar: '--ft-config' },
-  md: { glyph: '¶', colorVar: '--ft-docs' }, mdx: { glyph: '¶', colorVar: '--ft-docs' },
-  png: { glyph: '▣', colorVar: '--ft-image' }, jpg: { glyph: '▣', colorVar: '--ft-image' },
-  jpeg: { glyph: '▣', colorVar: '--ft-image' }, gif: { glyph: '▣', colorVar: '--ft-image' },
-  svg: { glyph: '▣', colorVar: '--ft-image' }, webp: { glyph: '▣', colorVar: '--ft-image' },
-  ico: { glyph: '▣', colorVar: '--ft-image' },
-  sh: { glyph: '$', colorVar: '--ft-shell' }, bash: { glyph: '$', colorVar: '--ft-shell' },
-  zsh: { glyph: '$', colorVar: '--ft-shell' },
-  html: { glyph: '‹›', colorVar: '--ft-markup' }, htm: { glyph: '‹›', colorVar: '--ft-markup' },
-  xml: { glyph: '‹›', colorVar: '--ft-markup' }, vue: { glyph: '‹›', colorVar: '--ft-markup' },
-  twig: { glyph: '‹›', colorVar: '--ft-markup' },
-  py: { glyph: '◆', colorVar: '--ft-docs' }, rb: { glyph: '◆', colorVar: '--ft-markup' },
-  go: { glyph: '◆', colorVar: '--ft-script-ts' }, rs: { glyph: '◆', colorVar: '--ft-markup' },
+  scss: { glyph: '✿', category: 'styles' }, css: { glyph: '✿', category: 'styles' },
+  sass: { glyph: '✿', category: 'styles' }, less: { glyph: '✿', category: 'styles' },
+  ts: { glyph: '◆', category: 'scriptTs' }, tsx: { glyph: '◆', category: 'scriptTs' },
+  mts: { glyph: '◆', category: 'scriptTs' }, cts: { glyph: '◆', category: 'scriptTs' },
+  js: { glyph: '◆', category: 'scriptJs' }, jsx: { glyph: '◆', category: 'scriptJs' },
+  mjs: { glyph: '◆', category: 'scriptJs' }, cjs: { glyph: '◆', category: 'scriptJs' },
+  json: { glyph: '⚙', category: 'config' }, jsonc: { glyph: '⚙', category: 'config' },
+  yml: { glyph: '⚙', category: 'config' }, yaml: { glyph: '⚙', category: 'config' },
+  toml: { glyph: '⚙', category: 'config' }, ini: { glyph: '⚙', category: 'config' },
+  md: { glyph: '¶', category: 'docs' }, mdx: { glyph: '¶', category: 'docs' },
+  png: { glyph: '▣', category: 'image' }, jpg: { glyph: '▣', category: 'image' },
+  jpeg: { glyph: '▣', category: 'image' }, gif: { glyph: '▣', category: 'image' },
+  svg: { glyph: '▣', category: 'image' }, webp: { glyph: '▣', category: 'image' },
+  ico: { glyph: '▣', category: 'image' },
+  sh: { glyph: '$', category: 'shell' }, bash: { glyph: '$', category: 'shell' },
+  zsh: { glyph: '$', category: 'shell' },
+  html: { glyph: '‹›', category: 'markup' }, htm: { glyph: '‹›', category: 'markup' },
+  xml: { glyph: '‹›', category: 'markup' }, vue: { glyph: '‹›', category: 'markup' },
+  twig: { glyph: '‹›', category: 'markup' },
+  py: { glyph: '◆', category: 'docs' }, rb: { glyph: '◆', category: 'markup' },
+  go: { glyph: '◆', category: 'scriptTs' }, rs: { glyph: '◆', category: 'markup' },
 };
 
 export function glyphFor(name: string): FileGlyph {
   const lower = name.toLowerCase();
   if (BY_NAME[lower]) return BY_NAME[lower];
   // test/spec wins over language color — scanning for tests is the point.
-  if (/\.(test|spec)\.[^.]+$/.test(lower)) return { glyph: '✓', colorVar: '--ft-test' };
+  if (/\.(test|spec)\.[^.]+$/.test(lower)) return { glyph: '✓', category: 'test' };
   const dot = lower.lastIndexOf('.');
   if (dot <= 0) return FALLBACK;
   return BY_EXT[lower.slice(dot + 1)] ?? FALLBACK;

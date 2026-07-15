@@ -88,6 +88,20 @@
   opacity: 0.55;
 }
 
+// Filetype tint classes, applied to glyph + name spans (lib/client/file-glyphs
+// FileGlyphCategory → FT_CLASS in ChangesPanel.tsx). .deleted is declared
+// AFTER these so it wins the cascade at equal specificity.
+.ftStyles { color: var(--ft-styles); }
+.ftScriptTs { color: var(--ft-script-ts); }
+.ftScriptJs { color: var(--ft-script-js); }
+.ftTest { color: var(--ft-test); }
+.ftConfig { color: var(--ft-config); }
+.ftDocs { color: var(--ft-docs); }
+.ftImage { color: var(--ft-image); }
+.ftShell { color: var(--ft-shell); }
+.ftMarkup { color: var(--ft-markup); }
+.ftDim { color: var(--ft-dim); }
+
 .deleted {
   text-decoration: line-through;
   color: var(--text-faint);
@@ -120,14 +134,7 @@
 }
 
 .viewToggle {
-  display: inline-flex;
-  gap: 4px;
   flex: 0 0 auto;
-}
-
-.toggleActive {
-  background: var(--accent-soft);
-  color: var(--accent);
 }
 
 .diff {

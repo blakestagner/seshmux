@@ -17,11 +17,30 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getGitChanges, getGitFile, getGitFileDiff, type FileChange, type GitChanges } from '../../lib/client/api';
 import { buildTree, collapsedByDefault, type TreeNode } from '../../lib/client/git-tree';
 import { parseUnifiedDiff, type DiffLine } from '../../lib/client/diff';
-import { glyphFor } from '../../lib/client/file-glyphs';
+import { glyphFor, type FileGlyphCategory } from '../../lib/client/file-glyphs';
 import { languageFor, loadHighlighter, escapeHtml, type Highlighter } from '../../lib/client/highlight';
 import Button from '../ui/Button/Button';
 import IconButton from '../ui/IconButton/IconButton';
+import Segmented from '../ui/Segmented/Segmented';
 import styles from './ChangesPanel.module.scss';
+
+const FT_CLASS: Record<FileGlyphCategory, string> = {
+  styles: styles.ftStyles,
+  scriptTs: styles.ftScriptTs,
+  scriptJs: styles.ftScriptJs,
+  test: styles.ftTest,
+  config: styles.ftConfig,
+  docs: styles.ftDocs,
+  image: styles.ftImage,
+  shell: styles.ftShell,
+  markup: styles.ftMarkup,
+  dim: styles.ftDim,
+};
+
+const VIEW_OPTIONS = [
+  { id: 'diff', label: 'diff' },
+  { id: 'full', label: 'full' },
+];
 
 export interface ChangesPanelProps {
   projectId: string;
@@ -56,15 +75,10 @@ function Row({
         {hasDirShape ? (
           <span className={styles.caret}>{isCollapsed ? '▸' : '▾'}</span>
         ) : (
-          <span className={styles.glyph} style={{ color: `var(${fg!.colorVar})` }}>
-            {fg!.glyph}
-          </span>
+          <span className={`${styles.glyph} ${FT_CLASS[fg!.category]}`}>{fg!.glyph}</span>
         )}
         <span
-          className={`${styles.name} ${node.change?.status === 'D' ? styles.deleted : ''}`}
-          // Deleted files skip the tint: inline style beats the .deleted class
-          // rule, so tinting here would override its faint color.
-          style={fg && node.change?.status !== 'D' ? { color: `var(${fg.colorVar})` } : undefined}
+          className={`${styles.name} ${fg ? FT_CLASS[fg.category] : ''} ${node.change?.status === 'D' ? styles.deleted : ''}`}
         >
           {node.name}
           {hasDirShape ? '/' : ''}
@@ -295,25 +309,16 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
               </span>
             ) : null}
             {openFile.change ? (
-              <span className={styles.viewToggle}>
-                <Button
-                  variant="chip"
-                  className={viewMode === 'diff' ? styles.toggleActive : ''}
-                  onClick={() => setViewMode('diff')}
-                >
-                  diff
-                </Button>
-                <Button
-                  variant="chip"
-                  className={viewMode === 'full' ? styles.toggleActive : ''}
-                  onClick={() => {
-                    setViewMode('full');
-                    if (fullFile === null) loadFull(openFile.path);
-                  }}
-                >
-                  full
-                </Button>
-              </span>
+              <Segmented
+                className={styles.viewToggle}
+                options={VIEW_OPTIONS}
+                value={viewMode}
+                onChange={(id) => {
+                  const mode = id as 'diff' | 'full';
+                  setViewMode(mode);
+                  if (mode === 'full' && fullFile === null) loadFull(openFile.path);
+                }}
+              />
             ) : null}
           </>
         ) : (

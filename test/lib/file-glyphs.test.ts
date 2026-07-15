@@ -3,24 +3,24 @@ import { glyphFor } from '../../lib/client/file-glyphs';
 
 describe('glyphFor', () => {
   it('categorizes by extension', () => {
-    expect(glyphFor('Rail.module.scss')).toEqual({ glyph: '✿', colorVar: '--ft-styles' });
-    expect(glyphFor('store.ts')).toEqual({ glyph: '◆', colorVar: '--ft-script-ts' });
-    expect(glyphFor('ensure.js')).toEqual({ glyph: '◆', colorVar: '--ft-script-js' });
-    expect(glyphFor('README.md')).toEqual({ glyph: '¶', colorVar: '--ft-docs' });
-    expect(glyphFor('logo.svg')).toEqual({ glyph: '▣', colorVar: '--ft-image' });
-    expect(glyphFor('build.sh')).toEqual({ glyph: '$', colorVar: '--ft-shell' });
-    expect(glyphFor('index.html')).toEqual({ glyph: '‹›', colorVar: '--ft-markup' });
-    expect(glyphFor('settings.json')).toEqual({ glyph: '⚙', colorVar: '--ft-config' });
+    expect(glyphFor('Rail.module.scss')).toEqual({ glyph: '✿', category: 'styles' });
+    expect(glyphFor('store.ts')).toEqual({ glyph: '◆', category: 'scriptTs' });
+    expect(glyphFor('ensure.js')).toEqual({ glyph: '◆', category: 'scriptJs' });
+    expect(glyphFor('README.md')).toEqual({ glyph: '¶', category: 'docs' });
+    expect(glyphFor('logo.svg')).toEqual({ glyph: '▣', category: 'image' });
+    expect(glyphFor('build.sh')).toEqual({ glyph: '$', category: 'shell' });
+    expect(glyphFor('index.html')).toEqual({ glyph: '‹›', category: 'markup' });
+    expect(glyphFor('settings.json')).toEqual({ glyph: '⚙', category: 'config' });
   });
   it('test files win over language', () => {
-    expect(glyphFor('brief.test.ts')).toEqual({ glyph: '✓', colorVar: '--ft-test' });
-    expect(glyphFor('x.spec.tsx')).toEqual({ glyph: '✓', colorVar: '--ft-test' });
+    expect(glyphFor('brief.test.ts')).toEqual({ glyph: '✓', category: 'test' });
+    expect(glyphFor('x.spec.tsx')).toEqual({ glyph: '✓', category: 'test' });
   });
   it('specials and lockfiles', () => {
-    expect(glyphFor('Dockerfile')).toEqual({ glyph: '⚙', colorVar: '--ft-config' });
-    expect(glyphFor('package-lock.json')).toEqual({ glyph: '·', colorVar: '--ft-dim' });
+    expect(glyphFor('Dockerfile')).toEqual({ glyph: '⚙', category: 'config' });
+    expect(glyphFor('package-lock.json')).toEqual({ glyph: '·', category: 'dim' });
   });
   it('fallback', () => {
-    expect(glyphFor('LICENSE')).toEqual({ glyph: '·', colorVar: '--ft-dim' });
+    expect(glyphFor('LICENSE')).toEqual({ glyph: '·', category: 'dim' });
   });
 });
