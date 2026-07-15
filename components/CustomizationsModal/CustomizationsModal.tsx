@@ -999,7 +999,7 @@ function InstallMenu({
   if (!projectId) {
     return (
       <Button variant="primary" disabled={installing || disabled} onClick={() => onInstall('user')}>
-        {installing ? 'Installing…' : 'Install to user (~/.claude)'}
+        {installing ? 'Installing…' : 'Install to user'}
       </Button>
     );
   }
