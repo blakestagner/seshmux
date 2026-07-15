@@ -264,11 +264,6 @@
   flex-wrap: wrap;
 }
 
-.assistMenuWrap {
-  position: relative;
-  display: inline-block;
-}
-
 // editorActions sits at the bottom of the editor pane (which fills .content,
 // itself overflow-y: auto) — a downward menu gets clipped by the modal edge.
 // Open upward instead, same as BridgeMenu's `up` mode.

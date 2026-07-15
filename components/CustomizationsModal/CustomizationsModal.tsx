@@ -8,8 +8,7 @@
 
 import { useEffect, useState } from 'react';
 import styles from './CustomizationsModal.module.scss';
-import menu from '../ui/Menu/Menu.module.scss';
-import { useDropdown } from '../ui/Menu/useDropdown';
+import LabeledDropdown, { MenuItem } from '../ui/LabeledDropdown/LabeledDropdown';
 import OptionRow from '../ui/OptionRow/OptionRow';
 import TextInput from '../ui/TextInput/TextInput';
 import ProjectVisibilityList from '../ProjectVisibilityList/ProjectVisibilityList';
@@ -446,9 +445,7 @@ export default function CustomizationsModal({
   );
 }
 
-// Dropdown of provider choices for the two AI-assist actions — shares
-// open/close/Escape/click-outside behavior with BridgeMenu via useDropdown,
-// composing the shared ui/Menu surface.
+// Dropdown of provider choices for the two AI-assist actions.
 function AssistMenu({
   label,
   disabled,
@@ -458,28 +455,24 @@ function AssistMenu({
   disabled?: boolean;
   onPick: (provider: ProviderId) => void;
 }) {
-  const { open, setOpen, wrapRef } = useDropdown();
-
-  const pick = (provider: ProviderId) => {
-    setOpen(false);
-    onPick(provider);
-  };
-
   return (
-    <span className={styles.assistMenuWrap} ref={wrapRef}>
-      <Button disabled={disabled} onClick={() => setOpen((v) => !v)}>
-        {label} <span>{open ? '▴' : '▾'}</span>
-      </Button>
-      {open ? (
-        <div className={`${menu.menu} ${styles.assistMenu}`} role="menu">
+    <LabeledDropdown label={label} disabled={disabled} menuClassName={styles.assistMenu}>
+      {(close) => (
+        <>
           {(Object.keys(PROV) as ProviderId[]).map((p) => (
-            <button key={p} type="button" className={menu.item} role="menuitem" onClick={() => pick(p)}>
+            <MenuItem
+              key={p}
+              onClick={() => {
+                close();
+                onPick(p);
+              }}
+            >
               {PROV[p].glyph} {p}
-            </button>
+            </MenuItem>
           ))}
-        </div>
-      ) : null}
-    </span>
+        </>
+      )}
+    </LabeledDropdown>
   );
 }
 
