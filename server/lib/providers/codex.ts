@@ -629,7 +629,10 @@ export class CodexProvider implements AgentProvider {
           fileTokens += fresh + output;
           cacheReads += cached;
 
-          const r = pricingFor(model);
+          // token_count events can precede the first turn_context (model still '') —
+          // this is a CODEX rollout, so price unknown models at GPT rates, never the
+          // claude default pricingFor('') would fall through to.
+          const r = pricingFor(model || 'gpt');
           estCostUsd +=
             (fresh / 1_000_000) * r.input + (cached / 1_000_000) * r.cacheRead + (output / 1_000_000) * r.output;
         }

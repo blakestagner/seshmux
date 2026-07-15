@@ -242,6 +242,26 @@ describe('seshmuxd daemon', () => {
     c.close();
   });
 
+  it('attach to a dead-in-grace pty replays the exit event to the late subscriber', async () => {
+    const c1 = new Client(sockPath);
+    await c1.ready();
+    const spawn = await c1.call('spawn', { cwd: os.tmpdir(), args: ['/bin/cat'] });
+    const ptyId = spawn.result.ptyId;
+    await c1.call('attach', { ptyId });
+    await c1.call('kill', { ptyId });
+    await c1.waitForEvent((e) => e.event === 'exit' && e.ptyId === ptyId);
+    c1.close();
+
+    // A client connecting AFTER the death broadcast (server restart / tab
+    // reopen within the grace window) must still learn the PTY exited —
+    // otherwise it renders the final scrollback as a live terminal forever.
+    const c2 = new Client(sockPath);
+    await c2.ready();
+    await c2.call('attach', { ptyId });
+    await c2.waitForEvent((e) => e.event === 'exit' && e.ptyId === ptyId);
+    c2.close();
+  });
+
   it('sweeps dead pty entries past the grace period, keeps recently-exited ones (MEM-1)', async () => {
     const c = new Client(sockPath);
     await c.ready();
