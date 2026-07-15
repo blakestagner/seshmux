@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify from 'fastify';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import gitRoutes, { type GitRouteDeps } from '../../server/routes/git';
@@ -120,5 +120,59 @@ describe('GET /api/git/changes/file', () => {
       url: '/api/git/changes/file?project=x&path=' + encodeURIComponent('../../etc/hosts'),
     });
     expect(res.json().diff).toBe('');
+  });
+});
+
+describe('GET /api/git/file', () => {
+  it('returns working-tree content', async () => {
+    const f = makeApp();
+    mkdirSync(join(repo, 'src'), { recursive: true });
+    writeFileSync(join(repo, 'src', 'a.ts'), 'known content marker\n');
+    const res = await f.inject({ method: 'GET', url: '/api/git/file?project=x&path=src/a.ts' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().content).toContain('known content marker');
+    expect(res.json().truncated).toBe(false);
+  });
+
+  it('rejects traversal and absolute paths', async () => {
+    const f = makeApp();
+    for (const p of ['../etc/passwd', '..%2F..%2Fetc%2Fpasswd', '/etc/passwd']) {
+      const res = await f.inject({ method: 'GET', url: `/api/git/file?project=x&path=${encodeURIComponent(p)}` });
+      expect([400, 404]).toContain(res.statusCode);
+    }
+  });
+
+  it('rejects symlink escape', async () => {
+    const f = makeApp();
+    symlinkSync('/etc', join(repo, 'esc'));
+    const res = await f.inject({ method: 'GET', url: '/api/git/file?project=x&path=esc/passwd' });
+    expect([400, 404]).toContain(res.statusCode);
+  });
+
+  it('flags binary', async () => {
+    const f = makeApp();
+    writeFileSync(join(repo, 'bin.png'), Buffer.from([0x89, 0x50, 0x00, 0x47]));
+    const res = await f.inject({ method: 'GET', url: '/api/git/file?project=x&path=bin.png' });
+    expect(res.json().binary).toBe(true);
+  });
+
+  it('truncates past 5000 lines', async () => {
+    const f = makeApp();
+    writeFileSync(join(repo, 'big.txt'), Array.from({ length: 6000 }, (_, i) => `line${i}`).join('\n'));
+    const res = await f.inject({ method: 'GET', url: '/api/git/file?project=x&path=big.txt' });
+    expect(res.json().truncated).toBe(true);
+    expect(res.json().content.split('\n').length).toBe(5000);
+  });
+
+  it('404 for a missing file', async () => {
+    const f = makeApp();
+    const res = await f.inject({ method: 'GET', url: '/api/git/file?project=x&path=nope.txt' });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('400 without path', async () => {
+    const f = makeApp();
+    const res = await f.inject({ method: 'GET', url: '/api/git/file?project=x' });
+    expect(res.statusCode).toBe(400);
   });
 });
