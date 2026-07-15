@@ -63,7 +63,9 @@ function Row({
         )}
         <span
           className={`${styles.name} ${node.change?.status === 'D' ? styles.deleted : ''}`}
-          style={fg ? { color: `var(${fg.colorVar})` } : undefined}
+          // Deleted files skip the tint: inline style beats the .deleted class
+          // rule, so tinting here would override its faint color.
+          style={fg && node.change?.status !== 'D' ? { color: `var(${fg.colorVar})` } : undefined}
         >
           {node.name}
           {hasDirShape ? '/' : ''}
