@@ -38,8 +38,25 @@
 }
 
 .scopeLabel {
-  @include t-meta;
+  @include t-row;
+  color: var(--text-dim);
   margin-left: auto;
+}
+
+// Header × and detail ← : plain glyph buttons — IconButton's bare tone
+// (--text-faint) read too dark here, and its glyph size is fixed.
+.glyphBtn {
+  @include t-heading;
+  background: transparent;
+  border: none;
+  padding: 2px 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.glyphBtn:hover {
+  color: var(--text);
 }
 
 .body {
@@ -87,7 +104,7 @@
 
 .overviewGrid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 10px;
 }
 
@@ -153,6 +170,24 @@
   word-break: break-all;
 }
 
+// Item origin chips: project = lives in the repo's .claude/, user = global
+// ~/.claude|~/.codex level. Accent marks the repo-owned ones.
+.scopeProject {
+  @include t-chip;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+}
+
+.scopeUser {
+  @include t-chip;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+}
+
 .badge {
   @include t-chip;
   color: var(--hot);
@@ -163,7 +198,7 @@
 }
 
 .markdown {
-  @include t-body;
+  @include t-markdown;
   width: 100%;
 }
 
@@ -179,9 +214,11 @@
   word-break: break-word;
 }
 
+// Back arrow (left, when a detail is open) + "+ New" (right) share one row.
 .contentHeader {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
   margin-bottom: 10px;
 }
 

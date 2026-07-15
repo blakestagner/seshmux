@@ -10,7 +10,6 @@ import { useEffect, useRef, useState } from 'react';
 import styles from './CustomizationsModal.module.scss';
 import menu from '../ui/Menu/Menu.module.scss';
 import OptionRow from '../ui/OptionRow/OptionRow';
-import IconButton from '../ui/IconButton/IconButton';
 import TextInput from '../ui/TextInput/TextInput';
 import ProjectVisibilityList from '../ProjectVisibilityList/ProjectVisibilityList';
 import {
@@ -136,9 +135,19 @@ export default function CustomizationsModal({
     if (!open) return;
     setData(null);
     setLoadError(null);
-    getCustomizations(scope, projectId)
-      .then(setData)
-      .catch((e) => setLoadError((e as Error).message || 'failed to load'));
+    // Project scope shows BOTH levels (project first, then user-global) — each
+    // item keeps its own `scope` field, rendered as a project/user chip.
+    const load =
+      scope === 'project'
+        ? Promise.all([getCustomizations('project', projectId), getCustomizations('global')]).then(([p, g]) => ({
+            agents: [...p.agents, ...g.agents],
+            skills: [...p.skills, ...g.skills],
+            instructions: [...p.instructions, ...g.instructions],
+            hooks: [...p.hooks, ...g.hooks],
+            mcp: [...p.mcp, ...g.mcp],
+          }))
+        : getCustomizations('global');
+    load.then(setData).catch((e) => setLoadError((e as Error).message || 'failed to load'));
   }, [open, scope, projectId, reloadKey]);
 
   // Reset to Overview + re-scope whenever the modal is (re)opened for a
@@ -263,9 +272,9 @@ export default function CustomizationsModal({
         <div className={styles.header}>
           <h3 className={styles.title}>Customizations</h3>
           <span className={styles.scopeLabel}>{scope === 'project' ? projectName ?? 'Project' : 'Global'}</span>
-          <IconButton label="Close" onClick={onClose}>
+          <button type="button" className={styles.glyphBtn} aria-label="Close" title="Close" onClick={onClose}>
             ×
-          </IconButton>
+          </button>
         </div>
         <div className={styles.body}>
           <nav className={styles.nav}>
@@ -281,13 +290,29 @@ export default function CustomizationsModal({
             ))}
           </nav>
           <div className={styles.content}>
-            {editable && (section === 'agents' || section === 'skills') && !editing ? (
-              <div className={styles.contentHeader}>
-                <Button variant="primary" onClick={() => startNew(section)}>
-                  + New
-                </Button>
-              </div>
-            ) : null}
+            {(() => {
+              // Back arrow (detail open) and "+ New" (authorable section) share one
+              // header row; either side may be absent.
+              const detailOpen = !editing && !!detail && detailSection === section && section !== 'overview' && section !== 'projects';
+              const canNew = editable && (section === 'agents' || section === 'skills') && !editing;
+              if (!detailOpen && !canNew) return null;
+              return (
+                <div className={styles.contentHeader}>
+                  {detailOpen ? (
+                    <button type="button" className={styles.glyphBtn} aria-label="Back" title="Back" onClick={() => setDetail(null)}>
+                      ←
+                    </button>
+                  ) : (
+                    <span />
+                  )}
+                  {canNew ? (
+                    <Button variant="primary" onClick={() => startNew(section)}>
+                      + New
+                    </Button>
+                  ) : null}
+                </div>
+              );
+            })()}
             {editing ? (
               <EditorPane
                 editing={editing}
@@ -338,10 +363,12 @@ export default function CustomizationsModal({
               </div>
             ) : detail && detailSection === section ? (
               <div className={styles.detail}>
-                <IconButton label="Back" onClick={() => setDetail(null)}>
-                  ←
-                </IconButton>
-                <h4 className={styles.detailTitle}>{detail.title}</h4>
+                <h4 className={styles.detailTitle}>
+                  {detail.title}{' '}
+                  <span className={detail.scope === 'project' ? styles.scopeProject : styles.scopeUser}>
+                    {detail.scope === 'project' ? 'project' : 'user'}
+                  </span>
+                </h4>
                 <div className={styles.detailPath}>{detail.filePath}</div>
                 {editable && detail.provider === 'claude' && detail.scope === 'project' && (section === 'agents' || section === 'skills') ? (
                   <Button onClick={() => startEdit(section, detail)}>Edit</Button>
@@ -368,6 +395,9 @@ export default function CustomizationsModal({
                     title={item.title}
                     desc={
                       <>
+                        <span className={item.scope === 'project' ? styles.scopeProject : styles.scopeUser}>
+                          {item.scope === 'project' ? 'project' : 'user'}
+                        </span>{' '}
                         {itemDesc(section, item)}
                         {item.parseError ? <span className={styles.badge}>parse error</span> : null}
                       </>
