@@ -2,7 +2,8 @@
 // walks from the leaf up, realpath-resolving each EXISTING ancestor (leaf first,
 // then parents) inside the real repo root. Fails closed on any fs error.
 
-import { mkdir, writeFile, realpath, lstat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { mkdir, open, realpath, lstat } from 'node:fs/promises';
 import { dirname, sep } from 'node:path';
 
 export class FsGuardError extends Error {
@@ -49,7 +50,24 @@ export async function writeWithinRepo(repoPath: string, target: string, content:
   // Write phase: containment is already proven, so let real fs errors
   // (EACCES, ENOSPC, ENOTDIR, ...) surface as-is for the route's 'write failed' branch.
   await mkdir(dirname(target), { recursive: true });
-  // ponytail: check-then-write TOCTOU window remains; closing it needs O_NOFOLLOW/openat,
-  // revisit if seshmux ever serves non-local users
-  await writeFile(target, content, 'utf8');
+  // O_NOFOLLOW closes the leaf half of the check-then-write TOCTOU: a symlink
+  // swapped in at `target` AFTER the lstat/realpath checks above makes the open
+  // fail (ELOOP on macOS/Linux, EMLINK on some BSDs) instead of writing through
+  // it. Map that failure to the same fail-closed escape error as the walk.
+  // ponytail: an INTERMEDIATE dir swapped to a symlink post-walk is still open —
+  // closing that needs openat()-style per-component descent, which Node doesn't
+  // expose; revisit if seshmux ever serves non-local users.
+  let fh;
+  try {
+    fh = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ELOOP' || code === 'EMLINK') throw new FsGuardError('target escapes project');
+    throw err;
+  }
+  try {
+    await fh.writeFile(content, 'utf8');
+  } finally {
+    await fh.close();
+  }
 }
