@@ -495,3 +495,13 @@ export function getGitFileDiff(
   if (branch) params.set('branch', branch);
   return req(`/api/git/changes/file?${params}`);
 }
+
+export function getGitFile(
+  projectId: string,
+  branch: string | null | undefined,
+  path: string,
+): Promise<{ content?: string; truncated?: boolean; binary?: boolean }> {
+  const params = new URLSearchParams({ project: projectId, path });
+  if (branch) params.set('branch', branch);
+  return req(`/api/git/file?${params}`);
+}

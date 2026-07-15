@@ -8,7 +8,7 @@
 // the numbers mean "everything not merged to main yet", uncommitted included.
 
 import type { FastifyInstance } from 'fastify';
-import { changes, fileDiff } from '../lib/git-stats';
+import { changes, fileDiff, readWorkingFile } from '../lib/git-stats';
 import { defaultBranch, list as listWorkspacesDefault, type WorkspaceRecord } from '../lib/workspaces';
 import { defaultResolveRepo } from './bridge';
 
@@ -91,6 +91,29 @@ export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps =
         return { error: 'project not found' };
       }
       return fileDiff(target.dir, target.base, relPath);
+    },
+  );
+
+  // Whole working-tree file for the panel's Full view. Read-only, contained.
+  f.get<{ Querystring: { project?: string; branch?: string; path?: string } }>(
+    '/api/git/file',
+    async (req, reply) => {
+      const { project, branch, path: relPath } = req.query;
+      if (!project || !relPath) {
+        reply.code(400);
+        return { error: 'project and path are required' };
+      }
+      const target = await resolveTarget(project, branch);
+      if (!target) {
+        reply.code(404);
+        return { error: 'project not found' };
+      }
+      const file = await readWorkingFile(target.dir, relPath);
+      if (!file) {
+        reply.code(404);
+        return { error: 'file not found' };
+      }
+      return file;
     },
   );
 }

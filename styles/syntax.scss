@@ -1,0 +1,12 @@
+// highlight.js class → design-token mapping. The ONLY place hljs-* classes
+// are styled; colors live in tokens.scss (--syn-*), both themes covered there.
+.hljs-keyword, .hljs-literal, .hljs-selector-tag, .hljs-built_in { color: var(--syn-keyword); }
+.hljs-string, .hljs-regexp, .hljs-addition { color: var(--syn-string); }
+.hljs-number, .hljs-symbol { color: var(--syn-number); }
+.hljs-comment, .hljs-quote, .hljs-deletion { color: var(--syn-comment); }
+.hljs-title, .hljs-title.function_, .hljs-section { color: var(--syn-function); }
+.hljs-type, .hljs-class .hljs-title, .hljs-title.class_ { color: var(--syn-type); }
+.hljs-tag, .hljs-name { color: var(--syn-tag); }
+.hljs-attr, .hljs-attribute, .hljs-selector-attr, .hljs-selector-class, .hljs-selector-id, .hljs-meta { color: var(--syn-attr); }
+.hljs-punctuation, .hljs-operator { color: var(--syn-punct); }
+.hljs-variable, .hljs-template-variable, .hljs-params, .hljs-property { color: var(--syn-variable); }

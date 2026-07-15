@@ -13,7 +13,7 @@
 // reported as the new path (status R, the DETECTED line counts, so a pure
 // `git mv` counts ~0, not the whole file) plus the old path as a delete.
 
-import { open, stat } from 'node:fs/promises';
+import { open, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { git } from './workspaces';
 
@@ -203,6 +203,39 @@ function truncateDiff(diff: string): { diff: string; truncated: boolean } {
   const lines = diff.split('\n');
   if (lines.length <= MAX_DIFF_LINES) return { diff, truncated: false };
   return { diff: lines.slice(0, MAX_DIFF_LINES).join('\n'), truncated: true };
+}
+
+const MAX_FILE_BYTES = 1_000_000;
+
+/**
+ * Working-tree file content for the panel's Full view. Containment fails
+ * CLOSED (hard-rule-7 spirit): relative path only, resolved result must stay
+ * under realpath(dir) — symlinked files/dirs that escape are rejected, git
+ * cannot be asked to answer for them.
+ */
+export async function readWorkingFile(
+  dir: string,
+  relPath: string,
+): Promise<{ content: string; truncated: boolean } | { binary: true } | null> {
+  if (!relPath || path.isAbsolute(relPath) || relPath.split(/[\\/]/).includes('..')) return null;
+  let real: string;
+  let rootReal: string;
+  try {
+    rootReal = await realpath(dir);
+    real = await realpath(path.resolve(dir, relPath)); // ENOENT → catch → null
+  } catch {
+    return null;
+  }
+  if (real !== rootReal && !real.startsWith(rootReal + path.sep)) return null;
+  const st = await stat(real).catch(() => null);
+  if (!st?.isFile() || st.size > MAX_FILE_BYTES * 4) return null; // absurd size: don't even read
+  const buf = await readFile(real).catch(() => null);
+  if (!buf) return null;
+  if (buf.subarray(0, 8192).includes(0)) return { binary: true };
+  const text = buf.subarray(0, MAX_FILE_BYTES).toString('utf8');
+  const lines = text.split('\n');
+  if (lines.length <= MAX_DIFF_LINES && buf.length <= MAX_FILE_BYTES) return { content: text, truncated: false };
+  return { content: lines.slice(0, MAX_DIFF_LINES).join('\n'), truncated: true };
 }
 
 // ── changes(): the chip + panel data ───────────────────────────────────────

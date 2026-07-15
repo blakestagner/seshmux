@@ -53,6 +53,7 @@
     "@xterm/xterm": "^6.0.0",
     "chokidar": "^5.0.0",
     "fastify": "^5.10.0",
+    "highlight.js": "^11.11.1",
     "marked": "^18.0.5",
     "next": "^15.5.20",
     "react": "^19.2.7",
