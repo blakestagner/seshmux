@@ -323,7 +323,9 @@ export class CodexProvider implements AgentProvider {
   private async fileForSession(projectId: string, sessionId: string): Promise<string | null> {
     const all = await this.allSummaries();
     for (const { file, s } of all) {
-      if (s.sessionId === sessionId && s.cwd && encodeProjectId(s.cwd) === projectId) {
+      // Same fold as listSessions below: a worktree session lists under the PARENT
+      // projectId, so match its cwd through the fold or the strict match misses.
+      if (s.sessionId === sessionId && s.cwd && encodeProjectId(derivedWorkspaceParent(s.cwd) ?? s.cwd) === projectId) {
         return file;
       }
     }
@@ -415,6 +417,7 @@ export class CodexProvider implements AgentProvider {
         startedAt: s.startedAt,
         durationMs: s.startedAt !== null ? mtime - s.startedAt : null,
         live: now - mtime < LIVE_WINDOW_MS,
+        cwd: s.cwd ?? undefined,
       }));
 
     metas.sort((a, b) => b.mtime - a.mtime);

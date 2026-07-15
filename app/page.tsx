@@ -292,12 +292,15 @@ function AppShell() {
         }
         for (const s of live) {
           if (dismissed.includes(s.ptyId)) continue;
-          const proj = projects.find((p) => p.path === s.cwd);
+          // Prefer the server-resolved owning project id: a worktree PTY's cwd never
+          // equals any project.path (folded into the parent), so the path match alone
+          // left the tab keyed on a raw cwd that no bridge/session lookup understands.
+          const proj = projects.find((p) => p.id === s.projectId) ?? projects.find((p) => p.path === s.cwd);
           const label = proj?.name ?? s.cwd.split('/').filter(Boolean).pop() ?? 'session';
           dispatch({
             type: 'openTerm',
             ptyId: s.ptyId,
-            projectId: proj?.id ?? s.cwd,
+            projectId: proj?.id ?? s.projectId ?? s.cwd,
             label,
             provider: proj?.provider,
             sessionId: s.sessionId,

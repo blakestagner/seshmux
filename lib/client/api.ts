@@ -146,7 +146,9 @@ export function startSession(opts: {
   return req('/api/sessions/start', { method: 'POST', body: JSON.stringify(opts) });
 }
 
-export type LiveSession = { ptyId: string; cwd: string; tmuxName: string | null; sessionId?: string };
+// projectId = the OWNING project's id (a worktree PTY folds to its parent project) —
+// prefer it over matching project.path === cwd, which misses folded worktrees.
+export type LiveSession = { ptyId: string; cwd: string; tmuxName: string | null; projectId?: string; sessionId?: string };
 
 export function getLive(): Promise<{ live: LiveSession[] }> {
   return req('/api/sessions/live');

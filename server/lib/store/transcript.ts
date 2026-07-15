@@ -84,7 +84,16 @@ export async function parseTranscript(
 ): Promise<{ msgs: Msg[]; ctx: Ctx | null; truncated: boolean }> {
   // Traversal guard (SEC-4): both ids are path-joined below — refuse "../" in either.
   if (!isSafeId(projectId) || !isSafeId(sessionId)) return { msgs: [], ctx: null, truncated: false };
-  const filePath = join(root, projectId, `${sessionId}.jsonl`);
+  return parseTranscriptFile(join(root, projectId, `${sessionId}.jsonl`), window);
+}
+
+// File-path form, mirroring readCtx below: callers that already resolved the owning
+// file (scan.ts sessionFilePath — a folded worktree session's jsonl lives under the
+// worktree's OWN dirent, not root/projectId) parse it directly.
+export async function parseTranscriptFile(
+  filePath: string,
+  window: number | ((model: string) => number),
+): Promise<{ msgs: Msg[]; ctx: Ctx | null; truncated: boolean }> {
   const msgs: Msg[] = [];
   const toolById = new Map<string, ToolCall>();
   let lastUsage: any = null;

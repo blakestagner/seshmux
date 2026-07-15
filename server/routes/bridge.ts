@@ -15,7 +15,7 @@ import {
   type PlanoffProvider,
   type PlanoffResult,
 } from '../lib/bridge/planoff';
-import { decodeProjectDir } from '../lib/store/scan';
+import { decodeProjectDir, derivedWorkspaceParent } from '../lib/store/scan';
 import { getProviders, type ProviderId } from '../lib/providers/types';
 import { bridgeStatus as realBridgeStatus, registerBridge as realRegister } from '../lib/bridge/registry';
 import { peekTerminal as realPeekTerminal } from '../lib/bridge/peek';
@@ -39,6 +39,10 @@ export interface BridgeRouteDeps {
   resolveRepo?: (projectId: string) => string | null | Promise<string | null>;
   resolveSessionProvider?: (projectId: string, sessionId: string) => Promise<ProviderId>;
   resolveLatestSession?: (projectId: string) => Promise<string | null>; // 'latest' sentinel
+  // The session's OWN cwd (from its meta). A folded worktree session lists under the
+  // PARENT projectId but ran in the worktree — spawning/diffing in the parent tree
+  // would hand off against the wrong checkout. null -> fall back to the repo path.
+  resolveSessionCwd?: (projectId: string, sessionId: string) => Promise<string | null>;
 
   composeBrief?: (projectId: string, sessionId: string) => Promise<string>;
   composeDiffReview?: (projectId: string, sessionId: string) => Promise<string>;
@@ -118,6 +122,18 @@ async function defaultResolveLatest(projectId: string): Promise<string | null> {
   return best?.id ?? null;
 }
 
+// Default session-cwd resolver: the meta's cwd, read from the session file itself —
+// the only source that knows a folded worktree session's true working directory.
+async function defaultResolveSessionCwd(projectId: string, sessionId: string): Promise<string | null> {
+  const providers = await getProviders();
+  for (const p of providers) {
+    const sessions = await p.listSessions(projectId).catch(() => []);
+    const meta = sessions.find((s) => s.id === sessionId);
+    if (meta?.cwd) return meta.cwd;
+  }
+  return null;
+}
+
 // Default repo resolver: providers know each project's REAL cwd (read from the
 // session files) — `decodeProjectDir` alone turns every "-" into "/", so
 // hyphenated repos (wp-sleepfoundation-org) decode to paths that don't exist.
@@ -152,6 +168,7 @@ export async function defaultListLivePtys(): Promise<{ ptyId: string; cwd: strin
 export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRouteDeps) {
   const resolveRepo = deps.resolveRepo ?? defaultResolveRepo;
   const resolveProvider = deps.resolveSessionProvider ?? defaultResolveProvider;
+  const resolveSessionCwd = deps.resolveSessionCwd ?? defaultResolveSessionCwd;
   // Both composers accept the route's resolved repo as a 3rd arg; only the real review
   // composer uses it (to run git diff against the true cwd — R2-1). Injected test composers
   // keep their (projectId, sessionId) shape; the repo arg is simply not forwarded to them.
@@ -183,11 +200,18 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
   // there's no ptyId->sessionId map to be more precise than that yet. Same
   // ambiguity ceiling as defaultResolveLatest: two concurrent live sessions in
   // one repo → picks one, good enough until a real ptyId->sessionId feed exists.
-  async function resolvePtyForSession(projectId: string, _sessionId?: string): Promise<string | null> {
+  async function resolvePtyForSession(projectId: string, sessionId?: string): Promise<string | null> {
     const repo = await repoOrNull(projectId);
     if (!repo) return null;
     const live = await listLivePtys();
-    const hit = live.find((p) => p.cwd === repo);
+    // A specific sessionId may pin a folded worktree session whose PTY runs in the
+    // worktree, not the repo — match its own cwd first. Otherwise any live PTY that
+    // FOLDS to this repo counts (a worktree PTY belongs to the parent project).
+    const sessionCwd =
+      sessionId && sessionId !== 'latest' ? await resolveSessionCwd(projectId, sessionId).catch(() => null) : null;
+    const hit =
+      (sessionCwd ? live.find((p) => p.cwd === sessionCwd) : undefined) ??
+      live.find((p) => p.cwd === repo || derivedWorkspaceParent(p.cwd) === repo);
     return hit?.ptyId ?? null;
   }
 
@@ -224,25 +248,31 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
     }
     const source = await resolveProvider(projectId, sessionId);
     const target = OTHER[source];
+    // Spawn + diff + brief/scratchpad files all use the SESSION'S OWN cwd: a folded
+    // worktree session ran in <repo>/.claude/worktrees/<x>, and handing off in the
+    // parent tree would diff/execute against the wrong checkout. Falls back to the
+    // repo when the meta has no cwd or the dir is gone (worktree since removed).
+    const sessionCwd = await resolveSessionCwd(projectId, sessionId).catch(() => null);
+    const workDir = sessionCwd && sessionCwd !== repo && (await isDir(sessionCwd)) ? sessionCwd : repo;
     let md: string;
     try {
-      md = await compose(projectId, sessionId, repo);
+      md = await compose(projectId, sessionId, workDir);
     } catch {
       reply.code(404);
       return { error: 'session not found' };
     }
-    await atomicWrite(join(repo, '.seshmux', filename), md);
+    await atomicWrite(join(workDir, '.seshmux', filename), md);
     // Post a scratchpad entry so cross-review is visible in the shared handoff log from the
     // moment it's requested (the reviewing agent fills in its verdict below, per its prompt).
     if (kind === 'review') {
       const ts = new Date(deps.now ? deps.now() : Date.now()).toISOString();
       await appendScratchpad(
-        repo,
+        workDir,
         `## Review requested — ${providerName(target)} reviewing ${providerName(source)}'s work · ${ts}\n\n(Verdict to follow — ${providerName(target)} writes it here.)`,
       );
     }
     const { ptyId, tabMeta } = await deps.startSession({
-      projectPath: repo,
+      projectPath: workDir,
       provider: target,
       firstPrompt: md,
       linkSrc: { sessionId, kind },

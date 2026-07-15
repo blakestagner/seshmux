@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { startWatching, type WatchEvent } from '../../server/lib/store/watch';
 import type { Ctx } from '../../server/lib/providers/types';
+import { claudeWatchConfig } from '../../server/lib/providers/claude';
+import { encodeProjectId } from '../../server/lib/store/scan';
 
 // Fake chokidar watcher: a plain EventEmitter with a no-op close(), so tests can
 // synthesize 'add'/'change' events without touching the real filesystem.
@@ -217,5 +219,42 @@ describe('startWatching', () => {
     await vi.advanceTimersByTimeAsync(300);
 
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ event: 'ctx', ctx: null }));
+  });
+});
+
+// Worktree fold: a session living in a folded worktree DIRENT is listed under the
+// PARENT projectId (scan.ts), so watch events must carry the parent id too or tab
+// binding (findTabToBindSession) and rail refresh key on an id nothing else uses.
+describe('watch-event projectId canonicalization (.claude/worktrees dirents)', () => {
+  const parentId = encodeProjectId('/Users/demo/GitHub/seshmux');
+  const wtDirent = encodeProjectId('/Users/demo/GitHub/seshmux/.claude/worktrees/agent-a8f');
+
+  it('idsFromPath folds a worktree dirent to the parent projectId', () => {
+    const ids = claudeWatchConfig.idsFromPath(`/fake/claude/root/${wtDirent}/abc-123.jsonl`);
+    expect(ids).toEqual({ sessionId: 'abc-123', projectId: parentId });
+  });
+
+  it('idsFromPath leaves a plain project dirent unchanged', () => {
+    const ids = claudeWatchConfig.idsFromPath(`/fake/claude/root/${parentId}/abc-123.jsonl`);
+    expect(ids).toEqual({ sessionId: 'abc-123', projectId: parentId });
+  });
+
+  it('session-new for a worktree jsonl is emitted with the PARENT projectId', async () => {
+    const { factory, watchers } = makeFakeChokidar();
+    const emit = vi.fn();
+    startWatching({
+      watchTargets: [{ root: '/fake/claude/root', provider: 'claude' }],
+      emit,
+      readCtx: vi.fn(async () => null),
+      chokidarFactory: factory,
+    });
+    watchers[0].emit('add', `/fake/claude/root/${wtDirent}/abc-123.jsonl`);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(emit).toHaveBeenCalledWith({
+      event: 'session-new',
+      provider: 'claude',
+      sessionId: 'abc-123',
+      projectId: parentId,
+    });
   });
 });

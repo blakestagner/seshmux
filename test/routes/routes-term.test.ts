@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import Fastify from 'fastify';
-import termRoutes, { type TermRouteDeps } from '../../server/routes/term';
+import termRoutes, { defaultResolveSessionForCwd, type TermRouteDeps } from '../../server/routes/term';
 import type { StatusExplain } from '../../server/events-hub';
 
 function makeApp(deps: TermRouteDeps) {
@@ -83,7 +83,7 @@ describe('GET /api/sessions/live', () => {
   it('enriches each live PTY with sessionId resolved by cwd', async () => {
     const f = makeApp({
       dialFn: (async () => fakeDaemon([{ ptyId: 'pty-1', cwd: '/repo/a', tmuxName: null, alive: true }])) as never,
-      resolveSessionForCwd: async (cwd) => (cwd === '/repo/a' ? 's1' : undefined),
+      resolveSessionForCwd: async (cwd) => (cwd === '/repo/a' ? { sessionId: 's1' } : {}),
     });
     const res = await f.inject({ method: 'GET', url: '/api/sessions/live' });
     expect(res.json().live).toEqual([{ ptyId: 'pty-1', cwd: '/repo/a', tmuxName: null, sessionId: 's1' }]);
@@ -92,7 +92,7 @@ describe('GET /api/sessions/live', () => {
   it('omits sessionId (not fails) when the resolver finds no match', async () => {
     const f = makeApp({
       dialFn: (async () => fakeDaemon([{ ptyId: 'pty-1', cwd: '/repo/unknown', tmuxName: null, alive: true }])) as never,
-      resolveSessionForCwd: async () => undefined,
+      resolveSessionForCwd: async () => ({}),
     });
     const res = await f.inject({ method: 'GET', url: '/api/sessions/live' });
     expect(res.statusCode).toBe(200);
@@ -109,7 +109,7 @@ describe('GET /api/sessions/live', () => {
         ])) as never,
       resolveSessionForCwd: async (cwd) => {
         calls.push(cwd);
-        return undefined;
+        return {};
       },
     });
     const res = await f.inject({ method: 'GET', url: '/api/sessions/live' });
@@ -160,5 +160,38 @@ describe('GET /api/term/:ptyId/history — unsupported is a 200 answer, not a fa
     const res = await f.inject({ method: 'GET', url: '/api/term/pty-1/history' });
     expect(res.statusCode).toBe(500);
     expect(res.json().error).toContain('pty not found');
+  });
+});
+
+// Worktree fold: a PTY running in <repo>/.claude/worktrees/<x> has a cwd that equals
+// NO project.path (the scan folds it into the parent), so the resolver must
+// canonicalize before matching — and must bind to the session that ran in THIS cwd,
+// not the parent repo's newer, unrelated session. Providers are injected (fakes).
+describe('defaultResolveSessionForCwd (worktree fold)', () => {
+  const repo = '/Users/demo/GitHub/seshmux';
+  const wt = `${repo}/.claude/worktrees/agent-a`;
+  const projectId = '-Users-demo-GitHub-seshmux';
+  const providersFn = (async () => [
+    {
+      scanProjects: async () => [{ id: projectId, path: repo }],
+      listSessions: async () => [
+        { id: 'parent-newest', mtime: 100, cwd: repo },
+        { id: 'wt-sess', mtime: 50, cwd: wt },
+      ],
+    },
+  ]) as never;
+
+  it('maps a worktree PTY cwd to the parent project and its OWN session', async () => {
+    expect(await defaultResolveSessionForCwd(wt, providersFn)).toEqual({
+      projectId,
+      sessionId: 'wt-sess',
+    });
+  });
+
+  it('a plain repo cwd still resolves to the newest session', async () => {
+    expect(await defaultResolveSessionForCwd(repo, providersFn)).toEqual({
+      projectId,
+      sessionId: 'parent-newest',
+    });
   });
 });

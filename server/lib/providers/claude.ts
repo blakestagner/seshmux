@@ -5,10 +5,17 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { isSafeId, listSessions as scanListSessions, scanProjects as scan, storeBytes } from '../store/scan';
+import {
+  derivedWorkspaceParentId,
+  isSafeId,
+  listSessions as scanListSessions,
+  scanProjects as scan,
+  sessionFilePath,
+  storeBytes,
+} from '../store/scan';
 import { searchStore, type SearchHit, type SearchOpts } from '../store/search';
 import { aggregateUsage, type UsageSummary } from '../store/usage';
-import { parseTranscript as parse, readCtx as tailCtx } from '../store/transcript';
+import { parseTranscriptFile as parseFile, readCtx as tailCtx } from '../store/transcript';
 import { listSubagentNodes, parseSubagentDetail } from '../store/subagents';
 import { teamRoster, teamByLeadSession } from '../store/teams-store';
 import { loadNeedsInputPatterns } from './manifest';
@@ -114,15 +121,25 @@ export class ClaudeProvider implements AgentProvider {
     return scanListSessions(projectId, { root: this.root, provider: this.id, ...opts });
   }
 
-  parseTranscript(
+  // (projectId, sessionId) → owning jsonl. A folded worktree session lists under the
+  // PARENT projectId but its file lives in the worktree's own dirent — resolve through
+  // scan.ts's shared lookup, never a bare join(root, projectId, …).
+  private sessionFile(projectId: string, sessionId: string): Promise<string | null> {
+    return sessionFilePath(projectId, sessionId, this.root, this.id);
+  }
+
+  async parseTranscript(
     projectId: string,
     sessionId: string,
   ): Promise<{ msgs: Msg[]; ctx: Ctx | null; truncated: boolean }> {
-    return parse(projectId, sessionId, this.root, windowForModel);
+    const file = await this.sessionFile(projectId, sessionId);
+    if (!file) return { msgs: [], ctx: null, truncated: false };
+    return parseFile(file, windowForModel);
   }
 
-  readCtx(projectId: string, sessionId: string): Promise<Ctx | null> {
-    return tailCtx(join(this.root, projectId, `${sessionId}.jsonl`), windowForModel);
+  async readCtx(projectId: string, sessionId: string): Promise<Ctx | null> {
+    const file = await this.sessionFile(projectId, sessionId);
+    return file ? tailCtx(file, windowForModel) : null;
   }
 
   search(q: string, opts?: SearchOpts): Promise<SearchHit[]> {
@@ -252,16 +269,24 @@ export class ClaudeProvider implements AgentProvider {
     // arbitrary subagents dir off disk.
     list: async (projectId, sessionId) => {
       if (!(await this.isKnownSession(projectId, sessionId))) return [];
-      return listSubagentNodes(join(this.root, projectId, sessionId));
+      return listSubagentNodes(await this.sessionDir(projectId, sessionId));
     },
     detail: async (projectId, sessionId, agentId) => {
       if (!(await this.isKnownSession(projectId, sessionId))) return null;
-      const nodes = await listSubagentNodes(join(this.root, projectId, sessionId));
+      const nodes = await listSubagentNodes(await this.sessionDir(projectId, sessionId));
       const node = nodes.find((n) => n.id === agentId);
       if (!node) return null;
       return parseSubagentDetail(node.jsonlPath ?? '', node);
     },
   };
+
+  // Session dir (`<owning dirent>/<sessionId>`, holds subagents/) — sits next to the
+  // session's jsonl, so resolve the jsonl first (folded worktree sessions live in the
+  // worktree's own dirent, not root/projectId).
+  private async sessionDir(projectId: string, sessionId: string): Promise<string> {
+    const file = await this.sessionFile(projectId, sessionId);
+    return file ? join(dirname(file), sessionId) : join(this.root, projectId, sessionId);
+  }
 
   // True only when projectId is a real scanned project AND sessionId is separator-free.
   private async isKnownSession(projectId: string, sessionId: string): Promise<boolean> {
@@ -292,9 +317,13 @@ export { defaultRoot as claudeStoreRoot };
 export const claudeWatchConfig = {
   depth: 1,
   idsFromPath(filePath: string): { sessionId: string; projectId: string } {
+    // A folded worktree session's dirent id is NOT the id the rail/tabs know it by —
+    // listSessions stamps those sessions with the PARENT projectId, so session-new/
+    // touch/ctx events must carry the same id or tab binding + rail refresh miss.
+    const dirent = basename(dirname(filePath));
     return {
       sessionId: basename(filePath).replace(/\.jsonl$/, ''),
-      projectId: basename(dirname(filePath)),
+      projectId: derivedWorkspaceParentId(dirent) ?? dirent,
     };
   },
 };
@@ -305,6 +334,10 @@ export const claudeWatchConfig = {
 // (claudeStoreRoot()) so no ~/.claude path is built outside this module.
 export const claudeSubagentWatchConfig = {
   depth: 2,
+  // ponytail: bare join — a folded worktree session's subagents dir actually lives under
+  // the worktree's own dirent, so this watcher watches a nonexistent dir for those
+  // (chip still populates via the viewer's resolved fetch, just without live refresh).
+  // Upgrade path: make this async over scan.ts sessionFilePath and ripple events-hub.
   sessionDir(root: string, projectId: string, sessionId: string): string {
     return join(root, projectId, sessionId, 'subagents');
   },
