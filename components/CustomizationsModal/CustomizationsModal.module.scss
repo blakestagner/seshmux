@@ -322,9 +322,14 @@
 
 .mpMarketplaces {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 12px;
+}
+
+.mpMarketplacesLabel {
+  @include t-sub;
 }
 
 // Source picker + search share one row; search takes the remaining width.

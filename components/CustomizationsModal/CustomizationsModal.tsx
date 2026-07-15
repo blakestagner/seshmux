@@ -1007,6 +1007,10 @@ function PluginsPane({
     <div className={styles.list}>
       {marketplaces.length > 0 ? (
         <div className={styles.mpMarketplaces}>
+          {/* These come straight from `plugin marketplace list` — the user's own
+              configured marketplaces, so third-party names (e.g. ponytail) are
+              expected. Label them so the chips aren't mystery data. */}
+          <span className={styles.mpMarketplacesLabel}>Your marketplaces:</span>
           {marketplaces.map((m, i) => (
             <span key={String(m.name ?? i)} className={styles.scopeUser}>
               {String(m.name ?? 'marketplace')}
