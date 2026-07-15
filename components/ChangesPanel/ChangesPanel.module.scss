@@ -119,6 +119,17 @@
   flex: 0 0 auto;
 }
 
+.viewToggle {
+  display: inline-flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.toggleActive {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .diff {
   @include t-mono-micro;
   overflow: auto;

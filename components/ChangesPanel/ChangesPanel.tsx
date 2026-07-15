@@ -13,11 +13,12 @@
 // The file diff fetches on open only (no tick — a diff shifting under a
 // reading eye is worse than a stale one; back-and-reopen refreshes).
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { getGitChanges, getGitFileDiff, type FileChange, type GitChanges } from '../../lib/client/api';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getGitChanges, getGitFile, getGitFileDiff, type FileChange, type GitChanges } from '../../lib/client/api';
 import { buildTree, collapsedByDefault, type TreeNode } from '../../lib/client/git-tree';
 import { parseUnifiedDiff, type DiffLine } from '../../lib/client/diff';
 import { glyphFor } from '../../lib/client/file-glyphs';
+import { languageFor, loadHighlighter, escapeHtml, type Highlighter } from '../../lib/client/highlight';
 import Button from '../ui/Button/Button';
 import IconButton from '../ui/IconButton/IconButton';
 import styles from './ChangesPanel.module.scss';
@@ -39,7 +40,7 @@ function Row({
   depth: number;
   collapsed: Set<string>;
   onToggle: (path: string) => void;
-  onOpenFile: (change: FileChange) => void;
+  onOpenFile: (node: TreeNode) => void;
 }) {
   const isCollapsed = collapsed.has(node.path);
   const hasDirShape = node.children.length > 0;
@@ -49,10 +50,8 @@ function Row({
       <div
         className={`${styles.row} ${node.change ? styles.rowChanged : ''}`}
         style={{ paddingLeft: 12 + depth * 16 }}
-        onClick={
-          hasDirShape ? () => onToggle(node.path) : node.change ? () => onOpenFile(node.change!) : undefined
-        }
-        role={hasDirShape || node.change ? 'button' : undefined}
+        onClick={hasDirShape ? () => onToggle(node.path) : () => onOpenFile(node)}
+        role="button"
       >
         {hasDirShape ? (
           <span className={styles.caret}>{isCollapsed ? '▸' : '▾'}</span>
@@ -100,7 +99,13 @@ function Row({
   );
 }
 
-function DiffView({ lines }: { lines: DiffLine[] }) {
+function CodeText({ text, lang, hl }: { text: string; lang: string | null; hl: Highlighter | null }) {
+  const html = hl ? hl.line(text, lang) : escapeHtml(text);
+  // Safe: hljs escapes its input; the plain path is escapeHtml. Never raw text.
+  return <span className={styles.diffText} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function DiffView({ lines, lang, hl }: { lines: DiffLine[]; lang: string | null; hl: Highlighter | null }) {
   return (
     <div className={styles.diff}>
       {lines.map((l, i) =>
@@ -116,10 +121,33 @@ function DiffView({ lines }: { lines: DiffLine[] }) {
             <span className={styles.diffGutter}>{l.oldNo ?? ''}</span>
             <span className={styles.diffGutter}>{l.newNo ?? ''}</span>
             <span className={styles.diffMarker}>{l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ' '}</span>
-            <span className={styles.diffText}>{l.text}</span>
+            <CodeText text={l.text} lang={lang} hl={hl} />
           </div>
         ),
       )}
+    </div>
+  );
+}
+
+function FullView({
+  content,
+  lang,
+  hl,
+  addedLines,
+}: {
+  content: string;
+  lang: string | null;
+  hl: Highlighter | null;
+  addedLines: Set<number>;
+}) {
+  return (
+    <div className={styles.diff}>
+      {content.split('\n').map((text, i) => (
+        <div key={i} className={`${styles.diffLine} ${addedLines.has(i + 1) ? styles.diffAdd : ''}`}>
+          <span className={styles.diffGutter}>{i + 1}</span>
+          <CodeText text={text} lang={lang} hl={hl} />
+        </div>
+      ))}
     </div>
   );
 }
@@ -129,10 +157,16 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
   const [nodes, setNodes] = useState<TreeNode[]>([]);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const seededRef = useRef(false);
-  // Panel-swap file view: non-null while reading one file's diff.
-  const [openFile, setOpenFile] = useState<FileChange | null>(null);
+  // Panel-swap file view: non-null while reading one file's diff. `change` is
+  // null for unchanged files opened straight into the full-file view.
+  const [openFile, setOpenFile] = useState<{ path: string; change: FileChange | null } | null>(null);
   const [diffLines, setDiffLines] = useState<DiffLine[] | null>(null);
   const [diffTruncated, setDiffTruncated] = useState(false);
+  const [viewMode, setViewMode] = useState<'diff' | 'full'>('diff');
+  const [fullFile, setFullFile] = useState<{ content: string; truncated: boolean } | 'binary' | 'missing' | null>(
+    null,
+  );
+  const [hl, setHl] = useState<Highlighter | null>(null);
   // Which file's diff response is allowed to land — a slow fetch for file A
   // must not paint under file B's header after the user navigated on.
   const openPathRef = useRef<string | null>(null);
@@ -177,6 +211,8 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
     setOpenFile(null);
     setDiffLines(null);
     setDiffTruncated(false);
+    setViewMode('diff');
+    setFullFile(null);
     void load();
     const timer = setInterval(() => void load(), 10_000);
     return () => clearInterval(timer);
@@ -190,11 +226,35 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
       return next;
     });
 
-  const openFileDiff = (change: FileChange) => {
-    setOpenFile(change);
+  const loadFull = (p: string) => {
+    setFullFile(null);
+    getGitFile(projectId, branch, p)
+      .then((res) => {
+        if (openPathRef.current !== p) return; // stale response
+        if (res.binary) setFullFile('binary');
+        else if (typeof res.content === 'string') setFullFile({ content: res.content, truncated: !!res.truncated });
+        else setFullFile('missing');
+      })
+      .catch(() => {
+        if (openPathRef.current === p) setFullFile('missing');
+      });
+  };
+
+  const openFileDiff = (node: TreeNode) => {
+    const change = node.change ?? null;
+    setOpenFile({ path: node.path, change });
     setDiffLines(null);
     setDiffTruncated(false);
-    openPathRef.current = change.path;
+    setFullFile(null);
+    openPathRef.current = node.path;
+    if (!hl) void loadHighlighter().then(setHl);
+    if (!change) {
+      // Unchanged file: no diff to fetch, go straight to the full-file view.
+      setViewMode('full');
+      loadFull(node.path);
+      return;
+    }
+    setViewMode('diff');
     getGitFileDiff(projectId, branch, change.path)
       .then((res) => {
         if (openPathRef.current !== change.path) return; // stale response
@@ -211,6 +271,12 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
     setOpenFile(null);
   };
 
+  const lang = useMemo(() => (openFile ? languageFor(openFile.path) : null), [openFile]);
+  const addedLines = useMemo(
+    () => new Set((diffLines ?? []).filter((l) => l.kind === 'add' && l.newNo != null).map((l) => l.newNo!)),
+    [diffLines],
+  );
+
   return (
     <div className={styles.panel}>
       <div className={styles.head}>
@@ -220,10 +286,35 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
               ‹ back
             </Button>
             <span className={styles.title}>{openFile.path}</span>
-            <span className={styles.totals}>
-              {openFile.added > 0 ? <span className={styles.added}>+{openFile.added}</span> : null}
-              {openFile.removed > 0 ? <span className={styles.removed}>−{openFile.removed}</span> : null}
-            </span>
+            {openFile.change ? (
+              <span className={styles.totals}>
+                {openFile.change.added > 0 ? <span className={styles.added}>+{openFile.change.added}</span> : null}
+                {openFile.change.removed > 0 ? (
+                  <span className={styles.removed}>−{openFile.change.removed}</span>
+                ) : null}
+              </span>
+            ) : null}
+            {openFile.change ? (
+              <span className={styles.viewToggle}>
+                <Button
+                  variant="chip"
+                  className={viewMode === 'diff' ? styles.toggleActive : ''}
+                  onClick={() => setViewMode('diff')}
+                >
+                  diff
+                </Button>
+                <Button
+                  variant="chip"
+                  className={viewMode === 'full' ? styles.toggleActive : ''}
+                  onClick={() => {
+                    setViewMode('full');
+                    if (fullFile === null) loadFull(openFile.path);
+                  }}
+                >
+                  full
+                </Button>
+              </span>
+            ) : null}
           </>
         ) : (
           <>
@@ -244,13 +335,28 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
         </IconButton>
       </div>
       {openFile ? (
-        diffLines === null ? (
+        viewMode === 'full' ? (
+          fullFile === null ? (
+            <div className={styles.empty}>loading…</div>
+          ) : fullFile === 'binary' ? (
+            <div className={styles.empty}>binary file</div>
+          ) : fullFile === 'missing' ? (
+            <div className={styles.empty}>file not found</div>
+          ) : (
+            <>
+              <FullView content={fullFile.content} lang={lang} hl={hl} addedLines={addedLines} />
+              {fullFile.truncated ? (
+                <div className={styles.empty}>file truncated — showing the first 5,000 lines</div>
+              ) : null}
+            </>
+          )
+        ) : diffLines === null ? (
           <div className={styles.empty}>loading…</div>
         ) : diffLines.length === 0 ? (
           <div className={styles.empty}>no diff (binary or unchanged)</div>
         ) : (
           <>
-            <DiffView lines={diffLines} />
+            <DiffView lines={diffLines} lang={lang} hl={hl} />
             {diffTruncated ? <div className={styles.empty}>diff truncated — showing the first 5,000 lines</div> : null}
           </>
         )
