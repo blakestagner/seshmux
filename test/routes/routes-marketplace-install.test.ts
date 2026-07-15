@@ -38,14 +38,15 @@ async function app(
 
 const skillMd = (desc: string) => `---\nname: foo\ndescription: ${desc}\n---\nbody`;
 const agentMd = (desc: string) => `---\ndescription: ${desc}\n---\nbody`;
+const SHA = 'a'.repeat(40);
 
 describe('POST /api/marketplace/install', () => {
   it('installs a single-file agent', async () => {
     const { f, repoPath } = await app(async (url: string) => {
-      if (url === 'https://api.github.com/repos/acme/agent-repo/git/trees/HEAD?recursive=1') {
+      if (url === 'https://api.github.com/repos/acme/agent-repo/git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1') {
         return JSON.stringify({ tree: [{ path: 'agents/baz.md', type: 'blob' }] });
       }
-      if (url === 'https://raw.githubusercontent.com/acme/agent-repo/HEAD/agents/baz.md') {
+      if (url === 'https://raw.githubusercontent.com/acme/agent-repo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/agents/baz.md') {
         return agentMd('Baz agent desc');
       }
       throw new Error(`unexpected url ${url}`);
@@ -53,7 +54,7 @@ describe('POST /api/marketplace/install', () => {
     const res = await f.inject({
       method: 'POST',
       url: '/api/marketplace/install',
-      payload: { projectId: 'proj-1', source: 'acme/agent-repo', path: 'agents/baz.md', section: 'agents', name: 'baz' },
+      payload: { projectId: 'proj-1', source: 'acme/agent-repo', path: 'agents/baz.md', section: 'agents', name: 'baz', sha: SHA },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -65,7 +66,7 @@ describe('POST /api/marketplace/install', () => {
 
   it('installs a multi-file skill, lands all files under the skill dir, stamps source', async () => {
     const { f, repoPath } = await app(async (url: string) => {
-      if (url === 'https://api.github.com/repos/acme/skill-repo/git/trees/HEAD?recursive=1') {
+      if (url === 'https://api.github.com/repos/acme/skill-repo/git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1') {
         return JSON.stringify({
           tree: [
             { path: 'skills/foo/SKILL.md', type: 'blob' },
@@ -73,10 +74,10 @@ describe('POST /api/marketplace/install', () => {
           ],
         });
       }
-      if (url === 'https://raw.githubusercontent.com/acme/skill-repo/HEAD/skills/foo/SKILL.md') {
+      if (url === 'https://raw.githubusercontent.com/acme/skill-repo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/skills/foo/SKILL.md') {
         return skillMd('Foo skill desc');
       }
-      if (url === 'https://raw.githubusercontent.com/acme/skill-repo/HEAD/skills/foo/scripts/run.sh') {
+      if (url === 'https://raw.githubusercontent.com/acme/skill-repo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/skills/foo/scripts/run.sh') {
         return '#!/bin/sh\necho hi';
       }
       throw new Error(`unexpected url ${url}`);
@@ -84,7 +85,7 @@ describe('POST /api/marketplace/install', () => {
     const res = await f.inject({
       method: 'POST',
       url: '/api/marketplace/install',
-      payload: { projectId: 'proj-1', source: 'acme/skill-repo', path: 'skills/foo', section: 'skills', name: 'foo' },
+      payload: { projectId: 'proj-1', source: 'acme/skill-repo', path: 'skills/foo', section: 'skills', name: 'foo', sha: SHA },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -95,9 +96,60 @@ describe('POST /api/marketplace/install', () => {
     );
     const skillMdOut = await readFile(join(skillDir, 'SKILL.md'), 'utf8');
     expect(skillMdOut).toContain('source: acme/skill-repo');
-    expect(skillMdOut).toMatch(/source: acme\/skill-repo\n---/);
+    expect(skillMdOut).toContain(`sourceSha: ${SHA}`);
+    expect(skillMdOut).toMatch(new RegExp(`sourceSha: ${SHA}\\n---`));
     const scriptOut = await readFile(join(skillDir, 'scripts', 'run.sh'), 'utf8');
     expect(scriptOut).toBe('#!/bin/sh\necho hi');
+  });
+
+  it('400s a malformed sha and fetches nothing', async () => {
+    const { f } = await app(async () => {
+      throw new Error('should not be called');
+    });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/marketplace/install',
+      payload: {
+        projectId: 'proj-1',
+        source: 'acme/repo',
+        path: 'agents/baz.md',
+        section: 'agents',
+        name: 'baz',
+        sha: 'nope',
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('bad sha');
+  });
+
+  it('400s a missing sha', async () => {
+    const { f } = await app(async () => {
+      throw new Error('should not be called');
+    });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/marketplace/install',
+      payload: { projectId: 'proj-1', source: 'acme/repo', path: 'agents/baz.md', section: 'agents', name: 'baz' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('bad sha');
+  });
+
+  it('fetches at the pinned sha, not HEAD', async () => {
+    const fetchedUrls: string[] = [];
+    const { f } = await app(async (url: string) => {
+      fetchedUrls.push(url);
+      if (url.includes('/git/trees/')) return JSON.stringify({ tree: [{ path: 'agents/baz.md', type: 'blob' }] });
+      return agentMd('Baz agent desc');
+    });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/marketplace/install',
+      payload: { projectId: 'proj-1', source: 'acme/pin-repo', path: 'agents/baz.md', section: 'agents', name: 'baz', sha: SHA },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(fetchedUrls.every((u) => !u.includes('HEAD'))).toBe(true);
+    expect(fetchedUrls.some((u) => u.includes(`/${SHA}/agents/baz.md`))).toBe(true);
   });
 
   it('404s for an unknown project', async () => {
@@ -107,7 +159,7 @@ describe('POST /api/marketplace/install', () => {
     const res = await f.inject({
       method: 'POST',
       url: '/api/marketplace/install',
-      payload: { projectId: 'nope', source: 'acme/repo', path: 'agents/baz.md', section: 'agents', name: 'baz' },
+      payload: { projectId: 'nope', source: 'acme/repo', path: 'agents/baz.md', section: 'agents', name: 'baz', sha: SHA },
     });
     expect(res.statusCode).toBe(404);
   });
@@ -119,14 +171,14 @@ describe('POST /api/marketplace/install', () => {
     const res = await f.inject({
       method: 'POST',
       url: '/api/marketplace/install',
-      payload: { projectId: 'proj-1', source: 'acme/repo', path: 'agents/baz.md', section: 'agents', name: 'Bad Name!' },
+      payload: { projectId: 'proj-1', source: 'acme/repo', path: 'agents/baz.md', section: 'agents', name: 'Bad Name!', sha: SHA },
     });
     expect(res.statusCode).toBe(400);
   });
 
   it('400s a file with a ../ relative path and writes nothing', async () => {
     const { f, repoPath } = await app(async (url: string) => {
-      if (url === 'https://api.github.com/repos/acme/relpath-repo/git/trees/HEAD?recursive=1') {
+      if (url === 'https://api.github.com/repos/acme/relpath-repo/git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1') {
         return JSON.stringify({
           tree: [
             { path: 'skills/foo/SKILL.md', type: 'blob' },
@@ -139,7 +191,7 @@ describe('POST /api/marketplace/install', () => {
     const res = await f.inject({
       method: 'POST',
       url: '/api/marketplace/install',
-      payload: { projectId: 'proj-1', source: 'acme/relpath-repo', path: 'skills/foo', section: 'skills', name: 'foo' },
+      payload: { projectId: 'proj-1', source: 'acme/relpath-repo', path: 'skills/foo', section: 'skills', name: 'foo', sha: SHA },
     });
     expect(res.statusCode).toBe(400);
     await expect(stat(join(repoPath, '.claude', 'skills', 'foo'))).rejects.toThrow();
@@ -147,7 +199,7 @@ describe('POST /api/marketplace/install', () => {
 
   it('400s a file with a backslash segment (win32 traversal defense-in-depth) and writes nothing', async () => {
     const { f, repoPath } = await app(async (url: string) => {
-      if (url === 'https://api.github.com/repos/acme/backslash-repo/git/trees/HEAD?recursive=1') {
+      if (url === 'https://api.github.com/repos/acme/backslash-repo/git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1') {
         return JSON.stringify({
           tree: [
             { path: 'skills/foo/SKILL.md', type: 'blob' },
@@ -160,7 +212,7 @@ describe('POST /api/marketplace/install', () => {
     const res = await f.inject({
       method: 'POST',
       url: '/api/marketplace/install',
-      payload: { projectId: 'proj-1', source: 'acme/backslash-repo', path: 'skills/foo', section: 'skills', name: 'foo' },
+      payload: { projectId: 'proj-1', source: 'acme/backslash-repo', path: 'skills/foo', section: 'skills', name: 'foo', sha: SHA },
     });
     expect(res.statusCode).toBe(400);
     await expect(stat(join(repoPath, '.claude', 'skills', 'foo'))).rejects.toThrow();
@@ -168,7 +220,7 @@ describe('POST /api/marketplace/install', () => {
 
   it('400s an agent install whose path matches more than one blob', async () => {
     const { f } = await app(async (url: string) => {
-      if (url === 'https://api.github.com/repos/acme/multi-agent-repo/git/trees/HEAD?recursive=1') {
+      if (url === 'https://api.github.com/repos/acme/multi-agent-repo/git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1') {
         return JSON.stringify({
           tree: [
             { path: 'agents/baz.md', type: 'blob' },
@@ -181,14 +233,14 @@ describe('POST /api/marketplace/install', () => {
     const res = await f.inject({
       method: 'POST',
       url: '/api/marketplace/install',
-      payload: { projectId: 'proj-1', source: 'acme/multi-agent-repo', path: 'agents/baz.md', section: 'agents', name: 'baz' },
+      payload: { projectId: 'proj-1', source: 'acme/multi-agent-repo', path: 'agents/baz.md', section: 'agents', name: 'baz', sha: SHA },
     });
     expect(res.statusCode).toBe(400);
   });
 
   it('502s when a fetch fails mid-set and writes nothing (temp-dir rename semantics)', async () => {
     const { f, repoPath } = await app(async (url: string) => {
-      if (url === 'https://api.github.com/repos/acme/fail-mid-repo/git/trees/HEAD?recursive=1') {
+      if (url === 'https://api.github.com/repos/acme/fail-mid-repo/git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1') {
         return JSON.stringify({
           tree: [
             { path: 'skills/foo/SKILL.md', type: 'blob' },
@@ -196,10 +248,10 @@ describe('POST /api/marketplace/install', () => {
           ],
         });
       }
-      if (url === 'https://raw.githubusercontent.com/acme/fail-mid-repo/HEAD/skills/foo/SKILL.md') {
+      if (url === 'https://raw.githubusercontent.com/acme/fail-mid-repo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/skills/foo/SKILL.md') {
         return skillMd('Foo skill desc');
       }
-      if (url === 'https://raw.githubusercontent.com/acme/fail-mid-repo/HEAD/skills/foo/scripts/run.sh') {
+      if (url === 'https://raw.githubusercontent.com/acme/fail-mid-repo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/skills/foo/scripts/run.sh') {
         throw new Error('boom');
       }
       throw new Error(`unexpected url ${url}`);
@@ -207,7 +259,7 @@ describe('POST /api/marketplace/install', () => {
     const res = await f.inject({
       method: 'POST',
       url: '/api/marketplace/install',
-      payload: { projectId: 'proj-1', source: 'acme/fail-mid-repo', path: 'skills/foo', section: 'skills', name: 'foo' },
+      payload: { projectId: 'proj-1', source: 'acme/fail-mid-repo', path: 'skills/foo', section: 'skills', name: 'foo', sha: SHA },
     });
     expect(res.statusCode).toBe(502);
     await expect(stat(join(repoPath, '.claude', 'skills', 'foo'))).rejects.toThrow();
@@ -215,7 +267,7 @@ describe('POST /api/marketplace/install', () => {
 
   it('target:user installs a skill under the injected global root, no projectId needed', async () => {
     const { f, globalRoot } = await app(async (url: string) => {
-      if (url === 'https://api.github.com/repos/acme/user-skill-repo/git/trees/HEAD?recursive=1') {
+      if (url === 'https://api.github.com/repos/acme/user-skill-repo/git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1') {
         return JSON.stringify({
           tree: [
             { path: 'skills/foo/SKILL.md', type: 'blob' },
@@ -223,10 +275,10 @@ describe('POST /api/marketplace/install', () => {
           ],
         });
       }
-      if (url === 'https://raw.githubusercontent.com/acme/user-skill-repo/HEAD/skills/foo/SKILL.md') {
+      if (url === 'https://raw.githubusercontent.com/acme/user-skill-repo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/skills/foo/SKILL.md') {
         return skillMd('Foo skill desc');
       }
-      if (url === 'https://raw.githubusercontent.com/acme/user-skill-repo/HEAD/skills/foo/scripts/run.sh') {
+      if (url === 'https://raw.githubusercontent.com/acme/user-skill-repo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/skills/foo/scripts/run.sh') {
         return '#!/bin/sh\necho hi';
       }
       throw new Error(`unexpected url ${url}`);
@@ -234,7 +286,7 @@ describe('POST /api/marketplace/install', () => {
     const res = await f.inject({
       method: 'POST',
       url: '/api/marketplace/install',
-      payload: { source: 'acme/user-skill-repo', path: 'skills/foo', section: 'skills', name: 'foo', target: 'user' },
+      payload: { source: 'acme/user-skill-repo', path: 'skills/foo', section: 'skills', name: 'foo', target: 'user', sha: SHA },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -249,10 +301,10 @@ describe('POST /api/marketplace/install', () => {
 
   it('target:user installs a single-file agent under the injected global root', async () => {
     const { f, globalRoot } = await app(async (url: string) => {
-      if (url === 'https://api.github.com/repos/acme/user-agent-repo/git/trees/HEAD?recursive=1') {
+      if (url === 'https://api.github.com/repos/acme/user-agent-repo/git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1') {
         return JSON.stringify({ tree: [{ path: 'agents/baz.md', type: 'blob' }] });
       }
-      if (url === 'https://raw.githubusercontent.com/acme/user-agent-repo/HEAD/agents/baz.md') {
+      if (url === 'https://raw.githubusercontent.com/acme/user-agent-repo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/agents/baz.md') {
         return agentMd('Baz agent desc');
       }
       throw new Error(`unexpected url ${url}`);
@@ -260,7 +312,7 @@ describe('POST /api/marketplace/install', () => {
     const res = await f.inject({
       method: 'POST',
       url: '/api/marketplace/install',
-      payload: { source: 'acme/user-agent-repo', path: 'agents/baz.md', section: 'agents', name: 'baz', target: 'user' },
+      payload: { source: 'acme/user-agent-repo', path: 'agents/baz.md', section: 'agents', name: 'baz', target: 'user', sha: SHA },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -273,7 +325,7 @@ describe('POST /api/marketplace/install', () => {
 
   it('target:user 400s a file with a ../ relative path and writes nothing', async () => {
     const { f, globalRoot } = await app(async (url: string) => {
-      if (url === 'https://api.github.com/repos/acme/user-relpath-repo/git/trees/HEAD?recursive=1') {
+      if (url === 'https://api.github.com/repos/acme/user-relpath-repo/git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1') {
         return JSON.stringify({
           tree: [
             { path: 'skills/foo/SKILL.md', type: 'blob' },
@@ -286,7 +338,7 @@ describe('POST /api/marketplace/install', () => {
     const res = await f.inject({
       method: 'POST',
       url: '/api/marketplace/install',
-      payload: { source: 'acme/user-relpath-repo', path: 'skills/foo', section: 'skills', name: 'foo', target: 'user' },
+      payload: { source: 'acme/user-relpath-repo', path: 'skills/foo', section: 'skills', name: 'foo', target: 'user', sha: SHA },
     });
     expect(res.statusCode).toBe(400);
     await expect(stat(join(globalRoot, 'skills', 'foo'))).rejects.toThrow();
@@ -294,10 +346,10 @@ describe('POST /api/marketplace/install', () => {
 
   it('target:user 400s a dangling-symlink leaf and writes nothing (containment fails closed)', async () => {
     const { f, globalRoot } = await app(async (url: string) => {
-      if (url === 'https://api.github.com/repos/acme/user-symlink-repo/git/trees/HEAD?recursive=1') {
+      if (url === 'https://api.github.com/repos/acme/user-symlink-repo/git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1') {
         return JSON.stringify({ tree: [{ path: 'agents/baz.md', type: 'blob' }] });
       }
-      if (url === 'https://raw.githubusercontent.com/acme/user-symlink-repo/HEAD/agents/baz.md') {
+      if (url === 'https://raw.githubusercontent.com/acme/user-symlink-repo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/agents/baz.md') {
         return agentMd('Baz agent desc');
       }
       throw new Error(`unexpected url ${url}`);
@@ -310,7 +362,7 @@ describe('POST /api/marketplace/install', () => {
     const res = await f.inject({
       method: 'POST',
       url: '/api/marketplace/install',
-      payload: { source: 'acme/user-symlink-repo', path: 'agents/baz.md', section: 'agents', name: 'baz', target: 'user' },
+      payload: { source: 'acme/user-symlink-repo', path: 'agents/baz.md', section: 'agents', name: 'baz', target: 'user', sha: SHA },
     });
     expect(res.statusCode).toBe(400);
     await expect(stat(join(globalRoot, 'nowhere.md'))).rejects.toThrow();
