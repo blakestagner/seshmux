@@ -584,6 +584,7 @@ function MarketplaceSection({
   const [addSourceError, setAddSourceError] = useState<string | null>(null);
   const [items, setItems] = useState<MarketplaceItem[] | null>(null);
   const [itemsError, setItemsError] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<MarketplaceItem | null>(null);
   const [files, setFiles] = useState<MarketplaceFile[] | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
@@ -830,6 +831,9 @@ function MarketplaceSection({
                 adding={addingSource}
                 addError={addSourceError}
               />
+              <span className={styles.mpSearch}>
+                <TextInput value={query} onChange={setQuery} placeholder="Search skills & agents…" />
+              </span>
             </div>
             {sourcesError ? (
               <div className={styles.empty}>
@@ -841,9 +845,15 @@ function MarketplaceSection({
               <div className={styles.empty}>Loading…</div>
             ) : items.length === 0 ? (
               <div className={styles.empty}>Nothing found in {source}.</div>
-            ) : (
+            ) : (() => {
+              const q = query.trim().toLowerCase();
+              const shown = q
+                ? items.filter((i) => i.name.toLowerCase().includes(q) || i.description.toLowerCase().includes(q))
+                : items;
+              if (shown.length === 0) return <div className={styles.empty}>No matches for “{query}”.</div>;
+              return (
               <div className={styles.list}>
-                {items.map((item) => (
+                {shown.map((item) => (
                   <OptionRow
                     key={item.path}
                     icon={item.section === 'skills' ? '✦' : '◈'}
@@ -857,7 +867,8 @@ function MarketplaceSection({
                   />
                 ))}
               </div>
-            )}
+              );
+            })()}
           </>
         )
       ) : (

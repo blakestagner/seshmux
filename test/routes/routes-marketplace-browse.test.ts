@@ -129,7 +129,7 @@ describe('GET /api/marketplace/sources', () => {
     );
     const res = await f.inject({ method: 'GET', url: '/api/marketplace/sources' });
     expect(res.statusCode).toBe(200);
-    expect(res.json().sources).toEqual(['anthropics/skills', 'acme/custom-skills']);
+    expect(res.json().sources).toEqual(['anthropics/skills', 'anthropics/claude-plugins-official', 'acme/custom-skills']);
   });
 
   it('defaults to just the built-in source when settings has none', async () => {
@@ -140,6 +140,6 @@ describe('GET /api/marketplace/sources', () => {
       async () => ({}),
     );
     const res = await f.inject({ method: 'GET', url: '/api/marketplace/sources' });
-    expect(res.json().sources).toEqual(['anthropics/skills']);
+    expect(res.json().sources).toEqual(['anthropics/skills', 'anthropics/claude-plugins-official']);
   });
 });

@@ -287,6 +287,8 @@
 
 .mpSourceRow {
   display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .sourceMenu {
@@ -322,6 +324,13 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  margin-bottom: 12px;
+}
+
+// Source picker + search share one row; search takes the remaining width.
+.mpSearch {
+  flex: 1;
+  min-width: 160px;
 }
 
 .mpPluginRow {

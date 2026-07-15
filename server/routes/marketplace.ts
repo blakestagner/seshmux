@@ -29,7 +29,9 @@ function defaultRunArgv(argv: string[], cwd: string): Promise<{ text: string; ok
 }
 
 const SOURCE_RE = /^[\w.-]+\/[\w.-]+$/;
-const DEFAULT_SOURCES = ['anthropics/skills'];
+// claude-plugins-official carries 29 more Anthropic SKILL.md skills nested
+// inside its plugins/ dirs — the generic */SKILL.md matcher finds them.
+const DEFAULT_SOURCES = ['anthropics/skills', 'anthropics/claude-plugins-official'];
 const MAX_CONTENT = 256 * 1024;
 const MAX_FILES = 20;
 const CACHE_TTL_MS = 15 * 60 * 1000;
