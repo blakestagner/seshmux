@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
@@ -7,12 +7,15 @@ import marketplaceRoutes from '../../server/routes/marketplace';
 import type { AgentProvider } from '../../server/lib/providers/types';
 import type { CustomizationScope } from '../../server/lib/providers/customizations';
 
-function fakeProvider(): AgentProvider {
+// globalRoot mimics the real claude provider's custRoot(): global installs
+// land under <globalRoot>/agents|skills, project installs under
+// <repoPath>/.claude/agents|skills (unchanged).
+function fakeProvider(globalRoot: string): AgentProvider {
   return {
     id: 'claude',
     customizationWriteTarget(scope: CustomizationScope, section: 'agents' | 'skills', name: string) {
-      const repoPath = scope.kind === 'project' ? scope.repoPath : '';
-      const root = join(repoPath, '.claude', section);
+      const root =
+        scope.kind === 'global' ? join(globalRoot, section) : join(scope.repoPath, '.claude', section);
       return section === 'skills' ? join(root, name, 'SKILL.md') : join(root, `${name}.md`);
     },
   } as AgentProvider;
@@ -20,16 +23,17 @@ function fakeProvider(): AgentProvider {
 
 async function app(
   fetchText: (url: string) => Promise<string>,
-  opts: { repoPath?: string } = {},
+  opts: { repoPath?: string; globalRoot?: string } = {},
 ) {
   const repoPath = opts.repoPath ?? (await mkdtemp(join(tmpdir(), 'seshmux-install-')));
+  const globalRoot = opts.globalRoot ?? (await mkdtemp(join(tmpdir(), 'seshmux-install-global-')));
   const f = Fastify();
   f.register(marketplaceRoutes, {
     fetchText,
     resolveRepo: async (id: string) => (id === 'proj-1' ? repoPath : null),
-    listProviders: async () => [fakeProvider()],
+    listProviders: async () => [fakeProvider(globalRoot)],
   });
-  return { f, repoPath };
+  return { f, repoPath, globalRoot };
 }
 
 const skillMd = (desc: string) => `---\nname: foo\ndescription: ${desc}\n---\nbody`;
@@ -207,5 +211,108 @@ describe('POST /api/marketplace/install', () => {
     });
     expect(res.statusCode).toBe(502);
     await expect(stat(join(repoPath, '.claude', 'skills', 'foo'))).rejects.toThrow();
+  });
+
+  it('target:user installs a skill under the injected global root, no projectId needed', async () => {
+    const { f, globalRoot } = await app(async (url: string) => {
+      if (url === 'https://api.github.com/repos/acme/user-skill-repo/git/trees/HEAD?recursive=1') {
+        return JSON.stringify({
+          tree: [
+            { path: 'skills/foo/SKILL.md', type: 'blob' },
+            { path: 'skills/foo/scripts/run.sh', type: 'blob' },
+          ],
+        });
+      }
+      if (url === 'https://raw.githubusercontent.com/acme/user-skill-repo/HEAD/skills/foo/SKILL.md') {
+        return skillMd('Foo skill desc');
+      }
+      if (url === 'https://raw.githubusercontent.com/acme/user-skill-repo/HEAD/skills/foo/scripts/run.sh') {
+        return '#!/bin/sh\necho hi';
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/marketplace/install',
+      payload: { source: 'acme/user-skill-repo', path: 'skills/foo', section: 'skills', name: 'foo', target: 'user' },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.ok).toBe(true);
+    const skillDir = join(globalRoot, 'skills', 'foo');
+    expect(body.filePaths.sort()).toEqual(
+      [join(skillDir, 'SKILL.md'), join(skillDir, 'scripts', 'run.sh')].sort(),
+    );
+    const skillMdOut = await readFile(join(skillDir, 'SKILL.md'), 'utf8');
+    expect(skillMdOut).toContain('source: acme/user-skill-repo');
+  });
+
+  it('target:user installs a single-file agent under the injected global root', async () => {
+    const { f, globalRoot } = await app(async (url: string) => {
+      if (url === 'https://api.github.com/repos/acme/user-agent-repo/git/trees/HEAD?recursive=1') {
+        return JSON.stringify({ tree: [{ path: 'agents/baz.md', type: 'blob' }] });
+      }
+      if (url === 'https://raw.githubusercontent.com/acme/user-agent-repo/HEAD/agents/baz.md') {
+        return agentMd('Baz agent desc');
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/marketplace/install',
+      payload: { source: 'acme/user-agent-repo', path: 'agents/baz.md', section: 'agents', name: 'baz', target: 'user' },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.ok).toBe(true);
+    const target = join(globalRoot, 'agents', 'baz.md');
+    expect(body.filePaths).toEqual([target]);
+    const written = await readFile(target, 'utf8');
+    expect(written).toBe(agentMd('Baz agent desc'));
+  });
+
+  it('target:user 400s a file with a ../ relative path and writes nothing', async () => {
+    const { f, globalRoot } = await app(async (url: string) => {
+      if (url === 'https://api.github.com/repos/acme/user-relpath-repo/git/trees/HEAD?recursive=1') {
+        return JSON.stringify({
+          tree: [
+            { path: 'skills/foo/SKILL.md', type: 'blob' },
+            { path: 'skills/foo/../../evil.md', type: 'blob' },
+          ],
+        });
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/marketplace/install',
+      payload: { source: 'acme/user-relpath-repo', path: 'skills/foo', section: 'skills', name: 'foo', target: 'user' },
+    });
+    expect(res.statusCode).toBe(400);
+    await expect(stat(join(globalRoot, 'skills', 'foo'))).rejects.toThrow();
+  });
+
+  it('target:user 400s a dangling-symlink leaf and writes nothing (containment fails closed)', async () => {
+    const { f, globalRoot } = await app(async (url: string) => {
+      if (url === 'https://api.github.com/repos/acme/user-symlink-repo/git/trees/HEAD?recursive=1') {
+        return JSON.stringify({ tree: [{ path: 'agents/baz.md', type: 'blob' }] });
+      }
+      if (url === 'https://raw.githubusercontent.com/acme/user-symlink-repo/HEAD/agents/baz.md') {
+        return agentMd('Baz agent desc');
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+    const agentsDir = join(globalRoot, 'agents');
+    await mkdir(agentsDir, { recursive: true });
+    // Dangling symlink AT the leaf target: writeWithinRepo must reject writing
+    // through it regardless of where it points (fs-guard.ts lstat check).
+    await symlink(join(globalRoot, 'nowhere.md'), join(agentsDir, 'baz.md'));
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/marketplace/install',
+      payload: { source: 'acme/user-symlink-repo', path: 'agents/baz.md', section: 'agents', name: 'baz', target: 'user' },
+    });
+    expect(res.statusCode).toBe(400);
+    await expect(stat(join(globalRoot, 'nowhere.md'))).rejects.toThrow();
   });
 });

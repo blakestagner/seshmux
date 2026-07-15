@@ -5,7 +5,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { randomBytes } from 'node:crypto';
-import { rename, rm } from 'node:fs/promises';
+import { mkdir, rename, rm } from 'node:fs/promises';
 import { dirname, join, basename } from 'node:path';
 import { parseFrontmatter } from '../lib/providers/customizations';
 import type { AgentProvider } from '../lib/providers/types';
@@ -248,9 +248,16 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
   });
 
   f.post<{
-    Body: { projectId?: string; source?: string; path?: string; section?: 'skills' | 'agents'; name?: string };
+    Body: {
+      projectId?: string;
+      source?: string;
+      path?: string;
+      section?: 'skills' | 'agents';
+      name?: string;
+      target?: 'project' | 'user';
+    };
   }>('/api/marketplace/install', async (req, reply) => {
-    const { projectId, source, path: dirPath, section, name } = req.body ?? {};
+    const { projectId, source, path: dirPath, section, name, target = 'project' } = req.body ?? {};
     if (section !== 'skills' && section !== 'agents') return reply.code(400).send({ error: 'bad section' });
     if (typeof name !== 'string' || !INSTALL_NAME_RE.test(name)) return reply.code(400).send({ error: 'bad name' });
     const parsed = parseSource(source);
@@ -258,8 +265,15 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
     const [owner, repo] = parsed;
     if (typeof dirPath !== 'string' || !dirPath) return reply.code(400).send({ error: 'bad path' });
 
-    const repoPath = projectId ? await resolveRepo(projectId) : null;
-    if (!repoPath) return reply.code(404).send({ error: 'unknown project' });
+    // target 'user' is cwd/project-independent (global modal has no projectId);
+    // target 'project' (default) keeps the existing 404-on-unknown-project gate.
+    let repoPath: string | null = null;
+    if (target === 'user') {
+      // no-op: containRoot is derived below from the provider seam's own output.
+    } else {
+      repoPath = projectId ? await resolveRepo(projectId) : null;
+      if (!repoPath) return reply.code(404).send({ error: 'unknown project' });
+    }
 
     const providers = await listProviders();
     const provider = providers.find((p) => p.customizationWriteTarget);
@@ -309,22 +323,38 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
       return reply.code(502).send({ error: 'fetch failed' });
     }
 
+    const scope = target === 'user' ? ({ kind: 'global' } as const) : ({ kind: 'project', repoPath: repoPath! } as const);
+
     try {
       if (section === 'agents') {
-        const target = provider.customizationWriteTarget({ kind: 'project', repoPath }, 'agents', name);
-        await writeWithinRepo(repoPath, target, staged[0].content);
-        return { ok: true, filePaths: [target] };
+        const agentTarget = provider.customizationWriteTarget(scope, 'agents', name);
+        // Containment root: project installs stay rooted at the repo (unchanged);
+        // user installs derive their root from the seam's own output (hard rule
+        // 3 — this route never hardcodes ~/.claude) — the agents dir itself.
+        const containRoot = target === 'user' ? dirname(agentTarget) : repoPath!;
+        // writeWithinRepo realpath()s the containment root — it must already
+        // exist. repoPath (project) is guaranteed to; a fresh user's
+        // ~/.claude/agents may not be (first-ever global install), so create it.
+        if (target === 'user') await mkdir(containRoot, { recursive: true });
+        await writeWithinRepo(containRoot, agentTarget, staged[0].content);
+        return { ok: true, filePaths: [agentTarget] };
       }
 
       // Multi-file skill install: stage every file under a temp sibling dir,
       // then rename it into place in one shot so a write-time failure partway
       // through a multi-file skill leaves nothing behind.
-      const skillTarget = provider.customizationWriteTarget({ kind: 'project', repoPath }, 'skills', name);
+      const skillTarget = provider.customizationWriteTarget(scope, 'skills', name);
       const skillDir = dirname(skillTarget);
+      // User installs: containment root is the global skills root (parent of
+      // skillDir), so the temp sibling `<skillDir>.install-tmp-*` still lands
+      // inside it. Project installs: unchanged, rooted at the repo.
+      const containRoot = target === 'user' ? dirname(skillDir) : repoPath!;
+      // Same first-install existence gap as the agents branch above.
+      if (target === 'user') await mkdir(containRoot, { recursive: true });
       const tmpDir = `${skillDir}.install-tmp-${randomBytes(6).toString('hex')}`;
       try {
         for (const { relPath, content } of staged) {
-          await writeWithinRepo(repoPath, join(tmpDir, relPath), content);
+          await writeWithinRepo(containRoot, join(tmpDir, relPath), content);
         }
         // ponytail: reinstalling over an existing skill dir can fail (ENOTEMPTY)
         // since rename won't clobber a non-empty dir; add remove-then-rename if

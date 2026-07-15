@@ -371,11 +371,13 @@ export function getMarketplaceItem(source: string, path: string): Promise<{ file
 }
 
 export function installMarketplaceItem(body: {
-  projectId: string;
+  // Optional: user-scope installs are project-independent (global modal).
+  projectId?: string;
   source: string;
   path: string;
   section: 'agents' | 'skills';
   name: string;
+  target?: 'project' | 'user';
 }): Promise<{ ok: true; filePaths: string[] }> {
   return req('/api/marketplace/install', { method: 'POST', body: JSON.stringify(body) });
 }

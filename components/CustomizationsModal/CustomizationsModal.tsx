@@ -660,8 +660,9 @@ function MarketplaceSection({
     }
   }
 
-  async function handleInstall() {
-    if (!selected || !projectId || installing) return;
+  async function handleInstall(target: 'project' | 'user') {
+    if (!selected || installing) return;
+    if (target === 'project' && !projectId) return;
     setInstalling(true);
     setInstallError(null);
     try {
@@ -671,6 +672,7 @@ function MarketplaceSection({
         path: selected.path,
         section: selected.section,
         name: selected.name,
+        target,
       });
       setInstalledItem(selected);
       onInstalled();
@@ -816,11 +818,13 @@ function MarketplaceSection({
             {installedItem === selected ? (
               <div className={styles.empty}>Installed — source: {source}</div>
             ) : null}
-            {projectId ? (
-              <Button variant="primary" disabled={installing || !files} onClick={handleInstall}>
-                {installing ? 'Installing…' : `Install to ${projectName ?? 'project'}`}
-              </Button>
-            ) : null}
+            <InstallMenu
+              projectId={projectId}
+              projectName={projectName}
+              installing={installing}
+              disabled={!files}
+              onInstall={handleInstall}
+            />
           </div>
         ) : (
           <>
@@ -966,6 +970,69 @@ function SourceMenu({
             </button>
           )}
           {addError ? <div className={styles.badge}>{addError}</div> : null}
+        </div>
+      ) : null}
+    </span>
+  );
+}
+
+// Install button for a selected skill/agent preview. With a projectId, "Install"
+// is a primary action plus a small useDropdown menu (mirrors PluginRow's scope
+// menu) offering "project" (default click) / "user". With no projectId (global
+// modal), there's no project to install into — a plain primary button installs
+// to user scope directly.
+function InstallMenu({
+  projectId,
+  projectName,
+  installing,
+  disabled,
+  onInstall,
+}: {
+  projectId?: string;
+  projectName?: string;
+  installing: boolean;
+  disabled: boolean;
+  onInstall: (target: 'project' | 'user') => void;
+}) {
+  const { open, setOpen, wrapRef } = useDropdown();
+
+  if (!projectId) {
+    return (
+      <Button variant="primary" disabled={installing || disabled} onClick={() => onInstall('user')}>
+        {installing ? 'Installing…' : 'Install to user (~/.claude)'}
+      </Button>
+    );
+  }
+
+  return (
+    <span className={styles.assistMenuWrap} ref={wrapRef}>
+      <Button variant="primary" disabled={installing || disabled} onClick={() => setOpen((v) => !v)}>
+        {installing ? 'Installing…' : `Install to ${projectName ?? 'project'}`} <span>{open ? '▴' : '▾'}</span>
+      </Button>
+      {open ? (
+        <div className={`${menu.menu} ${styles.mpScopeMenu}`} role="menu">
+          <button
+            type="button"
+            className={menu.item}
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onInstall('project');
+            }}
+          >
+            project
+          </button>
+          <button
+            type="button"
+            className={menu.item}
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onInstall('user');
+            }}
+          >
+            user
+          </button>
         </div>
       ) : null}
     </span>
