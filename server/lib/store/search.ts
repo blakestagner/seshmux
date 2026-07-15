@@ -62,7 +62,12 @@ function rgSearch(root: string, q: string, limit: number): Promise<{ sessionId: 
   return new Promise((resolve) => {
     execFile(
       'rg',
-      ['--json', '-i', '-m', '3', '--', q, root],
+      // -F: LITERAL match. Without it rg compiled the query as a regex — 'C++'
+      // or 'func(' is invalid regex, rg exits 2, and the code!==1 branch below
+      // silently returned zero results; 'node.js' matched 'nodeXjs'. Both the
+      // jsSearch fallback and codex's search are .includes() literals, so -F
+      // also keeps rg-installed and rg-absent results identical.
+      ['--json', '-i', '-F', '-m', '3', '--', q, root],
       { timeout: 10_000, maxBuffer: 32 * 1024 * 1024 },
       (err, stdout) => {
         // rg exits 1 on "no matches" — not an error for us.
