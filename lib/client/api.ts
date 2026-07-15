@@ -304,6 +304,30 @@ export function getCustomizations(scope: 'global' | 'project', projectId?: strin
   return req(`/api/customizations${q}`);
 }
 
+// Create/overwrite one agent or skill file (Task 4 editor pane). Claude-only —
+// the server enforces the name regex ([a-z0-9-]{1,64}) too, but the client
+// gates Save on the same pattern so bad names never round-trip.
+export function putCustomizationItem(body: {
+  projectId: string;
+  provider: ProviderId;
+  section: 'agents' | 'skills';
+  name: string;
+  content: string;
+}): Promise<{ ok: true; filePath: string }> {
+  return req('/api/customizations/item', { method: 'PUT', body: JSON.stringify(body) });
+}
+
+// AI-polish a draft agent/skill body via the given provider's CLI (Task 3 route).
+export function assistCustomization(body: {
+  projectId: string;
+  provider: ProviderId;
+  section: 'agents' | 'skills';
+  name: string;
+  draft: string;
+}): Promise<{ text: string }> {
+  return req('/api/customizations/assist', { method: 'POST', body: JSON.stringify(body) });
+}
+
 // ── Teams (v1, Task 5) ───────────────────────────────────────────────────────
 export type TeamMemberTemplate = { name: string; role: string; model?: 'opus' | 'sonnet' | 'haiku' };
 export type TeamTemplate = { name: string; members: TeamMemberTemplate[]; createdAt: number };

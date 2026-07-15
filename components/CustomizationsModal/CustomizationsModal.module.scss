@@ -178,3 +178,53 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.contentHeader {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+// Create/edit pane — fills the content column in place of the list/detail view.
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+}
+
+.editorFilePath {
+  @include t-mono-micro;
+  color: var(--text-faint);
+  word-break: break-all;
+}
+
+.editorTextarea {
+  @include t-mono-data;
+  flex: 1;
+  min-height: 260px;
+  resize: vertical;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  color: var(--text);
+}
+
+.editorActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.assistMenuWrap {
+  position: relative;
+  display: inline-block;
+}
+
+.assistMenu {
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 140px;
+}
