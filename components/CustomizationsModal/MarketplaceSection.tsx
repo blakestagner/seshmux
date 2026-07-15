@@ -183,6 +183,7 @@ export default function MarketplaceSection({
     setInstalledItem(null);
     setInstalledTo('');
     setConfirmInstall(false);
+    setSafetyChecking(false);
     setSafetyResult(null);
     setSafetyError(null);
     openItemPathRef.current = item.path;
@@ -260,15 +261,22 @@ export default function MarketplaceSection({
   // the global-modal disabled title below). Click-triggered only.
   async function handleSafetyCheck(provider: ProviderId) {
     if (!selected || !sha || !projectId || safetyChecking) return;
+    // Capture the item identity at click time — a ~60s run may finish after
+    // the user has clicked into a different item; every setter below is
+    // guarded so a stale verdict never paints over the wrong preview (same
+    // pattern as getMarketplaceItem's callback in openItem).
+    const path = selected.path;
     setSafetyChecking(true);
     setSafetyError(null);
     try {
-      const result = await runSafetyCheck({ source, sha, path: selected.path, provider, projectId });
+      const result = await runSafetyCheck({ source, sha, path, provider, projectId });
+      if (openItemPathRef.current !== path) return;
       setSafetyResult(result);
     } catch (e) {
+      if (openItemPathRef.current !== path) return;
       setSafetyError((e as Error).message || 'safety check failed');
     } finally {
-      setSafetyChecking(false);
+      if (openItemPathRef.current === path) setSafetyChecking(false);
     }
   }
 
