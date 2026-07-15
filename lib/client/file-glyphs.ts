@@ -50,6 +50,8 @@ const BY_EXT: Record<string, FileGlyph> = {
   html: { glyph: '‹›', category: 'markup' }, htm: { glyph: '‹›', category: 'markup' },
   xml: { glyph: '‹›', category: 'markup' }, vue: { glyph: '‹›', category: 'markup' },
   twig: { glyph: '‹›', category: 'markup' },
+  // ponytail: py/rb/go/rs borrow other categories purely for their HUE (teal/
+  // orange/blue) — give them their own --ft-* tokens if any category restyles.
   py: { glyph: '◆', category: 'docs' }, rb: { glyph: '◆', category: 'markup' },
   go: { glyph: '◆', category: 'scriptTs' }, rs: { glyph: '◆', category: 'markup' },
 };
