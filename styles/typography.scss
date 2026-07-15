@@ -184,7 +184,7 @@
 }
 
 // Modal-header glyph button (customizations ×) — larger than t-heading so the
-// close target reads clearly at the modal's top-right (user-requested).
+// close target reads clearly at the modal's top-right (user-requested 24px).
 @mixin t-glyph-lg {
-  font-size: 20px;
+  font-size: 24px;
 }
