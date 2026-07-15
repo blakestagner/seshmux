@@ -146,3 +146,43 @@ describe('scanProjects workspace grouping', () => {
     await workspaces.remove(wsDir, { mode: 'discard' });
   });
 });
+
+// Claude Code's own EnterWorktree creates `<repo>/.claude/worktrees/<name>` with
+// no workspaces.json record at all — must fold in from the cwd pattern alone.
+describe('scanProjects .claude/worktrees pattern grouping', () => {
+  it('folds a .claude/worktrees cwd into its parent (one group, summed count), no workspaces.json record', async () => {
+    const parentDirName = repo.replace(/\//g, '-');
+    writeSessionFile(join(storeRoot, parentDirName), 'parent-1', repo, 'main', 'do the main thing');
+
+    const wtDir = join(repo, '.claude', 'worktrees', 'skills-agents-authoring');
+    const wtDirName = wtDir.replace(/\//g, '-');
+    writeSessionFile(join(storeRoot, wtDirName), 'wt-1', wtDir, 'marketplace', 'worktree thing');
+
+    const projects = await scanProjects(storeRoot, 'claude');
+
+    const matches = projects.filter((p) => p.path === repo);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].sessionCount).toBe(2);
+    expect(projects.some((p) => p.path === wtDir)).toBe(false);
+
+    const sessions = await listSessions(matches[0].id, { root: storeRoot, provider: 'claude' });
+    const ids = sessions.map((s) => s.id);
+    expect(ids).toContain('parent-1');
+    expect(ids).toContain('wt-1');
+  });
+
+  it('a .claude/worktrees cwd with no parent-repo sessions yet still synthesizes the parent project', async () => {
+    const wtDir = join(repo, '.claude', 'worktrees', 'skills-agents-authoring');
+    const wtDirName = wtDir.replace(/\//g, '-');
+    writeSessionFile(join(storeRoot, wtDirName), 'wt-1', wtDir, 'marketplace', 'worktree thing');
+
+    const projects = await scanProjects(storeRoot, 'claude');
+    const match = projects.find((p) => p.path === repo);
+    expect(match).toBeDefined();
+    expect(match!.sessionCount).toBe(1);
+    expect(match!.missing).toBe(false);
+
+    const sessions = await listSessions(match!.id, { root: storeRoot, provider: 'claude' });
+    expect(sessions.map((s) => s.id)).toContain('wt-1');
+  });
+});

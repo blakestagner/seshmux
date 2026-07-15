@@ -245,6 +245,23 @@ async function workspaceParentMap(): Promise<Map<string, string>> {
   return map;
 }
 
+// Claude Code's own EnterWorktree creates `<repo>/.claude/worktrees/<name>` —
+// no workspaces.json record (that store is seshmux-owned, hard rule 3 keeps
+// provider-specific paths out of it), so these must be recognized purely from
+// the cwd pattern rather than a lookup. Record-driven workspaceParentMap()
+// can't hold this: it's built from workspaces.json BEFORE the scan discovers
+// any cwd, so there's no candidate list to pre-populate. Every parentOf.get()
+// call site below falls back to this so all three consumers (grouping,
+// memberDirs, listSessions id-resolution) agree on the same parent.
+const CLAUDE_WORKTREE_RE = /^(.+)\/\.claude\/worktrees\/[^/]+$/;
+// Exported: CodexProvider.scanProjects()/listSessions() do their own cwd->id grouping
+// (they don't route through computeRootScan above) and must apply the same fold so a
+// repo cwd resolves to the same project id regardless of which provider recorded it
+// (cross-provider-merge D5-1).
+export function derivedWorkspaceParent(cwd: string): string | null {
+  return CLAUDE_WORKTREE_RE.exec(cwd)?.[1] ?? null;
+}
+
 // Intermediate per-dirent scan result before the byPath merge pass folds
 // workspace dirents into their parent. `isWorkspace` is scan-internal only —
 // dropped before Project[] is returned.
@@ -384,7 +401,7 @@ async function computeRootScan(root: string, provider: ProviderId): Promise<Root
         // parentPath set = this dirent's cwd is a known workspace worktree dir —
         // folded into the parent project below, never listed on its own (no rail
         // sprout of one project group per workspace).
-        const parentPath = parentOf.get(path);
+        const parentPath = parentOf.get(path) ?? derivedWorkspaceParent(path) ?? null;
         return {
           id: d.name,
           provider,
@@ -504,7 +521,7 @@ function memberDirs(
 ): string[] {
   const workspaceDirs = new Set([...parentOf.entries()].filter(([, p]) => p === parentPath).map(([dir]) => dir));
   return dirCwds
-    .filter(({ cwd }) => cwd === parentPath || workspaceDirs.has(cwd))
+    .filter(({ cwd }) => cwd === parentPath || workspaceDirs.has(cwd) || derivedWorkspaceParent(cwd) === parentPath)
     .map(({ dirPath }) => dirPath);
 }
 
@@ -531,11 +548,18 @@ export async function listSessions(projectId: string, opts: ListOpts): Promise<S
   const { dirCwds } = await scanRoot(root, provider);
   const cwdByDir = new Map(dirCwds.map(({ dirPath: d, cwd }) => [d, cwd]));
   const parentOf = await workspaceParentMap();
-  const repoByEncodedId = new Map(
-    [...new Set(parentOf.values())].map((repoPath) => [encodeProjectId(repoPath), repoPath]),
-  );
+  // Known parent repo paths for the reverse-encode guard above: recorded workspace parents
+  // PLUS pattern-derived parents of every cwd this scan actually saw (a .claude/worktrees
+  // parent has no workspaces.json record to supply it otherwise).
+  const knownParents = new Set(parentOf.values());
+  for (const { cwd } of dirCwds) {
+    const derived = derivedWorkspaceParent(cwd);
+    if (derived) knownParents.add(derived);
+  }
+  const repoByEncodedId = new Map([...knownParents].map((repoPath) => [encodeProjectId(repoPath), repoPath]));
   const enteredCwd = cwdByDir.get(dirPath) ?? decodeProjectDir(projectId).path;
-  const parentPath = parentOf.get(enteredCwd) ?? repoByEncodedId.get(projectId) ?? enteredCwd;
+  const parentPath =
+    parentOf.get(enteredCwd) ?? derivedWorkspaceParent(enteredCwd) ?? repoByEncodedId.get(projectId) ?? enteredCwd;
 
   const members = memberDirs(dirCwds, parentPath, parentOf);
   const dirs = members.length ? members : [dirPath]; // no workspaces -> plain project, read its own dirent
