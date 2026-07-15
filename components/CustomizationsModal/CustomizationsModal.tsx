@@ -750,7 +750,9 @@ function MarketplaceSection({
   // and for tracking installed-state, so the two always stay in sync — see
   // PluginRow below, which passes p.pluginId ?? p.name as this same key.
   async function handleInstallPlugin(pluginKey: string, scope: 'user' | 'project') {
-    if (!projectId || pluginInstalling) return;
+    // user-scope installs are project-independent (global modal); project scope
+    // requires one (the PluginRow menu hides it otherwise).
+    if (pluginInstalling || (scope === 'project' && !projectId)) return;
     setPluginInstalling(pluginKey);
     setPluginInstallError(null);
     try {
@@ -1071,7 +1073,10 @@ function PluginRow({
   onInstall: (scope: 'user' | 'project') => void;
 }) {
   const { open, setOpen, wrapRef } = useDropdown();
-  const allScopesInstalled = installedScopes.has('user') && installedScopes.has('project');
+  // Global (no-project) modal can still install at USER scope — that's
+  // cwd-independent. Project scope needs a project to install into.
+  const canProjectScope = !!projectId;
+  const allScopesInstalled = installedScopes.has('user') && (!canProjectScope || installedScopes.has('project'));
 
   return (
     <div className={styles.mpPluginRow}>
@@ -1087,7 +1092,7 @@ function PluginRow({
           </>
         }
       />
-      {projectId ? (
+      {(
         <span className={styles.assistMenuWrap} ref={wrapRef}>
           <Button disabled={busy || allScopesInstalled} onClick={() => setOpen((v) => !v)}>
             {busy ? 'Installing…' : allScopesInstalled ? 'Installed' : 'Install'}{' '}
@@ -1107,22 +1112,24 @@ function PluginRow({
               >
                 user{installedScopes.has('user') ? ' ✓' : ''}
               </button>
-              <button
-                type="button"
-                className={menu.item}
-                role="menuitem"
-                disabled={installedScopes.has('project')}
-                onClick={() => {
-                  setOpen(false);
-                  onInstall('project');
-                }}
-              >
-                project{installedScopes.has('project') ? ' ✓' : ''}
-              </button>
+              {canProjectScope ? (
+                <button
+                  type="button"
+                  className={menu.item}
+                  role="menuitem"
+                  disabled={installedScopes.has('project')}
+                  onClick={() => {
+                    setOpen(false);
+                    onInstall('project');
+                  }}
+                >
+                  project{installedScopes.has('project') ? ' ✓' : ''}
+                </button>
+              ) : null}
             </div>
           ) : null}
         </span>
-      ) : null}
+      )}
     </div>
   );
 }

@@ -7,7 +7,6 @@ import { openEventsSocket } from '../lib/client/ws';
 import type { EventMessage } from '../lib/client/ws';
 import TopNav from '../components/TopNav/TopNav';
 import CustomizationsModal from '../components/CustomizationsModal/CustomizationsModal';
-import ProjectVisibilityModal from '../components/ProjectVisibilityModal/ProjectVisibilityModal';
 import Rail from '../components/Rail/Rail';
 import Tabs from '../components/Tabs/Tabs';
 import Transcript from '../components/Transcript/Transcript';
@@ -82,7 +81,6 @@ function AppShell() {
   const [jumpTo, setJumpTo] = useState<{ projectId: string; sessionId: string } | null>(null);
   const [toast, setToast] = useState<{ ptyId: string; repo: string } | null>(null);
   const [custOpen, setCustOpen] = useState<{ projectId?: string; projectName?: string } | null>(null);
-  const [projVisOpen, setProjVisOpen] = useState(false);
   const [approval, setApproval] = useState<Extract<EventMessage, { event: 'approval' }> | null>(null);
   // Subagent viewer: which term tab has its viewer open (synthetic right-pane, NOT a Tab —
   // keeps tab semantics/rollup untouched, mirrors how `pair` is derived locally). Plus a
@@ -563,7 +561,7 @@ function AppShell() {
               jumpTo={jumpTo}
               onJumped={() => setJumpTo(null)}
               onOpenCustomizations={setCustOpen}
-              onOpenProjectVisibility={() => setProjVisOpen(true)}
+              onOpenGlobalCustomizations={() => setCustOpen({})}
             />
             <div
               className={styles.railHandle}
@@ -752,13 +750,6 @@ function AppShell() {
         hidden={state.config.hidden}
         onToggleHidden={handleToggleHidden}
         onClose={() => setCustOpen(null)}
-      />
-      <ProjectVisibilityModal
-        open={projVisOpen}
-        onClose={() => setProjVisOpen(false)}
-        projects={state.projects}
-        hidden={state.config.hidden}
-        onToggleHidden={handleToggleHidden}
       />
     </div>
   );

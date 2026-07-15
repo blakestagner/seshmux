@@ -398,13 +398,16 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
         return reply.code(400).send({ error: 'bad plugin' });
       if (scope !== 'user' && scope !== 'project') return reply.code(400).send({ error: 'bad scope' });
 
+      // Project-scope installs need a real project (the CLI writes into its
+      // .claude); user-scope installs are cwd-independent, so the global modal
+      // (no project) may run them from the server's own cwd.
       const repoPath = projectId ? await resolveRepo(projectId) : null;
-      if (!repoPath) return reply.code(404).send({ error: 'unknown project' });
+      if (!repoPath && scope === 'project') return reply.code(404).send({ error: 'unknown project' });
 
       const provider = (await listProviders()).find((p) => p.pluginCommands);
       if (!provider?.pluginCommands) return reply.code(400).send({ error: 'provider does not support plugins' });
 
-      const { text, ok } = await runArgv(provider.pluginCommands.install(plugin, scope), repoPath);
+      const { text, ok } = await runArgv(provider.pluginCommands.install(plugin, scope), repoPath ?? process.cwd());
       if (!ok) return reply.code(502).send({ error: text || 'install failed' });
       return { ok: true, output: text };
     },

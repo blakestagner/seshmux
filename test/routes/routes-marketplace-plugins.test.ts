@@ -196,15 +196,30 @@ describe('POST /api/marketplace/plugins/install', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it('404s an unknown project', async () => {
+  it('404s an unknown project for PROJECT-scope installs', async () => {
     const f = app(async () => {
       throw new Error('should not be called');
     });
     const res = await f.inject({
       method: 'POST',
       url: '/api/marketplace/plugins/install',
-      payload: { projectId: 'nope', plugin: 'foo', scope: 'user' },
+      payload: { projectId: 'nope', plugin: 'foo', scope: 'project' },
     });
     expect(res.statusCode).toBe(404);
+  });
+
+  it('user-scope install works without a project (global modal), cwd-independent', async () => {
+    let argv: string[] = [];
+    const f = app(async (a: string[]) => {
+      argv = a;
+      return { text: 'installed', ok: true };
+    });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/marketplace/plugins/install',
+      payload: { plugin: 'foo@mkt', scope: 'user' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(argv).toEqual(['claude', 'plugin', 'install', '-s', 'user', '--', 'foo@mkt']);
   });
 });

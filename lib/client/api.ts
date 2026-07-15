@@ -393,7 +393,8 @@ export function getMarketplacePlugins(
 }
 
 export function installMarketplacePlugin(body: {
-  projectId: string;
+  // Optional: user-scope installs are project-independent (global modal).
+  projectId?: string;
   plugin: string;
   scope: 'user' | 'project';
 }): Promise<{ ok: true; output: string }> {
