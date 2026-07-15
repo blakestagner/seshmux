@@ -26,6 +26,8 @@ import {
   type MarketplaceFile,
   type MarketplacePlugin,
   type MarketplaceInfo,
+  type MarketplaceWarning,
+  type MarketplaceSource,
 } from '../../lib/client/api';
 import Button from '../ui/Button/Button';
 import { useAppState } from '../../lib/client/store';
@@ -95,7 +97,7 @@ export default function MarketplaceSection({
   const [tab, setTab] = useState<MarketplaceTab>('skills');
 
   // Skills & agents browse/install
-  const [sources, setSources] = useState<string[]>([]);
+  const [sources, setSources] = useState<MarketplaceSource[]>([]);
   const [sourcesError, setSourcesError] = useState<string | null>(null);
   const [sourcesReloadKey, setSourcesReloadKey] = useState(0);
   const [source, setSource] = useState('');
@@ -103,12 +105,20 @@ export default function MarketplaceSection({
   const [addSourceError, setAddSourceError] = useState<string | null>(null);
   const [items, setItems] = useState<MarketplaceItem[] | null>(null);
   const [itemsError, setItemsError] = useState<string | null>(null);
+  // sha pins browse -> preview -> install to the exact commit browse resolved
+  // (Task 1). curated mirrors the browsed source's flag from the same response.
+  const [sha, setSha] = useState<string | null>(null);
+  const [curated, setCurated] = useState(false);
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<MarketplaceItem | null>(null);
   const [files, setFiles] = useState<MarketplaceFile[] | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<MarketplaceWarning[]>([]);
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
+  // First Install click on an item with warnings arms this instead of installing
+  // (Step 5) — reset whenever the previewed item changes (openItem).
+  const [confirmInstall, setConfirmInstall] = useState(false);
   const [installedItem, setInstalledItem] = useState<MarketplaceItem | null>(null);
   const [installedTo, setInstalledTo] = useState<string>('');
   // Install targets: user level plus every ENABLED (non-hidden, non-missing)
@@ -120,7 +130,7 @@ export default function MarketplaceSection({
     getMarketplaceSources()
       .then(({ sources: s }) => {
         setSources(s);
-        setSource((prev) => prev || s[0] || '');
+        setSource((prev) => prev || s[0]?.source || '');
       })
       .catch((e) => setSourcesError((e as Error).message || 'failed to load sources'));
     // Sources list loads once per mount, plus whenever Retry bumps sourcesReloadKey.
@@ -133,9 +143,13 @@ export default function MarketplaceSection({
     setItems(null);
     setItemsError(null);
     setSelected(null);
+    setSha(null);
     browseMarketplace(source)
       .then((r) => {
-        if (!stale) setItems(r.items);
+        if (stale) return;
+        setItems(r.items);
+        setSha(r.sha);
+        setCurated(r.curated);
       })
       .catch((e) => {
         if (!stale) setItemsError((e as Error).message || 'failed to load');
@@ -150,19 +164,27 @@ export default function MarketplaceSection({
   const openItemPathRef = useRef<string | null>(null);
 
   function openItem(item: MarketplaceItem) {
+    if (!sha) return;
     setSelected(item);
     setFiles(null);
     setFileError(null);
+    setWarnings([]);
     setInstallError(null);
     setInstalledItem(null);
     setInstalledTo('');
+    setConfirmInstall(false);
     openItemPathRef.current = item.path;
-    getMarketplaceItem(source, item.path)
+    getMarketplaceItem(source, item.path, sha)
       .then((r) => {
-        if (openItemPathRef.current === item.path) setFiles(r.files);
+        if (openItemPathRef.current !== item.path) return;
+        setFiles(r.files);
+        setWarnings(r.warnings);
       })
       .catch((e) => {
-        if (openItemPathRef.current === item.path) setFileError((e as Error).message || 'failed to load');
+        if (openItemPathRef.current !== item.path) return;
+        const err = e as Error;
+        // Same stale-sha 502 as install (source moved since browse) — see handleInstall.
+        setFileError(err.message === 'fetch failed' ? 'Source changed since browsing — go back and re-open it.' : err.message || 'failed to load');
       });
   }
 
@@ -185,7 +207,14 @@ export default function MarketplaceSection({
   }
 
   async function handleInstall(target: 'user' | { id: string; name: string }) {
-    if (!selected || installing) return;
+    if (!selected || installing || !sha) return;
+    // Step 5: an item with warnings needs a second confirming click before the
+    // real install fires — first click only arms confirmInstall (see the
+    // Install button's label in InstallMenu below).
+    if (warnings.length > 0 && !confirmInstall) {
+      setConfirmInstall(true);
+      return;
+    }
     setInstalling(true);
     setInstallError(null);
     try {
@@ -196,12 +225,18 @@ export default function MarketplaceSection({
         section: selected.section,
         name: selected.name,
         target: target === 'user' ? 'user' : 'project',
+        sha,
       });
       setInstalledItem(selected);
       setInstalledTo(target === 'user' ? 'user' : target.name);
       onInstalled();
     } catch (e) {
-      setInstallError((e as Error).message || 'install failed');
+      const err = e as Error;
+      // Server sends exactly 'fetch failed' on a 502 from install's re-fetch —
+      // that means the source moved since browse (sha went stale). Point the
+      // user back at re-browsing rather than a generic retry.
+      const stale = err.message === 'fetch failed';
+      setInstallError(stale ? 'Source changed since preview — re-open it to install the latest version.' : err.message || 'install failed');
     } finally {
       setInstalling(false);
     }
@@ -335,11 +370,22 @@ export default function MarketplaceSection({
               <span />
             </div>
             <h4 className={styles.detailTitle}>
-              {selected.section === 'skills' ? '✦' : '◈'} {selected.name}
+              {selected.section === 'skills' ? '✦' : '◈'} {selected.name} <SourceBadge curated={curated} />
             </h4>
             <div className={styles.detailPath}>
               {source} · {selected.path}
             </div>
+            {warnings.length > 0 ? (
+              <div className={styles.mpWarnings}>
+                {warnings.map((w, i) => (
+                  <div key={`${w.path}:${w.line}:${i}`} className={styles.mpWarningRow}>
+                    <span className={styles.mpWarningRule}>{w.rule}</span>
+                    <span className={styles.mpWarningLoc}>{w.path}:{w.line}</span>
+                    <span className={styles.mpWarningExcerpt}>{w.excerpt}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
             {fileError ? (
               <div className={styles.empty}>Failed to load: {fileError}</div>
             ) : !files ? (
@@ -371,6 +417,7 @@ export default function MarketplaceSection({
               projects={enabledProjects}
               installing={installing}
               disabled={!files}
+              label={confirmInstall && warnings.length > 0 ? `Install anyway (${warnings.length} warnings)` : 'Install to'}
               onInstall={handleInstall}
             />
           </div>
@@ -463,6 +510,17 @@ export default function MarketplaceSection({
   );
 }
 
+// curated -> live/positive chip labeled "curated" (the two DEFAULT_SOURCES);
+// user-added -> dim "unverified" chip. Reuses the scopeProject/scopeUser border
+// chip pattern already in this module's scss rather than a new ui/ primitive.
+function SourceBadge({ curated }: { curated: boolean }) {
+  return (
+    <span className={curated ? styles.mpBadgeCurated : styles.mpBadgeUnverified}>
+      {curated ? 'curated' : 'unverified'}
+    </span>
+  );
+}
+
 // Source picker: dropdown of known sources + inline "Add source…" form that
 // kebab-validates `owner/repo` before enabling Add.
 function SourceMenu({
@@ -473,7 +531,7 @@ function SourceMenu({
   adding,
   addError,
 }: {
-  sources: string[];
+  sources: MarketplaceSource[];
   value: string;
   onPick: (source: string) => void;
   onAdd: (source: string) => Promise<void>;
@@ -500,13 +558,13 @@ function SourceMenu({
         <>
           {sources.map((s) => (
             <MenuItem
-              key={s}
+              key={s.source}
               onClick={() => {
-                onPick(s);
+                onPick(s.source);
                 close();
               }}
             >
-              {s}
+              {s.source} <SourceBadge curated={s.curated} />
             </MenuItem>
           ))}
           <div className={menu.sep} />
@@ -537,12 +595,14 @@ function InstallMenu({
   projects,
   installing,
   disabled,
+  label = 'Install to',
   onInstall,
 }: {
   currentProjectId?: string;
   projects: Project[];
   installing: boolean;
   disabled: boolean;
+  label?: string;
   onInstall: (target: 'user' | { id: string; name: string }) => void;
 }) {
   const current = projects.find((p) => p.id === currentProjectId);
@@ -552,8 +612,9 @@ function InstallMenu({
   return (
     <LabeledDropdown
       variant="primary"
+      // Never disabled by warnings (Step 5) — only by installing/no-files-yet.
       disabled={installing || disabled}
-      label={installing ? 'Installing…' : 'Install to'}
+      label={installing ? 'Installing…' : label}
       menuClassName={`${styles.mpScopeMenu} ${styles.mpInstallMenu}`}
     >
       {(close) => {

@@ -383,3 +383,69 @@
   max-height: 320px;
   overflow-y: auto;
 }
+
+// Curated (default sources) vs unverified (user-added) origin chips — same
+// bordered-chip pattern as .scopeProject/.scopeUser above, --live for the
+// positive/curated case, --text-dim for unverified.
+.mpBadgeCurated {
+  @include t-chip;
+  color: var(--live);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.mpBadgeUnverified {
+  @include t-chip;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+// Static-scan warning rows (spec Layer 2) — amber via --waiting, bounded/scroll
+// so a heavily-flagged item never buries the file list + Install button.
+.mpWarnings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 140px;
+  overflow-y: auto;
+  border: 1px solid color-mix(in srgb, var(--waiting) 40%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--waiting) 8%, transparent);
+}
+
+.mpWarningRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mpWarningRule {
+  @include t-chip;
+  color: var(--waiting);
+  flex: 0 0 auto;
+}
+
+.mpWarningLoc {
+  @include t-mono-micro;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+
+.mpWarningExcerpt {
+  @include t-mono-micro;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 200px;
+}

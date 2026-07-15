@@ -336,6 +336,9 @@ export function assistCustomization(body: {
 // ── Marketplace (Task 5 — community browse/install + claude plugin marketplace) ──
 export type MarketplaceItem = { path: string; name: string; description: string; section: 'agents' | 'skills' };
 export type MarketplaceFile = { path: string; content: string };
+// Mirrors server/lib/marketplace-scan.ts ScanWarning — advisory static-scan hits.
+export type MarketplaceWarning = { path: string; line: number; rule: string; excerpt: string };
+export type MarketplaceSource = { source: string; curated: boolean };
 // Raw entries from `claude plugin list --available --json` / `marketplace list --json`
 // (see server/routes/marketplace.ts) — shape beyond `name` is not our contract to own.
 export type MarketplacePlugin = { pluginId?: string; name: string; description?: string; [k: string]: unknown };
@@ -352,7 +355,7 @@ export type InstalledMarketplacePlugin = {
   [k: string]: unknown;
 };
 
-export function getMarketplaceSources(): Promise<{ sources: string[] }> {
+export function getMarketplaceSources(): Promise<{ sources: MarketplaceSource[] }> {
   return req('/api/marketplace/sources');
 }
 
@@ -367,12 +370,20 @@ export function addMarketplaceSource(cfg: Config, source: string): Promise<Confi
   return putConfig(next);
 }
 
-export function browseMarketplace(source: string): Promise<{ items: MarketplaceItem[] }> {
+export function browseMarketplace(source: string): Promise<{ items: MarketplaceItem[]; sha: string; curated: boolean }> {
   return req(`/api/marketplace/browse?source=${encodeURIComponent(source)}`);
 }
 
-export function getMarketplaceItem(source: string, path: string): Promise<{ files: MarketplaceFile[] }> {
-  return req(`/api/marketplace/item?source=${encodeURIComponent(source)}&path=${encodeURIComponent(path)}`);
+// sha pins to the exact commit browse resolved (Task 1) — a stale-sha 502 means
+// the source moved since browse; caller's error copy should suggest re-browsing.
+export function getMarketplaceItem(
+  source: string,
+  path: string,
+  sha: string,
+): Promise<{ files: MarketplaceFile[]; warnings: MarketplaceWarning[] }> {
+  return req(
+    `/api/marketplace/item?source=${encodeURIComponent(source)}&path=${encodeURIComponent(path)}&sha=${encodeURIComponent(sha)}`,
+  );
 }
 
 export function installMarketplaceItem(body: {
@@ -383,6 +394,7 @@ export function installMarketplaceItem(body: {
   section: 'agents' | 'skills';
   name: string;
   target?: 'project' | 'user';
+  sha: string;
 }): Promise<{ ok: true; filePaths: string[] }> {
   return req('/api/marketplace/install', { method: 'POST', body: JSON.stringify(body) });
 }
