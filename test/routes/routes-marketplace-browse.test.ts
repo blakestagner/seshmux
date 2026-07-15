@@ -42,6 +42,21 @@ describe('GET /api/marketplace/browse', () => {
     ]);
   });
 
+  it('prefixes plugin-nested skill names with their plugin dir', async () => {
+    const tree = {
+      tree: [
+        { path: 'plugins/discord/skills/access/SKILL.md', type: 'blob' },
+        { path: 'skills/plain/SKILL.md', type: 'blob' },
+      ],
+    };
+    const f = app(async (url: string) => {
+      if (url.includes('/git/trees/')) return JSON.stringify(tree);
+      return skillMd('desc');
+    });
+    const res = await f.inject({ method: 'GET', url: '/api/marketplace/browse?source=acme/nested-repo' });
+    expect(res.json().items.map((i: { name: string }) => i.name)).toEqual(['discord-access', 'plain']);
+  });
+
   it('400s a bad source', async () => {
     const f = app(async () => {
       throw new Error('should not be called');

@@ -332,6 +332,11 @@
   @include t-sub;
 }
 
+.mpCount {
+  @include t-sub;
+  margin-bottom: 6px;
+}
+
 // Source picker + search share one row; search takes the remaining width.
 .mpSearch {
   flex: 1;

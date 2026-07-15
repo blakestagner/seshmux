@@ -176,8 +176,15 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
 
       const skillMatch = /^(.+)\/SKILL\.md$/.exec(entry.path);
       if (skillMatch) {
-        const dir = skillMatch[1];
-        matched.push({ path: entry.path, name: dir.split('/').pop()!, section: 'skills' });
+        const parts = skillMatch[1].split('/');
+        const leaf = parts[parts.length - 1];
+        // Plugin-nested skills (plugins/<plugin>/skills/<leaf>/) reuse generic
+        // leaf names ("access", "configure") across plugins — prefix with the
+        // plugin dir so rows are distinguishable AND the install target dir
+        // stays unique. Top-level skills keep their plain name.
+        const name =
+          parts.length >= 3 && parts[parts.length - 2] === 'skills' ? `${parts[parts.length - 3]}-${leaf}` : leaf;
+        matched.push({ path: entry.path, name, section: 'skills' });
         continue;
       }
 

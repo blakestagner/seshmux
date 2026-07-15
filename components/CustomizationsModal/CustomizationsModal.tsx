@@ -852,6 +852,10 @@ function MarketplaceSection({
                 : items;
               if (shown.length === 0) return <div className={styles.empty}>No matches for “{query}”.</div>;
               return (
+              <>
+              <div className={styles.mpCount}>
+                {q ? `${shown.length} of ${items.length}` : `${items.length} available`}
+              </div>
               <div className={styles.list}>
                 {shown.map((item) => (
                   <OptionRow
@@ -867,6 +871,7 @@ function MarketplaceSection({
                   />
                 ))}
               </div>
+              </>
               );
             })()}
           </>
@@ -1016,6 +1021,9 @@ function PluginsPane({
               {String(m.name ?? 'marketplace')}
             </span>
           ))}
+          <span className={styles.mpMarketplacesLabel}>
+            {plugins.length} available · {installedScopes.size} installed
+          </span>
         </div>
       ) : null}
       {installError ? <div className={styles.badge}>{installError}</div> : null}
