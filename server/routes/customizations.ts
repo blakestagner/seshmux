@@ -3,11 +3,11 @@
 // write endpoints; v2 editing PUTs against item.filePath (see roadmap doc).
 
 import type { FastifyInstance } from 'fastify';
-import { execFile } from 'node:child_process';
 import type { AgentProvider } from '../lib/providers/types';
 import type { CustomizationItem, CustomizationScope, CustomizationScanners } from '../lib/providers/customizations';
 import { getProviders } from '../lib/providers/types';
 import { writeWithinRepo, FsGuardError } from '../lib/fs-guard';
+import { execCapture } from '../lib/exec-capture';
 
 export interface CustomizationsRouteOpts {
   listProviders?: () => Promise<AgentProvider[]>;
@@ -15,17 +15,10 @@ export interface CustomizationsRouteOpts {
   runHeadless?: (argv: string[], cwd: string) => Promise<{ text: string; ok: boolean }>;
 }
 
-// Mirrors server/lib/bridge/mcp.ts:177-189 — execFile, never a shell string.
+// Thin wrapper over the shared execCapture (see server/lib/exec-capture.ts).
 function defaultRunHeadless(argv: string[], cwd: string): Promise<{ text: string; ok: boolean }> {
   const [bin, ...rest] = argv;
-  return new Promise((resolve) => {
-    const child = execFile(
-      bin, rest,
-      { cwd, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 },
-      (err, stdout) => resolve({ text: (stdout || '').trim(), ok: !err }),
-    );
-    child.stdin?.end();
-  });
+  return execCapture(bin, rest, { cwd, timeoutMs: 60_000, maxBuffer: 4 * 1024 * 1024 });
 }
 
 const SECTIONS = ['agents', 'skills', 'instructions', 'hooks', 'mcpServers'] as const;

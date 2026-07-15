@@ -5,7 +5,6 @@
 
 import type { FastifyInstance } from 'fastify';
 import { randomBytes } from 'node:crypto';
-import { execFile } from 'node:child_process';
 import { rename, rm } from 'node:fs/promises';
 import { dirname, join, basename } from 'node:path';
 import { parseFrontmatter } from '../lib/providers/customizations';
@@ -13,6 +12,7 @@ import type { AgentProvider } from '../lib/providers/types';
 import { getProviders } from '../lib/providers/types';
 import { scannedResolveRepo } from './customizations';
 import { writeWithinRepo, FsGuardError } from '../lib/fs-guard';
+import { execCapture } from '../lib/exec-capture';
 
 export interface MarketplaceRouteOpts {
   fetchText?: (url: string) => Promise<string>;
@@ -22,18 +22,10 @@ export interface MarketplaceRouteOpts {
   runArgv?: (argv: string[], cwd: string) => Promise<{ text: string; ok: boolean }>;
 }
 
-// Mirrors server/routes/customizations.ts:defaultRunHeadless — execFile, never a shell
-// string, stdin closed so an interactive prompt can't hang the child.
+// Thin wrapper over the shared execCapture (see server/lib/exec-capture.ts).
 function defaultRunArgv(argv: string[], cwd: string): Promise<{ text: string; ok: boolean }> {
   const [bin, ...rest] = argv;
-  return new Promise((resolve) => {
-    const child = execFile(
-      bin, rest,
-      { cwd, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 },
-      (err, stdout) => resolve({ text: (stdout || '').trim(), ok: !err }),
-    );
-    child.stdin?.end();
-  });
+  return execCapture(bin, rest, { cwd, timeoutMs: 60_000, maxBuffer: 4 * 1024 * 1024 });
 }
 
 const SOURCE_RE = /^[\w.-]+\/[\w.-]+$/;
@@ -172,32 +164,34 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
       return reply.code(502).send({ error: 'fetch failed' });
     }
 
-    const items: MarketplaceItem[] = [];
+    // Matched first (order preserved), then every describeFile fetch runs
+    // concurrently — cachedFetch is promise-keyed so concurrent requests for
+    // the same URL just share one in-flight fetch.
+    type Matched = { path: string; name: string; section: 'skills' | 'agents' };
+    const matched: Matched[] = [];
     for (const entry of tree) {
       if (entry.type !== 'blob') continue;
 
       const skillMatch = /^(.+)\/SKILL\.md$/.exec(entry.path);
       if (skillMatch) {
         const dir = skillMatch[1];
-        items.push({
-          path: dir,
-          name: dir.split('/').pop()!,
-          section: 'skills',
-          description: await describeFile(owner, repo, entry.path, fetchText),
-        });
+        matched.push({ path: entry.path, name: dir.split('/').pop()!, section: 'skills' });
         continue;
       }
 
       const agentMatch = /^agents\/([^/]+)\.md$/.exec(entry.path);
       if (agentMatch) {
-        items.push({
-          path: entry.path,
-          name: agentMatch[1],
-          section: 'agents',
-          description: await describeFile(owner, repo, entry.path, fetchText),
-        });
+        matched.push({ path: entry.path, name: agentMatch[1], section: 'agents' });
       }
     }
+    const items: MarketplaceItem[] = await Promise.all(
+      matched.map(async (m) => ({
+        path: m.section === 'skills' ? m.path.replace(/\/SKILL\.md$/, '') : m.path,
+        name: m.name,
+        section: m.section,
+        description: await describeFile(owner, repo, m.path, fetchText),
+      })),
+    );
     return { items };
   });
 

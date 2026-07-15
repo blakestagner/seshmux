@@ -578,6 +578,7 @@ function MarketplaceSection({
   // Skills & agents browse/install
   const [sources, setSources] = useState<string[]>([]);
   const [sourcesError, setSourcesError] = useState<string | null>(null);
+  const [sourcesReloadKey, setSourcesReloadKey] = useState(0);
   const [source, setSource] = useState('');
   const [addingSource, setAddingSource] = useState(false);
   const [addSourceError, setAddSourceError] = useState<string | null>(null);
@@ -591,15 +592,16 @@ function MarketplaceSection({
   const [installedItem, setInstalledItem] = useState<MarketplaceItem | null>(null);
 
   useEffect(() => {
+    setSourcesError(null);
     getMarketplaceSources()
       .then(({ sources: s }) => {
         setSources(s);
         setSource((prev) => prev || s[0] || '');
       })
       .catch((e) => setSourcesError((e as Error).message || 'failed to load sources'));
-    // Sources list only needs to load once per section mount.
+    // Sources list loads once per mount, plus whenever Retry bumps sourcesReloadKey.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [sourcesReloadKey]);
 
   useEffect(() => {
     if (!source) return;
@@ -648,6 +650,7 @@ function MarketplaceSection({
       const { sources: s } = await getMarketplaceSources();
       setSources(s);
       setSource(next);
+      setSourcesError(null);
     } catch (e) {
       setAddSourceError((e as Error).message || 'failed to add source');
       throw e;
@@ -691,25 +694,40 @@ function MarketplaceSection({
   const [pluginsReloadKey, setPluginsReloadKey] = useState(0);
   const [pluginInstalling, setPluginInstalling] = useState<string | null>(null);
   const [pluginInstallError, setPluginInstallError] = useState<string | null>(null);
-  const [installedPlugins, setInstalledPlugins] = useState<Set<string>>(new Set());
+  // Keyed by the plugin's full id ("name@marketplace") when a row exposes pluginId;
+  // bare name only for rows that don't (installed[] entries from the server always
+  // carry the full id, so this only matters for our own optimistic inserts below).
+  // Value is the set of scopes ('user' | 'project') installed for that key.
+  const [installedScopes, setInstalledScopes] = useState<Map<string, Set<string>>>(new Map());
+  // Remembers what the last successful plugins fetch was for, so re-entering the
+  // Plugins tab reuses the cached result instead of re-spawning the CLI; bumping
+  // pluginsReloadKey (Retry) still forces a refetch.
+  const pluginsLoadedForRef = useRef<{ projectId?: string; reloadKey: number } | null>(null);
 
   useEffect(() => {
     if (tab !== 'plugins') return;
+    // pluginsLoadedForRef is only set after a successful fetch (below), so a
+    // match here implies pluginsResult is already populated for this projectId.
+    const loadedFor = pluginsLoadedForRef.current;
+    if (loadedFor && loadedFor.projectId === projectId && loadedFor.reloadKey === pluginsReloadKey) {
+      return; // cached — skip the CLI respawn
+    }
     let stale = false;
     setPluginsLoading(true);
     setPluginsError(null);
     getMarketplacePlugins(projectId)
       .then((r) => {
         if (stale) return;
+        pluginsLoadedForRef.current = { projectId, reloadKey: pluginsReloadKey };
         setPluginsResult({ supported: r.supported, plugins: r.plugins ?? [], marketplaces: r.marketplaces ?? [] });
-        // `installed[].id` is "name@marketplace" — keep both the full id and the
-        // bare name so a match works whether the plugin row exposes pluginId or name.
-        const serverInstalled = (r.installed ?? []).flatMap((entry) =>
-          entry.id ? [entry.id, entry.id.split('@')[0]] : [],
-        );
-        if (serverInstalled.length) {
-          setInstalledPlugins((prev) => new Set([...prev, ...serverInstalled]));
+        const next = new Map<string, Set<string>>();
+        for (const entry of r.installed ?? []) {
+          if (typeof entry.id !== 'string' || typeof entry.scope !== 'string') continue;
+          const set = next.get(entry.id) ?? new Set<string>();
+          set.add(entry.scope);
+          next.set(entry.id, set);
         }
+        setInstalledScopes(next);
       })
       .catch((e) => {
         if (stale) return;
@@ -721,15 +739,28 @@ function MarketplaceSection({
     return () => {
       stale = true;
     };
+    // pluginsResult intentionally excluded: it's written by this same effect and
+    // pluginsLoadedForRef already gates re-fetching, so including it would just
+    // cause a harmless extra re-check on every load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, projectId, pluginsReloadKey]);
 
-  async function handleInstallPlugin(pluginName: string, scope: 'user' | 'project') {
+  // pluginKey is the id used both for the CLI call (`plugin@marketplace` syntax)
+  // and for tracking installed-state, so the two always stay in sync — see
+  // PluginRow below, which passes p.pluginId ?? p.name as this same key.
+  async function handleInstallPlugin(pluginKey: string, scope: 'user' | 'project') {
     if (!projectId || pluginInstalling) return;
-    setPluginInstalling(pluginName);
+    setPluginInstalling(pluginKey);
     setPluginInstallError(null);
     try {
-      await installMarketplacePlugin({ projectId, plugin: pluginName, scope });
-      setInstalledPlugins((prev) => new Set(prev).add(pluginName));
+      await installMarketplacePlugin({ projectId, plugin: pluginKey, scope });
+      setInstalledScopes((prev) => {
+        const next = new Map(prev);
+        const set = new Set(next.get(pluginKey) ?? []);
+        set.add(scope);
+        next.set(pluginKey, set);
+        return next;
+      });
     } catch (e) {
       setPluginInstallError((e as Error).message || 'install failed');
     } finally {
@@ -801,7 +832,9 @@ function MarketplaceSection({
               />
             </div>
             {sourcesError ? (
-              <div className={styles.empty}>Failed to load sources: {sourcesError}</div>
+              <div className={styles.empty}>
+                Failed to load sources: {sourcesError} <Button onClick={() => setSourcesReloadKey((k) => k + 1)}>Retry</Button>
+              </div>
             ) : itemsError ? (
               <div className={styles.empty}>Failed to load: {itemsError}</div>
             ) : !items ? (
@@ -836,7 +869,7 @@ function MarketplaceSection({
           error={pluginsError}
           installing={pluginInstalling}
           installError={pluginInstallError}
-          installedNames={installedPlugins}
+          installedScopes={installedScopes}
           projectId={projectId}
           onInstall={handleInstallPlugin}
           onRetry={() => setPluginsReloadKey((k) => k + 1)}
@@ -849,6 +882,7 @@ function MarketplaceSection({
 // Source picker: dropdown of known sources + inline "Add source…" form that
 // kebab-validates `owner/repo` before enabling Add (mirrors AssistMenu's
 // useDropdown + Menu.module.scss composition).
+// ponytail: 4th useDropdown+ui/Menu hand-assembly; extract a LabeledDropdown primitive when the next consumer appears
 function SourceMenu({
   sources,
   value,
@@ -928,7 +962,7 @@ function PluginsPane({
   marketplaces,
   installing,
   installError,
-  installedNames,
+  installedScopes,
   projectId,
   onInstall,
   onRetry,
@@ -940,9 +974,9 @@ function PluginsPane({
   marketplaces: MarketplaceInfo[];
   installing: string | null;
   installError: string | null;
-  installedNames: Set<string>;
+  installedScopes: Map<string, Set<string>>;
   projectId?: string;
-  onInstall: (pluginName: string, scope: 'user' | 'project') => void;
+  onInstall: (pluginKey: string, scope: 'user' | 'project') => void;
   onRetry: () => void;
 }) {
   if (loading) return <div className={styles.empty}>Loading…</div>;
@@ -973,37 +1007,48 @@ function PluginsPane({
       {plugins.length === 0 ? (
         <div className={styles.empty}>No plugins available.</div>
       ) : (
-        plugins.map((p) => (
-          <PluginRow
-            key={p.pluginId ?? p.name}
-            plugin={p}
-            installed={installedNames.has(p.name) || (typeof p.pluginId === 'string' && installedNames.has(p.pluginId))}
-            busy={installing === p.name}
-            projectId={projectId}
-            onInstall={(scope) => onInstall(p.name, scope)}
-          />
-        ))
+        plugins.map((p) => {
+          // Match by full pluginId when the row has one; bare-name fallback only
+          // for rows without a pluginId (see handleInstallPlugin's optimistic insert).
+          const key = p.pluginId ?? p.name;
+          return (
+            <PluginRow
+              key={key}
+              plugin={p}
+              installedScopes={installedScopes.get(key) ?? EMPTY_SCOPE_SET}
+              busy={installing === key}
+              projectId={projectId}
+              onInstall={(scope) => onInstall(key, scope)}
+            />
+          );
+        })
       )}
     </div>
   );
 }
 
+const EMPTY_SCOPE_SET: Set<string> = new Set();
+
 // Install scope defaults to 'user'; a project-scoped modal offers a small
-// useDropdown menu to pick 'user' vs 'project' instead.
+// useDropdown menu to pick 'user' vs 'project' instead. The menu stays enabled
+// even when the plugin is installed somewhere — only the scope(s) already
+// installed get disabled, since installing "user" doesn't cover "project" or
+// vice versa.
 function PluginRow({
   plugin,
-  installed,
+  installedScopes,
   busy,
   projectId,
   onInstall,
 }: {
   plugin: MarketplacePlugin;
-  installed: boolean;
+  installedScopes: Set<string>;
   busy: boolean;
   projectId?: string;
   onInstall: (scope: 'user' | 'project') => void;
 }) {
   const { open, setOpen, wrapRef } = useDropdown();
+  const allScopesInstalled = installedScopes.has('user') && installedScopes.has('project');
 
   return (
     <div className={styles.mpPluginRow}>
@@ -1013,14 +1058,17 @@ function PluginRow({
         desc={
           <>
             {typeof plugin.description === 'string' ? plugin.description : ''}
-            {installed ? <span className={styles.scopeProject}>✓ installed</span> : null}
+            {installedScopes.size > 0 ? (
+              <span className={styles.scopeProject}>✓ installed ({[...installedScopes].join(', ')})</span>
+            ) : null}
           </>
         }
       />
       {projectId ? (
         <span className={styles.assistMenuWrap} ref={wrapRef}>
-          <Button disabled={busy || installed} onClick={() => setOpen((v) => !v)}>
-            {busy ? 'Installing…' : installed ? 'Installed' : 'Install'} {!installed ? <span>{open ? '▴' : '▾'}</span> : null}
+          <Button disabled={busy || allScopesInstalled} onClick={() => setOpen((v) => !v)}>
+            {busy ? 'Installing…' : allScopesInstalled ? 'Installed' : 'Install'}{' '}
+            {!allScopesInstalled ? <span>{open ? '▴' : '▾'}</span> : null}
           </Button>
           {open ? (
             <div className={`${menu.menu} ${styles.mpScopeMenu}`} role="menu">
@@ -1028,23 +1076,25 @@ function PluginRow({
                 type="button"
                 className={menu.item}
                 role="menuitem"
+                disabled={installedScopes.has('user')}
                 onClick={() => {
                   setOpen(false);
                   onInstall('user');
                 }}
               >
-                user
+                user{installedScopes.has('user') ? ' ✓' : ''}
               </button>
               <button
                 type="button"
                 className={menu.item}
                 role="menuitem"
+                disabled={installedScopes.has('project')}
                 onClick={() => {
                   setOpen(false);
                   onInstall('project');
                 }}
               >
-                project
+                project{installedScopes.has('project') ? ' ✓' : ''}
               </button>
             </div>
           ) : null}

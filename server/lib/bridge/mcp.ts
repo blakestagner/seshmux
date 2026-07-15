@@ -25,7 +25,6 @@
 // plain answer, so use `claude -p <q>` and `codex exec -s read-only -C <cwd> <q> </dev/null`.
 // A permission-requiring tool call in read-only mode is refused, not hung — safe default.
 
-import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdir, appendFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -34,6 +33,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { requestApprovalOverSocket } from './approval-socket';
+import { execCapture } from '../exec-capture';
 
 export const HOP_ENV = 'SESHMUX_HOP';
 
@@ -177,15 +177,7 @@ export async function defaultRunAgent(args: RunAgentArgs): Promise<{ text: strin
   const [bin, ...rest] = provider.commands.headlessAsk(args.cwd, args.prompt);
 
   const env = { ...process.env, [HOP_ENV]: String(args.hop) };
-  return new Promise((resolve) => {
-    const child = execFile(
-      bin,
-      rest,
-      { cwd: args.cwd, env, timeout: 120_000, maxBuffer: 16 * 1024 * 1024 },
-      (err, stdout) => resolve({ text: (stdout || '').trim(), ok: !err }),
-    );
-    child.stdin?.end(); // codex reads stdin; harmless no-op for claude
-  });
+  return execCapture(bin, rest, { cwd: args.cwd, env, timeoutMs: 120_000, maxBuffer: 16 * 1024 * 1024 });
 }
 
 // ---------------------------------------------------------------------------
