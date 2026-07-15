@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Fastify from 'fastify';
-import { mkdtemp, readFile, rm, mkdir, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, mkdir, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import customizationsRoutes from '../../server/routes/customizations';
@@ -67,5 +67,15 @@ describe('PUT /api/customizations/item', () => {
     const res = await put(app(), base);
     expect(res.statusCode).toBe(400);
     await rm(outside, { recursive: true, force: true });
+  });
+  it('fails closed when the target itself is an existing symlink escaping the repo', async () => {
+    const outsideFile = join(await mkdtemp(join(tmpdir(), 'outside-')), 'secret.txt');
+    await writeFile(outsideFile, 'do not overwrite me', 'utf8');
+    await mkdir(join(repo, '.claude', 'agents'), { recursive: true });
+    await symlink(outsideFile, join(repo, '.claude', 'agents', 'my-agent.md'));
+    const res = await put(app(), { ...base, section: 'agents', name: 'my-agent' });
+    expect(res.statusCode).toBe(400);
+    expect(await readFile(outsideFile, 'utf8')).toBe('do not overwrite me');
+    await rm(join(outsideFile, '..'), { recursive: true, force: true });
   });
 });

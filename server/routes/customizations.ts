@@ -74,7 +74,7 @@ export default async function customizationsRoutes(f: FastifyInstance, opts: Cus
       const { projectId, provider: providerId, section, name, content } = req.body ?? {};
       if (section !== 'agents' && section !== 'skills') return reply.code(400).send({ error: 'bad section' });
       if (typeof name !== 'string' || !NAME_RE.test(name)) return reply.code(400).send({ error: 'bad name' });
-      if (typeof content !== 'string' || content.length > MAX_CONTENT)
+      if (typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > MAX_CONTENT)
         return reply.code(400).send({ error: 'bad content' });
 
       const repoPath = projectId ? await resolveRepo(projectId) : null;
@@ -91,7 +91,7 @@ export default async function customizationsRoutes(f: FastifyInstance, opts: Cus
       // realpath-resolve inside the real repo root. Fail closed on any fs error.
       try {
         const repoReal = await realpath(repoPath);
-        let probe = dirname(target);
+        let probe = target;
         for (;;) {
           try {
             const real = await realpath(probe);
@@ -106,9 +106,11 @@ export default async function customizationsRoutes(f: FastifyInstance, opts: Cus
           }
         }
         await mkdir(dirname(target), { recursive: true });
+        // ponytail: check-then-write TOCTOU window remains; closing it needs O_NOFOLLOW/openat,
+        // revisit if seshmux ever serves non-local users
         await writeFile(target, content, 'utf8');
-      } catch (e) {
-        return reply.code(400).send({ error: (e as Error).message || 'write failed' });
+      } catch {
+        return reply.code(400).send({ error: 'write failed' });
       }
       return { ok: true, filePath: target };
     },
