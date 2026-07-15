@@ -13,6 +13,7 @@ import { getProviders } from '../lib/providers/types';
 import { scannedResolveRepo } from './customizations';
 import { writeWithinRepo, FsGuardError } from '../lib/fs-guard';
 import { execCapture } from '../lib/exec-capture';
+import { scanFiles } from '../lib/marketplace-scan';
 
 export interface MarketplaceRouteOpts {
   fetchText?: (url: string) => Promise<string>;
@@ -173,6 +174,57 @@ function stampSource(content: string, source: string, sha: string): string {
 
 const PLUGIN_NAME_RE = /^[A-Za-z0-9@/._-]{1,128}$/;
 
+// Thrown by fetchItemFiles to carry the reply status+error string the caller
+// (currently /item, and /safety-check in Task 4) should send verbatim.
+export class ItemFetchError extends Error {
+  constructor(
+    public status: number,
+    public error: string,
+  ) {
+    super(error);
+  }
+}
+
+// Verbatim extraction of the /item file-fetch block: tree-filter under
+// itemPath, MAX_FILES guard, per-file MAX_CONTENT guard. Shared by /item and
+// (Task 4) /safety-check so both see the exact same guarded file set.
+export async function fetchItemFiles(
+  owner: string,
+  repo: string,
+  sha: string,
+  itemPath: string,
+  fetchText: (url: string) => Promise<string>,
+): Promise<{ path: string; content: string }[]> {
+  let tree: TreeEntry[];
+  try {
+    tree = await loadTree(owner, repo, sha, fetchText);
+  } catch {
+    throw new ItemFetchError(502, 'fetch failed');
+  }
+
+  const matches = tree.filter((e) => e.type === 'blob' && (e.path === itemPath || e.path.startsWith(`${itemPath}/`)));
+  if (matches.length > MAX_FILES) throw new ItemFetchError(400, 'too many files');
+
+  const files: { path: string; content: string }[] = [];
+  try {
+    // Containment relies on `entry.path` coming from the GitHub tree response
+    // (loadTree), never from the client-supplied `path` query string directly.
+    // If this ever gets refactored to fetch a client-controlled path instead,
+    // that reopens SSRF against the raw.githubusercontent.com fetch below.
+    for (const entry of matches) {
+      const content = await cachedFetch(rawUrl(owner, repo, sha, entry.path), fetchText);
+      if (Buffer.byteLength(content, 'utf8') > MAX_CONTENT) {
+        throw new ItemFetchError(400, 'file too large');
+      }
+      files.push({ path: entry.path, content });
+    }
+  } catch (err) {
+    if (err instanceof ItemFetchError) throw err;
+    throw new ItemFetchError(502, 'fetch failed');
+  }
+  return files;
+}
+
 export default async function marketplaceRoutes(f: FastifyInstance, opts: MarketplaceRouteOpts = {}) {
   const fetchText = opts.fetchText ?? defaultFetchText;
   const readSettings = opts.readSettings ?? defaultReadSettings;
@@ -251,35 +303,14 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
     const sha = req.query.sha;
     if (!sha || !SHA_RE.test(sha)) return reply.code(400).send({ error: 'bad sha' });
 
-    let tree: TreeEntry[];
+    let files: { path: string; content: string }[];
     try {
-      tree = await loadTree(owner, repo, sha, fetchText);
-    } catch {
-      return reply.code(502).send({ error: 'fetch failed' });
+      files = await fetchItemFiles(owner, repo, sha, dirPath, fetchText);
+    } catch (err) {
+      if (err instanceof ItemFetchError) return reply.code(err.status).send({ error: err.error });
+      throw err;
     }
-
-    const matches = tree.filter(
-      (e) => e.type === 'blob' && (e.path === dirPath || e.path.startsWith(`${dirPath}/`)),
-    );
-    if (matches.length > MAX_FILES) return reply.code(400).send({ error: 'too many files' });
-
-    const files: { path: string; content: string }[] = [];
-    try {
-      // Containment relies on `entry.path` coming from the GitHub tree response
-      // (loadTree), never from the client-supplied `path` query string directly.
-      // If this ever gets refactored to fetch a client-controlled path instead,
-      // that reopens SSRF against the raw.githubusercontent.com fetch below.
-      for (const entry of matches) {
-        const content = await cachedFetch(rawUrl(owner, repo, sha, entry.path), fetchText);
-        if (Buffer.byteLength(content, 'utf8') > MAX_CONTENT) {
-          return reply.code(400).send({ error: 'file too large' });
-        }
-        files.push({ path: entry.path, content });
-      }
-    } catch {
-      return reply.code(502).send({ error: 'fetch failed' });
-    }
-    return { files };
+    return { files, warnings: scanFiles(files) };
   });
 
   f.post<{
