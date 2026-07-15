@@ -202,6 +202,11 @@ export class ClaudeProvider implements AgentProvider {
     return s.kind === 'global' ? join(this.homeDir, '.claude', kind) : join(s.repoPath, '.claude', kind);
   }
 
+  customizationWriteTarget(scope: CustomizationScope, section: 'agents' | 'skills', name: string): string {
+    const root = this.custRoot(scope, section);
+    return section === 'skills' ? join(root, name, 'SKILL.md') : join(root, `${name}.md`);
+  }
+
   // Read-only subagent-transcript viewer (subagent viewer v1). The `subagents/` +
   // `workflows/` layout knowledge stays in store/subagents.ts; this provider only
   // injects the absolute session dir (hard rule 3). Codex omits this capability, so its

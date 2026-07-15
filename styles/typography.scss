@@ -155,3 +155,36 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
+
+// Rendered-markdown blocks (customizations detail). Caps browser-default
+// heading scale — marked parses a frontmatter `---` fence as a setext h2,
+// which would otherwise render the whole block at 1.5em+.
+@mixin t-markdown {
+  @include t-body;
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 12px 0 6px;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  p {
+    margin: 6px 0;
+  }
+}
+
+// Modal-header glyph button (customizations ×) — larger than t-heading so the
+// close target reads clearly at the modal's top-right (user-requested 24px).
+@mixin t-glyph-lg {
+  font-size: 24px;
+}

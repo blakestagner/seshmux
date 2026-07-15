@@ -8,13 +8,58 @@
 
 import { useEffect, useState } from 'react';
 import styles from './CustomizationsModal.module.scss';
+import menu from '../ui/Menu/Menu.module.scss';
+import { useDropdown } from '../ui/Menu/useDropdown';
 import OptionRow from '../ui/OptionRow/OptionRow';
-import IconButton from '../ui/IconButton/IconButton';
+import TextInput from '../ui/TextInput/TextInput';
 import ProjectVisibilityList from '../ProjectVisibilityList/ProjectVisibilityList';
-import { getCustomizations, type CustomizationsPayload } from '../../lib/client/api';
+import {
+  getCustomizations,
+  putCustomizationItem,
+  assistCustomization,
+  startSession,
+  type CustomizationsPayload,
+} from '../../lib/client/api';
 import { renderMarkdown } from '../Transcript/Transcript';
 import Button from '../ui/Button/Button';
-import type { CustomizationItem, Project } from '../../lib/client/types';
+import { PROV } from '../ui/ProviderBadge/ProviderBadge';
+import { useAppState } from '../../lib/client/store';
+import type { CustomizationItem, Project, ProviderId } from '../../lib/client/types';
+
+// Server enforces the same pattern (server/lib/providers/customizations.ts) —
+// mirrored here so Save disables client-side before a round trip.
+const NAME_RE = /^[a-z0-9-]{1,64}$/;
+
+const SKILL_TEMPLATE = '---\nname: \ndescription: \n---\n\n';
+
+// Display/brief-only path preview — NOT the write path. The real target is
+// resolved server-side by provider.customizationWriteTarget() (the provider
+// seam owns actual paths; see server/lib/providers/customizations.ts).
+function targetPathFor(section: 'agents' | 'skills', name: string): string {
+  return section === 'skills' ? `.claude/skills/${name}/SKILL.md` : `.claude/agents/${name}.md`;
+}
+
+// filePath -> the kebab name Save needs. Skills live at .../skills/<name>/SKILL.md
+// (parent dir is the name); agents are flat .../agents/<name>.md.
+function kebabFromItem(section: 'agents' | 'skills', item: CustomizationItem): string {
+  const parts = item.filePath.split('/');
+  if (section === 'skills') return parts[parts.length - 2] ?? '';
+  const base = parts[parts.length - 1] ?? '';
+  return base.replace(/\.md$/, '');
+}
+
+type Editing = { section: 'agents' | 'skills'; name: string; content: string; isNew: boolean };
+
+// SKILL_TEMPLATE seeds `name: ` blank — if the user never touches it, save
+// would otherwise ship an empty frontmatter name and the list falls back to
+// showing the filename ("SKILL") instead of the item's real name.
+function fillBlankFrontmatterName(content: string, name: string): string {
+  if (!content.startsWith('---\n')) return content;
+  const end = content.indexOf('\n---', 4);
+  if (end === -1) return content;
+  const fm = content.slice(0, end);
+  return fm.replace(/^name:[ \t]*$/m, `name: ${name}`) + content.slice(end);
+}
 
 type Section = 'overview' | 'agents' | 'skills' | 'instructions' | 'hooks' | 'mcp' | 'projects';
 
@@ -86,14 +131,38 @@ export default function CustomizationsModal({
   const [reloadKey, setReloadKey] = useState(0);
   const [detail, setDetail] = useState<CustomizationItem | null>(null);
   const [detailSection, setDetailSection] = useState<Section>('overview');
+  const { dispatch } = useAppState();
+  const [editing, setEditing] = useState<Editing | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [assisting, setAssisting] = useState(false);
+  const [making, setMaking] = useState(false);
+  const [editorError, setEditorError] = useState<string | null>(null);
+  const [undoText, setUndoText] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setData(null);
     setLoadError(null);
-    getCustomizations(scope, projectId)
-      .then(setData)
-      .catch((e) => setLoadError((e as Error).message || 'failed to load'));
+    // Project scope shows BOTH levels (project first, then user-global) — each
+    // item keeps its own `scope` field, rendered as a project/user chip. The
+    // global fetch is best-effort: if it fails, project items still render
+    // (empty payload swapped in) rather than blanking the whole view. Only a
+    // failure of the PROJECT fetch itself is a real loadError.
+    const EMPTY: CustomizationsPayload = { agents: [], skills: [], instructions: [], hooks: [], mcp: [] };
+    const load =
+      scope === 'project'
+        ? Promise.all([
+            getCustomizations('project', projectId),
+            getCustomizations('global').catch(() => EMPTY),
+          ]).then(([p, g]) => ({
+            agents: [...p.agents, ...g.agents],
+            skills: [...p.skills, ...g.skills],
+            instructions: [...p.instructions, ...g.instructions],
+            hooks: [...p.hooks, ...g.hooks],
+            mcp: [...p.mcp, ...g.mcp],
+          }))
+        : getCustomizations('global');
+    load.then(setData).catch((e) => setLoadError((e as Error).message || 'failed to load'));
   }, [open, scope, projectId, reloadKey]);
 
   // Reset to Overview + re-scope whenever the modal is (re)opened for a
@@ -103,6 +172,9 @@ export default function CustomizationsModal({
     if (!open) return;
     setSection('overview');
     setDetail(null);
+    setEditing(null);
+    setUndoText(null);
+    setEditorError(null);
     setScope(projectId ? 'project' : 'global');
   }, [open, projectId]);
 
@@ -119,15 +191,95 @@ export default function CustomizationsModal({
 
   function openSection(key: Section) {
     setDetail(null);
+    setEditing(null);
     setSection(key);
   }
 
   function openDetail(key: Section, item: CustomizationItem) {
     setDetailSection(key);
     setDetail(item);
+    setEditing(null);
   }
 
   const items: CustomizationItem[] = data && section !== 'overview' && section !== 'projects' ? data[section] : [];
+  const project = projects.find((p) => p.id === projectId);
+  // Editor only offered when scoped to a project and viewing an editable
+  // section (agents/skills). Read-only otherwise (global scope, other sections).
+  const editable = Boolean(projectId) && (section === 'agents' || section === 'skills');
+
+  function startNew(key: 'agents' | 'skills') {
+    setDetail(null);
+    setUndoText(null);
+    setEditorError(null);
+    setEditing({ section: key, name: '', content: key === 'skills' ? SKILL_TEMPLATE : '', isNew: true });
+  }
+
+  function startEdit(key: 'agents' | 'skills', item: CustomizationItem) {
+    setUndoText(null);
+    setEditorError(null);
+    setEditing({ section: key, name: kebabFromItem(key, item), content: item.content, isNew: false });
+  }
+
+  async function handleSave() {
+    if (!editing || !projectId) return;
+    setSaving(true);
+    setEditorError(null);
+    try {
+      await putCustomizationItem({
+        projectId,
+        provider: 'claude',
+        section: editing.section,
+        name: editing.name,
+        content: fillBlankFrontmatterName(editing.content, editing.name),
+      });
+      setEditing(null);
+      setUndoText(null);
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setEditorError((e as Error).message || 'save failed');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handlePolish(provider: ProviderId) {
+    if (!editing || !projectId || assisting) return;
+    setAssisting(true);
+    setEditorError(null);
+    try {
+      const { text } = await assistCustomization({
+        projectId,
+        provider,
+        section: editing.section,
+        name: editing.name,
+        draft: editing.content,
+      });
+      setUndoText(editing.content);
+      setEditing({ ...editing, content: text });
+    } catch (e) {
+      setEditorError((e as Error).message || 'polish failed');
+    } finally {
+      setAssisting(false);
+    }
+  }
+
+  async function handleMakeIt(provider: ProviderId) {
+    if (!editing || !project || making) return;
+    setMaking(true);
+    const file = targetPathFor(editing.section, editing.name);
+    const brief =
+      `Create ${file} in this repo${editing.content.trim() ? ` for this purpose:\n${editing.content}` : ` named "${editing.name}"`}.\n` +
+      `Follow ${editing.section === 'skills' ? 'SKILL.md' : 'Claude Code agent-definition'} conventions (frontmatter with name + description, clear body). Write the file, then stop.`;
+    try {
+      const { tabMeta } = await startSession({ projectPath: project.path, provider, mode: 'new', firstPrompt: brief });
+      dispatch({ type: 'openTerm', ptyId: tabMeta.ptyId, projectId: project.id, label: project.name, provider });
+      onClose(); // watch the session work
+    } catch (e) {
+      setEditorError((e as Error).message || 'session start failed');
+    } finally {
+      setMaking(false);
+    }
+  }
 
   return (
     <div className={styles.overlay} onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -135,9 +287,9 @@ export default function CustomizationsModal({
         <div className={styles.header}>
           <h3 className={styles.title}>Customizations</h3>
           <span className={styles.scopeLabel}>{scope === 'project' ? projectName ?? 'Project' : 'Global'}</span>
-          <IconButton label="Close" onClick={onClose}>
+          <button type="button" className={`${styles.glyphBtn} ${styles.glyphBtnLg}`} aria-label="Close" title="Close" onClick={onClose}>
             ×
-          </IconButton>
+          </button>
         </div>
         <div className={styles.body}>
           <nav className={styles.nav}>
@@ -153,7 +305,52 @@ export default function CustomizationsModal({
             ))}
           </nav>
           <div className={styles.content}>
-            {section === 'projects' ? (
+            {(() => {
+              // Back arrow (detail open) and "+ New" (authorable section) share one
+              // header row; either side may be absent.
+              const detailOpen = !editing && !!detail && detailSection === section && section !== 'overview' && section !== 'projects';
+              const canNew = editable && (section === 'agents' || section === 'skills') && !editing;
+              if (!detailOpen && !canNew) return null;
+              return (
+                <div className={styles.contentHeader}>
+                  {detailOpen ? (
+                    <button type="button" className={styles.glyphBtn} aria-label="Back" title="Back" onClick={() => setDetail(null)}>
+                      ←
+                    </button>
+                  ) : (
+                    <span />
+                  )}
+                  {canNew ? (
+                    <Button variant="primary" onClick={() => startNew(section)}>
+                      + New
+                    </Button>
+                  ) : null}
+                </div>
+              );
+            })()}
+            {editing ? (
+              <EditorPane
+                editing={editing}
+                setEditing={setEditing}
+                saving={saving}
+                assisting={assisting}
+                making={making}
+                editorError={editorError}
+                undoText={undoText}
+                onSave={handleSave}
+                onCancel={() => {
+                  setEditing(null);
+                  setUndoText(null);
+                  setEditorError(null);
+                }}
+                onPolish={handlePolish}
+                onMakeIt={handleMakeIt}
+                onUndo={() => {
+                  if (undoText !== null) setEditing({ ...editing, content: undoText });
+                  setUndoText(null);
+                }}
+              />
+            ) : section === 'projects' ? (
               <ProjectVisibilityList projects={projects} hidden={hidden} onToggleHidden={(id) => onToggleHidden?.(id)} />
             ) : loadError ? (
               <div className={styles.empty}>
@@ -181,11 +378,16 @@ export default function CustomizationsModal({
               </div>
             ) : detail && detailSection === section ? (
               <div className={styles.detail}>
-                <IconButton label="Back" onClick={() => setDetail(null)}>
-                  ←
-                </IconButton>
-                <h4 className={styles.detailTitle}>{detail.title}</h4>
+                <h4 className={styles.detailTitle}>
+                  {detail.title}{' '}
+                  <span className={detail.scope === 'project' ? styles.scopeProject : styles.scopeUser}>
+                    {detail.scope === 'project' ? 'project' : 'user'}
+                  </span>
+                </h4>
                 <div className={styles.detailPath}>{detail.filePath}</div>
+                {editable && detail.provider === 'claude' && detail.scope === 'project' && (section === 'agents' || section === 'skills') ? (
+                  <Button onClick={() => startEdit(section, detail)}>Edit</Button>
+                ) : null}
                 {detail.parseError ? <span className={styles.badge}>parse error</span> : null}
                 {detail.parseError || isJsonSection(section) ? (
                   <pre className={styles.pre}>{detail.content}</pre>
@@ -208,6 +410,9 @@ export default function CustomizationsModal({
                     title={item.title}
                     desc={
                       <>
+                        <span className={item.scope === 'project' ? styles.scopeProject : styles.scopeUser}>
+                          {item.scope === 'project' ? 'project' : 'user'}
+                        </span>{' '}
                         {itemDesc(section, item)}
                         {item.parseError ? <span className={styles.badge}>parse error</span> : null}
                       </>
@@ -219,6 +424,109 @@ export default function CustomizationsModal({
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Dropdown of provider choices for the two AI-assist actions — shares
+// open/close/Escape/click-outside behavior with BridgeMenu via useDropdown,
+// composing the shared ui/Menu surface.
+function AssistMenu({
+  label,
+  disabled,
+  onPick,
+}: {
+  label: string;
+  disabled?: boolean;
+  onPick: (provider: ProviderId) => void;
+}) {
+  const { open, setOpen, wrapRef } = useDropdown();
+
+  const pick = (provider: ProviderId) => {
+    setOpen(false);
+    onPick(provider);
+  };
+
+  return (
+    <span className={styles.assistMenuWrap} ref={wrapRef}>
+      <Button disabled={disabled} onClick={() => setOpen((v) => !v)}>
+        {label} <span>{open ? '▴' : '▾'}</span>
+      </Button>
+      {open ? (
+        <div className={`${menu.menu} ${styles.assistMenu}`} role="menu">
+          {(Object.keys(PROV) as ProviderId[]).map((p) => (
+            <button key={p} type="button" className={menu.item} role="menuitem" onClick={() => pick(p)}>
+              {PROV[p].glyph} {p}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </span>
+  );
+}
+
+type EditorPaneProps = {
+  editing: Editing;
+  setEditing: (e: Editing) => void;
+  saving: boolean;
+  assisting: boolean;
+  making: boolean;
+  editorError: string | null;
+  undoText: string | null;
+  onSave: () => void;
+  onCancel: () => void;
+  onPolish: (provider: ProviderId) => void;
+  onMakeIt: (provider: ProviderId) => void;
+  onUndo: () => void;
+};
+
+function EditorPane({
+  editing,
+  setEditing,
+  saving,
+  assisting,
+  making,
+  editorError,
+  undoText,
+  onSave,
+  onCancel,
+  onPolish,
+  onMakeIt,
+  onUndo,
+}: EditorPaneProps) {
+  const filePath = targetPathFor(editing.section, editing.name || '<name>');
+
+  return (
+    <div className={styles.editor}>
+      <TextInput
+        value={editing.name}
+        onChange={(v) => {
+          if (!editing.isNew) return;
+          setEditing({ ...editing, name: v.toLowerCase().replace(/[^a-z0-9-]+/g, '-') });
+        }}
+        placeholder="name"
+        disabled={!editing.isNew}
+      />
+      <div className={styles.editorFilePath}>{filePath}</div>
+      <TextInput
+        value={editing.content}
+        onChange={(v) => setEditing({ ...editing, content: v })}
+        placeholder="Write the body…"
+        multiline={12}
+        className={styles.editorArea}
+      />
+      {editorError ? <div className={styles.badge}>{editorError}</div> : null}
+      <div className={styles.editorActions}>
+        <Button variant="primary" disabled={saving || !NAME_RE.test(editing.name)} onClick={onSave}>
+          Save
+        </Button>
+        <Button onClick={onCancel}>Cancel</Button>
+        {undoText !== null ? <Button onClick={onUndo}>Undo polish</Button> : null}
+        <AssistMenu label="✦ Polish with" disabled={assisting || !editing.content.trim()} onPick={onPolish} />
+        {editing.isNew ? (
+          <AssistMenu label="◈ Make it for me" disabled={assisting || making || !NAME_RE.test(editing.name)} onPick={onMakeIt} />
+        ) : null}
       </div>
     </div>
   );

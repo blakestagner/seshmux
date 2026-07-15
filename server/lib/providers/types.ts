@@ -6,7 +6,7 @@ import type { Ctx, Msg } from '../store/transcript';
 import type { Project, ProviderId, SessionMeta } from '../store/scan';
 import type { SearchHit, SearchOpts } from '../store/search';
 import type { UsageSummary } from '../store/usage';
-import type { CustomizationScanners } from './customizations';
+import type { CustomizationScanners, CustomizationScope } from './customizations';
 import type { TeamInfo } from '../store/teams-store';
 
 export type { Ctx, Msg } from '../store/transcript';
@@ -133,6 +133,10 @@ export interface AgentProvider {
   customizations?: CustomizationScanners;
   subagents?: SubagentSupport;
   teams?: TeamSupport;
+  // v2 authoring seam: absolute path a named skills/agents item WOULD live at.
+  // Only providers with a writable layout implement it (claude); the route 400s
+  // when absent. Path knowledge stays here (hard rule 3).
+  customizationWriteTarget?(scope: CustomizationScope, section: 'agents' | 'skills', name: string): string;
 }
 
 // Lazily built registry: claude is always present; codex is included only when its store

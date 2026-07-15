@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
 import type { ProviderId } from '../../lib/client/types';
 import Button from '../ui/Button/Button';
 import menu from '../ui/Menu/Menu.module.scss';
+import { useDropdown } from '../ui/Menu/useDropdown';
 import styles from './BridgeMenu.module.scss';
 
 // Dropdown holding the cross-agent bridge actions (Continue in / Review with),
@@ -34,22 +34,7 @@ export default function BridgeMenu({
   onHandoff,
   onReview,
 }: BridgeMenuProps) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLSpanElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
-    document.addEventListener('click', onClick);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('click', onClick);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
+  const { open, setOpen, wrapRef } = useDropdown();
 
   const pick = (fn: () => void) => {
     setOpen(false);
