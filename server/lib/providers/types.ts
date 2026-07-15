@@ -129,6 +129,10 @@ export interface AgentProvider {
   usage(days: number): Promise<UsageSummary>;
   commands: ProviderCommands;
   needsInputPatterns: RegExp[];
+  // Drop any memoized store scans so the next read re-walks disk. The events-hub
+  // watch fan-out calls this on session-new/touch — WHERE a provider caches is
+  // its own business (claude: scan.ts scanRoot memo; codex: allSummaries memo).
+  invalidateCache?(): void;
   statusHooks?: StatusHookSupport;
   customizations?: CustomizationScanners;
   subagents?: SubagentSupport;

@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import {
   derivedWorkspaceParentId,
+  invalidateScanCache,
   isSafeId,
   listSessions as scanListSessions,
   scanProjects as scan,
@@ -96,6 +97,10 @@ export class ClaudeProvider implements AgentProvider {
   constructor(opts: ClaudeProviderOpts = {}) {
     this.homeDir = opts.homeDir ?? homedir();
     this.root = opts.root ?? (opts.homeDir ? join(opts.homeDir, '.claude', 'projects') : defaultRoot());
+  }
+
+  invalidateCache(): void {
+    invalidateScanCache(this.id);
   }
 
   async detect(): Promise<DetectResult> {

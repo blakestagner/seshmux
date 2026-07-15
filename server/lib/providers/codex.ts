@@ -137,9 +137,8 @@ const searchLinesCache = new Lru<string[]>(100);
 const SUMMARIES_TTL_MS = 3000;
 const summariesCache = new Map<string, { at: number; p: Promise<{ file: string; mtime: number; touchedAt: number; s: RolloutSummary }[]> }>();
 
-// Drop the memoized walk so the next read re-walks disk. Wired to the codex chokidar
-// watcher in events-hub (alongside invalidateScanCache, which only covers claude's
-// scanRoot — codex never went through it).
+// Drop the memoized walk so the next read re-walks disk. Reached via the
+// provider's invalidateCache() seam (events-hub watch fan-out); exported for tests.
 export function invalidateCodexSummaries(): void {
   summariesCache.clear();
 }
@@ -301,6 +300,10 @@ export class CodexProvider implements AgentProvider {
     const opts: CodexProviderOpts = typeof rootOrOpts === 'string' ? { root: rootOrOpts } : rootOrOpts;
     this.homeDir = opts.homeDir ?? homedir();
     this.root = opts.root ?? (opts.homeDir ? join(opts.homeDir, '.codex', 'sessions') : codexStoreRoot());
+  }
+
+  invalidateCache(): void {
+    invalidateCodexSummaries();
   }
 
   // Short-TTL promise-memo of the store walk, keyed per root (mirrors scan.ts PERF-2).
