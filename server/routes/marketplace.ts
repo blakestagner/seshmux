@@ -360,6 +360,22 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
       if (!plugins || !marketplaces) return { supported: false };
       const installed = Array.isArray(availParsed?.installed) ? availParsed.installed : [];
 
+      // `--available` is genuinely "available to install" — the CLI excludes
+      // anything already installed, so an installed plugin otherwise has no
+      // row in `plugins` at all and the UI's installed-chip match never has
+      // a target to match against. Synthesize a row from `installed[].id`
+      // ("name@marketplace") for any installed plugin missing from `plugins`.
+      const presentIds = new Set(
+        plugins.filter((p: { pluginId?: unknown }) => typeof p?.pluginId === 'string').map((p: { pluginId: string }) => p.pluginId),
+      );
+      for (const entry of installed) {
+        const id = entry?.id;
+        if (typeof id !== 'string' || presentIds.has(id)) continue;
+        const [name, marketplaceName] = id.split('@');
+        plugins.push({ pluginId: id, name: name || id, marketplaceName });
+        presentIds.add(id);
+      }
+
       return { supported: true, plugins, marketplaces, installed };
     } catch {
       return { supported: false };

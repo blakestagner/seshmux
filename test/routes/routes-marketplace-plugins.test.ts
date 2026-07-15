@@ -59,7 +59,12 @@ describe('GET /api/marketplace/plugins', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
       supported: true,
-      plugins: [{ pluginId: 'foo@some-marketplace', name: 'foo', description: 'a plugin' }],
+      plugins: [
+        { pluginId: 'foo@some-marketplace', name: 'foo', description: 'a plugin' },
+        // synthesized: "bar" is installed but excluded from the CLI's
+        // --available catalog, so it has no other source of a plugin row.
+        { pluginId: 'bar@some-marketplace', name: 'bar', marketplaceName: 'some-marketplace' },
+      ],
       marketplaces: [{ name: 'mkt-1' }],
       installed: [
         {
@@ -73,6 +78,26 @@ describe('GET /api/marketplace/plugins', () => {
         },
       ],
     });
+  });
+
+  it('installed plugin already present in --available output is not duplicated', async () => {
+    const f = app(async (argv: string[]) => {
+      if (argv.includes('--available')) {
+        return {
+          ok: true,
+          text: JSON.stringify({
+            available: [{ pluginId: 'foo@mkt', name: 'foo' }],
+            installed: [{ id: 'foo@mkt', version: '1.0.0', scope: 'user', enabled: true, installPath: '/x', installedAt: '2026-07-01T00:00:00Z', lastUpdated: '2026-07-01T00:00:00Z' }],
+          }),
+        };
+      }
+      if (argv.includes('marketplace')) {
+        return { ok: true, text: JSON.stringify([{ name: 'mkt-1' }]) };
+      }
+      throw new Error(`unexpected argv ${argv.join(' ')}`);
+    });
+    const res = await f.inject({ method: 'GET', url: '/api/marketplace/plugins?projectId=proj-1' });
+    expect(res.json().plugins).toEqual([{ pluginId: 'foo@mkt', name: 'foo' }]);
   });
 
   it('missing installed key on available JSON -> installed defaults to [] (still supported)', async () => {
