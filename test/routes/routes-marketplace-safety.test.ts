@@ -85,7 +85,7 @@ describe('POST /api/marketplace/safety-check', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it('404s an unknown provider id', async () => {
+  it('400s an unknown provider id', async () => {
     const f = app({ fetchText: async () => { throw new Error('should not be called'); } });
     const res = await f.inject({ method: 'POST', url: '/api/marketplace/safety-check', payload: goodBody({ provider: 'nonexistent' }) });
     expect(res.statusCode).toBe(400);
