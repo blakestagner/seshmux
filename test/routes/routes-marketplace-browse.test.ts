@@ -88,6 +88,20 @@ describe('GET /api/marketplace/item', () => {
     ]);
   });
 
+  it('400s when the item path has more than 20 files', async () => {
+    const tree = {
+      tree: Array.from({ length: 21 }, (_, i) => ({ path: `skills/lots/file${i}.txt`, type: 'blob' })),
+    };
+    const f = app(async (url: string) => {
+      if (url === 'https://api.github.com/repos/acme/lots-repo/git/trees/HEAD?recursive=1') {
+        return JSON.stringify(tree);
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+    const res = await f.inject({ method: 'GET', url: '/api/marketplace/item?source=acme/lots-repo&path=skills/lots' });
+    expect(res.statusCode).toBe(400);
+  });
+
   it('400s when a file exceeds the 256KB cap', async () => {
     const tree = { tree: [{ path: 'skills/big/SKILL.md', type: 'blob' }] };
     const huge = 'a'.repeat(256 * 1024 + 1);

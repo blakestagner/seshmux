@@ -35,7 +35,7 @@ const SECTIONS = ['agents', 'skills', 'instructions', 'hooks', 'mcpServers'] as 
 // path: the project scope reads CLAUDE.md/.mcp.json/settings.json, so a crafted id could
 // otherwise pull config (possible secrets) from any directory. A hyphenated repo that
 // actually scans is still matched here by its exact scanned id.
-async function scannedResolveRepo(id: string): Promise<string | null> {
+export async function scannedResolveRepo(id: string): Promise<string | null> {
   const providers = await getProviders();
   for (const p of providers) {
     const projects = await p.scanProjects().catch(() => []);
