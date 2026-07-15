@@ -272,7 +272,7 @@ export default function CustomizationsModal({
         <div className={styles.header}>
           <h3 className={styles.title}>Customizations</h3>
           <span className={styles.scopeLabel}>{scope === 'project' ? projectName ?? 'Project' : 'Global'}</span>
-          <button type="button" className={styles.glyphBtn} aria-label="Close" title="Close" onClick={onClose}>
+          <button type="button" className={`${styles.glyphBtn} ${styles.glyphBtnLg}`} aria-label="Close" title="Close" onClick={onClose}>
             ×
           </button>
         </div>

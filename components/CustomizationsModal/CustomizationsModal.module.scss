@@ -38,9 +38,15 @@
 }
 
 .scopeLabel {
-  @include t-row;
+  @include t-heading;
   color: var(--text-dim);
   margin-left: auto;
+}
+
+// Header close gets the larger glyph size; the detail back arrow keeps
+// t-heading via .glyphBtn below.
+.glyphBtnLg {
+  @include t-glyph-lg;
 }
 
 // Header × and detail ← : plain glyph buttons — IconButton's bare tone
