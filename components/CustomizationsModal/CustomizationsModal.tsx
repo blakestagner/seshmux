@@ -220,6 +220,13 @@ export default function CustomizationsModal({
 
   const items: CustomizationItem[] =
     data && section !== 'overview' && section !== 'projects' && section !== 'marketplace' ? data[section] : [];
+  // Marketplace browse rows get a "✓ installed" chip when their derived
+  // install-name matches an already-installed skill/agent (same kebab logic
+  // Save uses — see kebabFromItem).
+  const installedNames = new Set<string>([
+    ...(data?.skills.map((i) => kebabFromItem('skills', i)) ?? []),
+    ...(data?.agents.map((i) => kebabFromItem('agents', i)) ?? []),
+  ]);
   const project = projects.find((p) => p.id === projectId);
   // Editor only offered when scoped to a project and viewing an editable
   // section (agents/skills). Read-only otherwise (global scope, other sections).
@@ -374,6 +381,7 @@ export default function CustomizationsModal({
               <MarketplaceSection
                 projectId={projectId}
                 projectName={projectName}
+                installedNames={installedNames}
                 onInstalled={() => setReloadKey((k) => k + 1)}
               />
             ) : loadError ? (
@@ -567,10 +575,12 @@ type MarketplaceTab = 'skills' | 'plugins';
 function MarketplaceSection({
   projectId,
   projectName,
+  installedNames,
   onInstalled,
 }: {
   projectId?: string;
   projectName?: string;
+  installedNames: Set<string>;
   onInstalled: () => void;
 }) {
   const { state, dispatch } = useAppState();
@@ -892,10 +902,15 @@ function MarketplaceSection({
               <div className={styles.empty}>Nothing found in {source}.</div>
             ) : (() => {
               const q = query.trim().toLowerCase();
-              const shown = q
+              const filtered = q
                 ? items.filter((i) => i.name.toLowerCase().includes(q) || i.description.toLowerCase().includes(q))
                 : items;
-              if (shown.length === 0) return <div className={styles.empty}>No matches for “{query}”.</div>;
+              if (filtered.length === 0) return <div className={styles.empty}>No matches for “{query}”.</div>;
+              // Installed rows first (stable within each group) — mirrors the
+              // Plugins tab so installed items aren't scroll-only-findable.
+              const shown = [...filtered].sort(
+                (a, b) => Number(installedNames.has(b.name)) - Number(installedNames.has(a.name)),
+              );
               return (
               <>
               <div className={styles.mpCount}>
@@ -906,7 +921,16 @@ function MarketplaceSection({
                   <OptionRow
                     key={item.path}
                     icon={item.section === 'skills' ? '✦' : '◈'}
-                    title={item.name}
+                    title={
+                      installedNames.has(item.name) ? (
+                        <span className={styles.mpPluginTitle}>
+                          {item.name}
+                          <span className={styles.scopeProject}>✓ installed</span>
+                        </span>
+                      ) : (
+                        item.name
+                      )
+                    }
                     desc={
                       <>
                         {item.description || item.path} <span className={styles.scopeUser}>{source}</span>
@@ -1134,7 +1158,15 @@ function PluginsPane({
       {plugins.length === 0 ? (
         <div className={styles.empty}>No plugins available.</div>
       ) : (
-        plugins.map((p) => {
+        // Installed plugins float to the top (findable without scrolling),
+        // alphabetical within each group.
+        [...plugins]
+          .sort((a, b) => {
+            const aIn = installedScopes.has(a.pluginId ?? a.name) ? 0 : 1;
+            const bIn = installedScopes.has(b.pluginId ?? b.name) ? 0 : 1;
+            return aIn - bIn || a.name.localeCompare(b.name);
+          })
+          .map((p) => {
           // Match by full pluginId when the row has one; bare-name fallback only
           // for rows without a pluginId (see handleInstallPlugin's optimistic insert).
           const key = p.pluginId ?? p.name;
