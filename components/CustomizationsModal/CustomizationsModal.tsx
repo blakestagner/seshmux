@@ -6,19 +6,31 @@
 // (global vs one project) drives which GET /api/customizations call fires;
 // pre-scoped when opened from a project row via projectId/projectName.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import styles from './CustomizationsModal.module.scss';
 import menu from '../ui/Menu/Menu.module.scss';
 import { useDropdown } from '../ui/Menu/useDropdown';
 import OptionRow from '../ui/OptionRow/OptionRow';
 import TextInput from '../ui/TextInput/TextInput';
+import Segmented from '../ui/Segmented/Segmented';
 import ProjectVisibilityList from '../ProjectVisibilityList/ProjectVisibilityList';
 import {
   getCustomizations,
   putCustomizationItem,
   assistCustomization,
   startSession,
+  getMarketplaceSources,
+  addMarketplaceSource,
+  browseMarketplace,
+  getMarketplaceItem,
+  installMarketplaceItem,
+  getMarketplacePlugins,
+  installMarketplacePlugin,
   type CustomizationsPayload,
+  type MarketplaceItem,
+  type MarketplaceFile,
+  type MarketplacePlugin,
+  type MarketplaceInfo,
 } from '../../lib/client/api';
 import { renderMarkdown } from '../Transcript/Transcript';
 import Button from '../ui/Button/Button';
@@ -61,7 +73,7 @@ function fillBlankFrontmatterName(content: string, name: string): string {
   return fm.replace(/^name:[ \t]*$/m, `name: ${name}`) + content.slice(end);
 }
 
-type Section = 'overview' | 'agents' | 'skills' | 'instructions' | 'hooks' | 'mcp' | 'projects';
+type Section = 'overview' | 'agents' | 'skills' | 'instructions' | 'hooks' | 'mcp' | 'marketplace' | 'projects';
 
 const NAV: { key: Section; label: string }[] = [
   { key: 'overview', label: 'Overview' },
@@ -70,10 +82,14 @@ const NAV: { key: Section; label: string }[] = [
   { key: 'instructions', label: 'Instructions' },
   { key: 'hooks', label: 'Hooks' },
   { key: 'mcp', label: 'MCP Servers' },
+  { key: 'marketplace', label: 'Marketplace' },
   { key: 'projects', label: 'Projects' },
 ];
 
-const OVERVIEW_SECTIONS: { key: Exclude<Section, 'overview' | 'projects'>; label: string; icon: string }[] = [
+// Mirrors server SOURCE_RE (server/routes/marketplace.ts) — kebab owner/repo.
+const MARKETPLACE_SOURCE_RE = /^[\w.-]+\/[\w.-]+$/;
+
+const OVERVIEW_SECTIONS: { key: Exclude<Section, 'overview' | 'projects' | 'marketplace'>; label: string; icon: string }[] = [
   { key: 'agents', label: 'Agents', icon: '◈' },
   { key: 'skills', label: 'Skills', icon: '✦' },
   { key: 'instructions', label: 'Instructions', icon: '▤' },
@@ -131,7 +147,7 @@ export default function CustomizationsModal({
   const [reloadKey, setReloadKey] = useState(0);
   const [detail, setDetail] = useState<CustomizationItem | null>(null);
   const [detailSection, setDetailSection] = useState<Section>('overview');
-  const { dispatch } = useAppState();
+  const { state, dispatch } = useAppState();
   const [editing, setEditing] = useState<Editing | null>(null);
   const [saving, setSaving] = useState(false);
   const [assisting, setAssisting] = useState(false);
@@ -201,7 +217,8 @@ export default function CustomizationsModal({
     setEditing(null);
   }
 
-  const items: CustomizationItem[] = data && section !== 'overview' && section !== 'projects' ? data[section] : [];
+  const items: CustomizationItem[] =
+    data && section !== 'overview' && section !== 'projects' && section !== 'marketplace' ? data[section] : [];
   const project = projects.find((p) => p.id === projectId);
   // Editor only offered when scoped to a project and viewing an editable
   // section (agents/skills). Read-only otherwise (global scope, other sections).
@@ -352,6 +369,12 @@ export default function CustomizationsModal({
               />
             ) : section === 'projects' ? (
               <ProjectVisibilityList projects={projects} hidden={hidden} onToggleHidden={(id) => onToggleHidden?.(id)} />
+            ) : section === 'marketplace' ? (
+              <MarketplaceSection
+                projectId={projectId}
+                projectName={projectName}
+                onInstalled={() => setReloadKey((k) => k + 1)}
+              />
             ) : loadError ? (
               <div className={styles.empty}>
                 Failed to load: {loadError} <Button onClick={() => setReloadKey((k) => k + 1)}>Retry</Button>
@@ -528,6 +551,449 @@ function EditorPane({
           <AssistMenu label="◈ Make it for me" disabled={assisting || making || !NAME_RE.test(editing.name)} onPick={onMakeIt} />
         ) : null}
       </div>
+    </div>
+  );
+}
+
+// ── Marketplace section (Task 5) ────────────────────────────────────────────
+// Two independent sub-tabs sharing one Segmented: community skill/agent browse
+// (GitHub source -> browse -> preview -> install) and the `claude plugin`
+// marketplace (list -> install per scope). Neither depends on the customizations
+// GET that backs the other sections, so this owns its own load/error state.
+
+type MarketplaceTab = 'skills' | 'plugins';
+
+function MarketplaceSection({
+  projectId,
+  projectName,
+  onInstalled,
+}: {
+  projectId?: string;
+  projectName?: string;
+  onInstalled: () => void;
+}) {
+  const { state, dispatch } = useAppState();
+  const [tab, setTab] = useState<MarketplaceTab>('skills');
+
+  // Skills & agents browse/install
+  const [sources, setSources] = useState<string[]>([]);
+  const [sourcesError, setSourcesError] = useState<string | null>(null);
+  const [source, setSource] = useState('');
+  const [addingSource, setAddingSource] = useState(false);
+  const [addSourceError, setAddSourceError] = useState<string | null>(null);
+  const [items, setItems] = useState<MarketplaceItem[] | null>(null);
+  const [itemsError, setItemsError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<MarketplaceItem | null>(null);
+  const [files, setFiles] = useState<MarketplaceFile[] | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const [installedItem, setInstalledItem] = useState<MarketplaceItem | null>(null);
+
+  useEffect(() => {
+    getMarketplaceSources()
+      .then(({ sources: s }) => {
+        setSources(s);
+        setSource((prev) => prev || s[0] || '');
+      })
+      .catch((e) => setSourcesError((e as Error).message || 'failed to load sources'));
+    // Sources list only needs to load once per section mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!source) return;
+    setItems(null);
+    setItemsError(null);
+    setSelected(null);
+    browseMarketplace(source)
+      .then((r) => setItems(r.items))
+      .catch((e) => setItemsError((e as Error).message || 'failed to load'));
+  }, [source]);
+
+  function openItem(item: MarketplaceItem) {
+    setSelected(item);
+    setFiles(null);
+    setFileError(null);
+    setInstallError(null);
+    setInstalledItem(null);
+    getMarketplaceItem(source, item.path)
+      .then((r) => setFiles(r.files))
+      .catch((e) => setFileError((e as Error).message || 'failed to load'));
+  }
+
+  async function handleAddSource(next: string) {
+    setAddingSource(true);
+    setAddSourceError(null);
+    try {
+      const cfg = await addMarketplaceSource(state.config, next);
+      dispatch({ type: 'setConfig', config: cfg });
+      const { sources: s } = await getMarketplaceSources();
+      setSources(s);
+      setSource(next);
+    } catch (e) {
+      setAddSourceError((e as Error).message || 'failed to add source');
+      throw e;
+    } finally {
+      setAddingSource(false);
+    }
+  }
+
+  async function handleInstall() {
+    if (!selected || !projectId || installing) return;
+    setInstalling(true);
+    setInstallError(null);
+    try {
+      await installMarketplaceItem({
+        projectId,
+        source,
+        path: selected.path,
+        section: selected.section,
+        name: selected.name,
+      });
+      setInstalledItem(selected);
+      onInstalled();
+    } catch (e) {
+      setInstallError((e as Error).message || 'install failed');
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  // Plugins (claude plugin marketplace)
+  const pluginsFetchedRef = useRef(false);
+  const [pluginsResult, setPluginsResult] = useState<{
+    supported: boolean;
+    plugins: MarketplacePlugin[];
+    marketplaces: MarketplaceInfo[];
+  } | null>(null);
+  const [pluginsError, setPluginsError] = useState<string | null>(null);
+  const [pluginInstalling, setPluginInstalling] = useState<string | null>(null);
+  const [pluginInstallError, setPluginInstallError] = useState<string | null>(null);
+  const [installedPlugins, setInstalledPlugins] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (tab !== 'plugins' || pluginsFetchedRef.current) return;
+    pluginsFetchedRef.current = true;
+    getMarketplacePlugins(projectId)
+      .then((r) => setPluginsResult({ supported: r.supported, plugins: r.plugins ?? [], marketplaces: r.marketplaces ?? [] }))
+      .catch((e) => {
+        setPluginsResult({ supported: false, plugins: [], marketplaces: [] });
+        setPluginsError((e as Error).message || 'failed to load');
+      });
+  }, [tab, projectId]);
+
+  async function handleInstallPlugin(pluginName: string, scope: 'user' | 'project') {
+    if (!projectId || pluginInstalling) return;
+    setPluginInstalling(pluginName);
+    setPluginInstallError(null);
+    try {
+      await installMarketplacePlugin({ projectId, plugin: pluginName, scope });
+      setInstalledPlugins((prev) => new Set(prev).add(pluginName));
+    } catch (e) {
+      setPluginInstallError((e as Error).message || 'install failed');
+    } finally {
+      setPluginInstalling(null);
+    }
+  }
+
+  return (
+    <div className={styles.marketplace}>
+      <Segmented
+        options={[
+          { id: 'skills', label: 'Skills & Agents' },
+          { id: 'plugins', label: 'Plugins' },
+        ]}
+        value={tab}
+        onChange={(id) => setTab(id as MarketplaceTab)}
+      />
+      {tab === 'skills' ? (
+        selected ? (
+          <div className={styles.detail}>
+            <div className={styles.contentHeader}>
+              <button type="button" className={styles.glyphBtn} aria-label="Back" title="Back" onClick={() => setSelected(null)}>
+                ←
+              </button>
+              <span />
+            </div>
+            <h4 className={styles.detailTitle}>
+              {selected.section === 'skills' ? '✦' : '◈'} {selected.name}
+            </h4>
+            <div className={styles.detailPath}>
+              {source} · {selected.path}
+            </div>
+            {fileError ? (
+              <div className={styles.empty}>Failed to load: {fileError}</div>
+            ) : !files ? (
+              <div className={styles.empty}>Loading…</div>
+            ) : (
+              <>
+                <div className={styles.mpFileList}>
+                  {files.map((f) => (
+                    <div key={f.path} className={styles.mpFileName}>
+                      {f.path}
+                    </div>
+                  ))}
+                </div>
+                <pre className={styles.pre}>{files[0]?.content ?? ''}</pre>
+              </>
+            )}
+            {installError ? <div className={styles.badge}>{installError}</div> : null}
+            {installedItem === selected ? (
+              <div className={styles.empty}>Installed — source: {source}</div>
+            ) : null}
+            {projectId ? (
+              <Button variant="primary" disabled={installing || !files} onClick={handleInstall}>
+                {installing ? 'Installing…' : `Install to ${projectName ?? 'project'}`}
+              </Button>
+            ) : null}
+          </div>
+        ) : (
+          <>
+            <div className={styles.mpSourceRow}>
+              <SourceMenu
+                sources={sources}
+                value={source}
+                onPick={setSource}
+                onAdd={handleAddSource}
+                adding={addingSource}
+                addError={addSourceError}
+              />
+            </div>
+            {sourcesError ? (
+              <div className={styles.empty}>Failed to load sources: {sourcesError}</div>
+            ) : itemsError ? (
+              <div className={styles.empty}>Failed to load: {itemsError}</div>
+            ) : !items ? (
+              <div className={styles.empty}>Loading…</div>
+            ) : items.length === 0 ? (
+              <div className={styles.empty}>Nothing found in {source}.</div>
+            ) : (
+              <div className={styles.list}>
+                {items.map((item) => (
+                  <OptionRow
+                    key={item.path}
+                    icon={item.section === 'skills' ? '✦' : '◈'}
+                    title={item.name}
+                    desc={
+                      <>
+                        {item.description || item.path} <span className={styles.scopeUser}>{source}</span>
+                      </>
+                    }
+                    onClick={() => openItem(item)}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        )
+      ) : (
+        <PluginsPane
+          loading={!pluginsResult}
+          supported={pluginsResult?.supported ?? true}
+          plugins={pluginsResult?.plugins ?? []}
+          marketplaces={pluginsResult?.marketplaces ?? []}
+          error={pluginsError}
+          installing={pluginInstalling}
+          installError={pluginInstallError}
+          installedNames={installedPlugins}
+          projectId={projectId}
+          onInstall={handleInstallPlugin}
+        />
+      )}
+    </div>
+  );
+}
+
+// Source picker: dropdown of known sources + inline "Add source…" form that
+// kebab-validates `owner/repo` before enabling Add (mirrors AssistMenu's
+// useDropdown + Menu.module.scss composition).
+function SourceMenu({
+  sources,
+  value,
+  onPick,
+  onAdd,
+  adding,
+  addError,
+}: {
+  sources: string[];
+  value: string;
+  onPick: (source: string) => void;
+  onAdd: (source: string) => Promise<void>;
+  adding: boolean;
+  addError: string | null;
+}) {
+  const { open, setOpen, wrapRef } = useDropdown();
+  const [showAdd, setShowAdd] = useState(false);
+  const [text, setText] = useState('');
+  const valid = MARKETPLACE_SOURCE_RE.test(text);
+
+  function submit() {
+    if (!valid || adding) return;
+    onAdd(text).then(() => {
+      setText('');
+      setShowAdd(false);
+    });
+  }
+
+  return (
+    <span className={styles.assistMenuWrap} ref={wrapRef}>
+      <Button onClick={() => setOpen((v) => !v)}>
+        {value || 'Loading…'} <span>{open ? '▴' : '▾'}</span>
+      </Button>
+      {open ? (
+        <div className={`${menu.menu} ${styles.sourceMenu}`} role="menu">
+          {sources.map((s) => (
+            <button
+              key={s}
+              type="button"
+              className={menu.item}
+              role="menuitem"
+              onClick={() => {
+                onPick(s);
+                setOpen(false);
+              }}
+            >
+              {s}
+            </button>
+          ))}
+          <div className={menu.sep} />
+          {showAdd ? (
+            <div className={styles.addSourceRow}>
+              <TextInput value={text} onChange={setText} placeholder="owner/repo" />
+              <Button variant="primary" disabled={!valid || adding} onClick={submit}>
+                Add
+              </Button>
+            </div>
+          ) : (
+            <button type="button" className={menu.item} role="menuitem" onClick={() => setShowAdd(true)}>
+              + Add source…
+            </button>
+          )}
+          {addError ? <div className={styles.badge}>{addError}</div> : null}
+        </div>
+      ) : null}
+    </span>
+  );
+}
+
+function PluginsPane({
+  loading,
+  supported,
+  error,
+  plugins,
+  marketplaces,
+  installing,
+  installError,
+  installedNames,
+  projectId,
+  onInstall,
+}: {
+  loading: boolean;
+  supported: boolean;
+  error: string | null;
+  plugins: MarketplacePlugin[];
+  marketplaces: MarketplaceInfo[];
+  installing: string | null;
+  installError: string | null;
+  installedNames: Set<string>;
+  projectId?: string;
+  onInstall: (pluginName: string, scope: 'user' | 'project') => void;
+}) {
+  if (loading) return <div className={styles.empty}>Loading…</div>;
+  if (!supported) return <div className={styles.mpNote}>claude plugin marketplace not supported by this claude version</div>;
+
+  return (
+    <div className={styles.list}>
+      {marketplaces.length > 0 ? (
+        <div className={styles.mpMarketplaces}>
+          {marketplaces.map((m, i) => (
+            <span key={String(m.name ?? i)} className={styles.scopeUser}>
+              {String(m.name ?? 'marketplace')}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {error ? <div className={styles.badge}>{error}</div> : null}
+      {installError ? <div className={styles.badge}>{installError}</div> : null}
+      {plugins.length === 0 ? (
+        <div className={styles.empty}>No plugins available.</div>
+      ) : (
+        plugins.map((p) => (
+          <PluginRow
+            key={p.name}
+            plugin={p}
+            installed={p.installed === true || installedNames.has(p.name)}
+            busy={installing === p.name}
+            projectId={projectId}
+            onInstall={(scope) => onInstall(p.name, scope)}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+// Install scope defaults to 'user'; a project-scoped modal offers a small
+// useDropdown menu to pick 'user' vs 'project' instead.
+function PluginRow({
+  plugin,
+  installed,
+  busy,
+  projectId,
+  onInstall,
+}: {
+  plugin: MarketplacePlugin;
+  installed: boolean;
+  busy: boolean;
+  projectId?: string;
+  onInstall: (scope: 'user' | 'project') => void;
+}) {
+  const { open, setOpen, wrapRef } = useDropdown();
+
+  return (
+    <div className={styles.mpPluginRow}>
+      <OptionRow
+        icon="⬡"
+        title={plugin.name}
+        desc={
+          <>
+            {typeof plugin.description === 'string' ? plugin.description : ''}
+            {installed ? <span className={styles.scopeProject}>✓ installed</span> : null}
+          </>
+        }
+      />
+      <span className={styles.assistMenuWrap} ref={wrapRef}>
+        <Button disabled={busy || installed} onClick={() => (projectId ? setOpen((v) => !v) : onInstall('user'))}>
+          {busy ? 'Installing…' : installed ? 'Installed' : 'Install'} {projectId && !installed ? <span>{open ? '▴' : '▾'}</span> : null}
+        </Button>
+        {open ? (
+          <div className={`${menu.menu} ${styles.mpScopeMenu}`} role="menu">
+            <button
+              type="button"
+              className={menu.item}
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onInstall('user');
+              }}
+            >
+              user
+            </button>
+            <button
+              type="button"
+              className={menu.item}
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onInstall('project');
+              }}
+            >
+              project
+            </button>
+          </div>
+        ) : null}
+      </span>
     </div>
   );
 }

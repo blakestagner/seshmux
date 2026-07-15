@@ -328,6 +328,62 @@ export function assistCustomization(body: {
   return req('/api/customizations/assist', { method: 'POST', body: JSON.stringify(body) });
 }
 
+// ── Marketplace (Task 5 — community browse/install + claude plugin marketplace) ──
+export type MarketplaceItem = { path: string; name: string; description: string; section: 'agents' | 'skills' };
+export type MarketplaceFile = { path: string; content: string };
+// Raw entries from `claude plugin list --available --json` / `marketplace list --json`
+// (see server/routes/marketplace.ts) — shape beyond `name` is not our contract to own.
+export type MarketplacePlugin = { name: string; description?: string; installed?: boolean; [k: string]: unknown };
+export type MarketplaceInfo = { name?: string; [k: string]: unknown };
+
+export function getMarketplaceSources(): Promise<{ sources: string[] }> {
+  return req('/api/marketplace/sources');
+}
+
+// Read-modify-write settings.marketplaceSources through the existing config PUT
+// (mirrors Settings.tsx's persistSetting — no dedicated marketplace-sources route).
+export function addMarketplaceSource(cfg: Config, source: string): Promise<Config> {
+  const settings = cfg.settings ?? {};
+  const existing = Array.isArray(settings.marketplaceSources)
+    ? (settings.marketplaceSources as string[])
+    : [];
+  const next: Config = { ...cfg, settings: { ...settings, marketplaceSources: [...new Set([...existing, source])] } };
+  return putConfig(next);
+}
+
+export function browseMarketplace(source: string): Promise<{ items: MarketplaceItem[] }> {
+  return req(`/api/marketplace/browse?source=${encodeURIComponent(source)}`);
+}
+
+export function getMarketplaceItem(source: string, path: string): Promise<{ files: MarketplaceFile[] }> {
+  return req(`/api/marketplace/item?source=${encodeURIComponent(source)}&path=${encodeURIComponent(path)}`);
+}
+
+export function installMarketplaceItem(body: {
+  projectId: string;
+  source: string;
+  path: string;
+  section: 'agents' | 'skills';
+  name: string;
+}): Promise<{ ok: true; filePaths: string[] }> {
+  return req('/api/marketplace/install', { method: 'POST', body: JSON.stringify(body) });
+}
+
+export function getMarketplacePlugins(
+  projectId?: string,
+): Promise<{ supported: boolean; plugins?: MarketplacePlugin[]; marketplaces?: MarketplaceInfo[] }> {
+  const q = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+  return req(`/api/marketplace/plugins${q}`);
+}
+
+export function installMarketplacePlugin(body: {
+  projectId: string;
+  plugin: string;
+  scope: 'user' | 'project';
+}): Promise<{ ok: true; output: string }> {
+  return req('/api/marketplace/plugins/install', { method: 'POST', body: JSON.stringify(body) });
+}
+
 // ── Teams (v1, Task 5) ───────────────────────────────────────────────────────
 export type TeamMemberTemplate = { name: string; role: string; model?: 'opus' | 'sonnet' | 'haiku' };
 export type TeamTemplate = { name: string; members: TeamMemberTemplate[]; createdAt: number };

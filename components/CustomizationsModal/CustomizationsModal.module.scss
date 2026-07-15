@@ -277,3 +277,66 @@
   left: 0;
   min-width: 140px;
 }
+
+// ── Marketplace section ─────────────────────────────────────────────────────
+.marketplace {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mpSourceRow {
+  display: flex;
+}
+
+.sourceMenu {
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 200px;
+}
+
+.addSourceRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+}
+
+.mpFileList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+}
+
+.mpFileName {
+  @include t-mono-micro;
+  color: var(--text-dim);
+}
+
+.mpNote {
+  @include t-section-note;
+}
+
+.mpMarketplaces {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mpPluginRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  > :first-child {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+.mpScopeMenu {
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 100px;
+}
