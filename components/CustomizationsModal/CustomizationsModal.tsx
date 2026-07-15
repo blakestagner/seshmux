@@ -147,7 +147,7 @@ export default function CustomizationsModal({
   const [reloadKey, setReloadKey] = useState(0);
   const [detail, setDetail] = useState<CustomizationItem | null>(null);
   const [detailSection, setDetailSection] = useState<Section>('overview');
-  const { state, dispatch } = useAppState();
+  const { dispatch } = useAppState();
   const [editing, setEditing] = useState<Editing | null>(null);
   const [saving, setSaving] = useState(false);
   const [assisting, setAssisting] = useState(false);
@@ -603,13 +603,25 @@ function MarketplaceSection({
 
   useEffect(() => {
     if (!source) return;
+    let stale = false;
     setItems(null);
     setItemsError(null);
     setSelected(null);
     browseMarketplace(source)
-      .then((r) => setItems(r.items))
-      .catch((e) => setItemsError((e as Error).message || 'failed to load'));
+      .then((r) => {
+        if (!stale) setItems(r.items);
+      })
+      .catch((e) => {
+        if (!stale) setItemsError((e as Error).message || 'failed to load');
+      });
+    return () => {
+      stale = true;
+    };
   }, [source]);
+
+  // Guards against a slow preview response from a prior selection landing
+  // after the user has already clicked into a different item.
+  const openItemPathRef = useRef<string | null>(null);
 
   function openItem(item: MarketplaceItem) {
     setSelected(item);
@@ -617,9 +629,14 @@ function MarketplaceSection({
     setFileError(null);
     setInstallError(null);
     setInstalledItem(null);
+    openItemPathRef.current = item.path;
     getMarketplaceItem(source, item.path)
-      .then((r) => setFiles(r.files))
-      .catch((e) => setFileError((e as Error).message || 'failed to load'));
+      .then((r) => {
+        if (openItemPathRef.current === item.path) setFiles(r.files);
+      })
+      .catch((e) => {
+        if (openItemPathRef.current === item.path) setFileError((e as Error).message || 'failed to load');
+      });
   }
 
   async function handleAddSource(next: string) {
@@ -660,23 +677,30 @@ function MarketplaceSection({
     }
   }
 
-  // Plugins (claude plugin marketplace)
-  const pluginsFetchedRef = useRef(false);
+  // Plugins (claude plugin marketplace). `supported` is null until a real
+  // server response comes back — a transport failure (network/parse error)
+  // must not be conflated with the server actually saying unsupported, or
+  // the pane shows a permanent "not supported" note for a retry-able error.
+  const [pluginsLoading, setPluginsLoading] = useState(false);
   const [pluginsResult, setPluginsResult] = useState<{
     supported: boolean;
     plugins: MarketplacePlugin[];
     marketplaces: MarketplaceInfo[];
   } | null>(null);
   const [pluginsError, setPluginsError] = useState<string | null>(null);
+  const [pluginsReloadKey, setPluginsReloadKey] = useState(0);
   const [pluginInstalling, setPluginInstalling] = useState<string | null>(null);
   const [pluginInstallError, setPluginInstallError] = useState<string | null>(null);
   const [installedPlugins, setInstalledPlugins] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    if (tab !== 'plugins' || pluginsFetchedRef.current) return;
-    pluginsFetchedRef.current = true;
+    if (tab !== 'plugins') return;
+    let stale = false;
+    setPluginsLoading(true);
+    setPluginsError(null);
     getMarketplacePlugins(projectId)
       .then((r) => {
+        if (stale) return;
         setPluginsResult({ supported: r.supported, plugins: r.plugins ?? [], marketplaces: r.marketplaces ?? [] });
         // `installed[].id` is "name@marketplace" — keep both the full id and the
         // bare name so a match works whether the plugin row exposes pluginId or name.
@@ -688,10 +712,16 @@ function MarketplaceSection({
         }
       })
       .catch((e) => {
-        setPluginsResult({ supported: false, plugins: [], marketplaces: [] });
+        if (stale) return;
         setPluginsError((e as Error).message || 'failed to load');
+      })
+      .finally(() => {
+        if (!stale) setPluginsLoading(false);
       });
-  }, [tab, projectId]);
+    return () => {
+      stale = true;
+    };
+  }, [tab, projectId, pluginsReloadKey]);
 
   async function handleInstallPlugin(pluginName: string, scope: 'user' | 'project') {
     if (!projectId || pluginInstalling) return;
@@ -799,8 +829,8 @@ function MarketplaceSection({
         )
       ) : (
         <PluginsPane
-          loading={!pluginsResult}
-          supported={pluginsResult?.supported ?? true}
+          loading={pluginsLoading}
+          supported={pluginsResult?.supported ?? null}
           plugins={pluginsResult?.plugins ?? []}
           marketplaces={pluginsResult?.marketplaces ?? []}
           error={pluginsError}
@@ -809,6 +839,7 @@ function MarketplaceSection({
           installedNames={installedPlugins}
           projectId={projectId}
           onInstall={handleInstallPlugin}
+          onRetry={() => setPluginsReloadKey((k) => k + 1)}
         />
       )}
     </div>
@@ -840,10 +871,12 @@ function SourceMenu({
 
   function submit() {
     if (!valid || adding) return;
-    onAdd(text).then(() => {
-      setText('');
-      setShowAdd(false);
-    });
+    onAdd(text)
+      .then(() => {
+        setText('');
+        setShowAdd(false);
+      })
+      .catch(() => {});
   }
 
   return (
@@ -898,9 +931,10 @@ function PluginsPane({
   installedNames,
   projectId,
   onInstall,
+  onRetry,
 }: {
   loading: boolean;
-  supported: boolean;
+  supported: boolean | null;
   error: string | null;
   plugins: MarketplacePlugin[];
   marketplaces: MarketplaceInfo[];
@@ -909,9 +943,20 @@ function PluginsPane({
   installedNames: Set<string>;
   projectId?: string;
   onInstall: (pluginName: string, scope: 'user' | 'project') => void;
+  onRetry: () => void;
 }) {
   if (loading) return <div className={styles.empty}>Loading…</div>;
-  if (!supported) return <div className={styles.mpNote}>claude plugin marketplace not supported by this claude version</div>;
+  // A fetch/transport failure (supported still null) is retry-able and
+  // distinct from the server telling us this claude version really doesn't
+  // support the plugin marketplace (supported === false).
+  if (error && supported === null) {
+    return (
+      <div className={styles.empty}>
+        Failed to load: {error} <Button onClick={onRetry}>Retry</Button>
+      </div>
+    );
+  }
+  if (supported === false) return <div className={styles.mpNote}>claude plugin marketplace not supported by this claude version</div>;
 
   return (
     <div className={styles.list}>
@@ -924,14 +969,13 @@ function PluginsPane({
           ))}
         </div>
       ) : null}
-      {error ? <div className={styles.badge}>{error}</div> : null}
       {installError ? <div className={styles.badge}>{installError}</div> : null}
       {plugins.length === 0 ? (
         <div className={styles.empty}>No plugins available.</div>
       ) : (
         plugins.map((p) => (
           <PluginRow
-            key={p.name}
+            key={p.pluginId ?? p.name}
             plugin={p}
             installed={installedNames.has(p.name) || (typeof p.pluginId === 'string' && installedNames.has(p.pluginId))}
             busy={installing === p.name}
@@ -973,37 +1017,39 @@ function PluginRow({
           </>
         }
       />
-      <span className={styles.assistMenuWrap} ref={wrapRef}>
-        <Button disabled={busy || installed} onClick={() => (projectId ? setOpen((v) => !v) : onInstall('user'))}>
-          {busy ? 'Installing…' : installed ? 'Installed' : 'Install'} {projectId && !installed ? <span>{open ? '▴' : '▾'}</span> : null}
-        </Button>
-        {open ? (
-          <div className={`${menu.menu} ${styles.mpScopeMenu}`} role="menu">
-            <button
-              type="button"
-              className={menu.item}
-              role="menuitem"
-              onClick={() => {
-                setOpen(false);
-                onInstall('user');
-              }}
-            >
-              user
-            </button>
-            <button
-              type="button"
-              className={menu.item}
-              role="menuitem"
-              onClick={() => {
-                setOpen(false);
-                onInstall('project');
-              }}
-            >
-              project
-            </button>
-          </div>
-        ) : null}
-      </span>
+      {projectId ? (
+        <span className={styles.assistMenuWrap} ref={wrapRef}>
+          <Button disabled={busy || installed} onClick={() => setOpen((v) => !v)}>
+            {busy ? 'Installing…' : installed ? 'Installed' : 'Install'} {!installed ? <span>{open ? '▴' : '▾'}</span> : null}
+          </Button>
+          {open ? (
+            <div className={`${menu.menu} ${styles.mpScopeMenu}`} role="menu">
+              <button
+                type="button"
+                className={menu.item}
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  onInstall('user');
+                }}
+              >
+                user
+              </button>
+              <button
+                type="button"
+                className={menu.item}
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  onInstall('project');
+                }}
+              >
+                project
+              </button>
+            </div>
+          ) : null}
+        </span>
+      ) : null}
     </div>
   );
 }
