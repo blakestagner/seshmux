@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Fastify from 'fastify';
-import { mkdtemp, readFile, writeFile, rm, mkdir, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, mkdir, symlink, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import customizationsRoutes from '../../server/routes/customizations';
@@ -77,5 +77,15 @@ describe('PUT /api/customizations/item', () => {
     expect(res.statusCode).toBe(400);
     expect(await readFile(outsideFile, 'utf8')).toBe('do not overwrite me');
     await rm(join(outsideFile, '..'), { recursive: true, force: true });
+  });
+  it('fails closed when the target is a DANGLING symlink escaping the repo', async () => {
+    const outsideDir = await mkdtemp(join(tmpdir(), 'outside-'));
+    const outsideFile = join(outsideDir, 'evil.md'); // never created
+    await mkdir(join(repo, '.claude', 'agents'), { recursive: true });
+    await symlink(outsideFile, join(repo, '.claude', 'agents', 'my-agent.md'));
+    const res = await put(app(), { ...base, section: 'agents', name: 'my-agent' });
+    expect(res.statusCode).toBe(400);
+    await expect(access(outsideFile)).rejects.toThrow();
+    await rm(outsideDir, { recursive: true, force: true });
   });
 });

@@ -3,7 +3,7 @@
 // write endpoints; v2 editing PUTs against item.filePath (see roadmap doc).
 
 import type { FastifyInstance } from 'fastify';
-import { mkdir, writeFile, realpath } from 'node:fs/promises';
+import { mkdir, writeFile, realpath, lstat } from 'node:fs/promises';
 import { dirname, sep } from 'node:path';
 import { execFile } from 'node:child_process';
 import type { AgentProvider } from '../lib/providers/types';
@@ -103,9 +103,18 @@ export default async function customizationsRoutes(f: FastifyInstance, opts: Cus
 
       const target = provider.customizationWriteTarget({ kind: 'project', repoPath }, section, name);
 
-      // Containment, symlink-proof: the deepest EXISTING ancestor of the target must
-      // realpath-resolve inside the real repo root. Fail closed on any fs error.
+      // Containment, symlink-proof: walk from the leaf up, realpath-resolving each
+      // EXISTING ancestor (leaf first, then parents) inside the real repo root. Fail
+      // closed on any fs error. A symlink AT the leaf (even dangling, where realpath
+      // ENOENTs and the loop would otherwise fall through to the parent dir check) is
+      // rejected outright by lstat below — we never write through a symlink, existing
+      // or dangling, since writeFile follows it regardless of where it points.
       try {
+        const leafStat = await lstat(target).catch(() => null);
+        if (leafStat?.isSymbolicLink()) {
+          return reply.code(400).send({ error: 'target escapes project' });
+        }
+
         const repoReal = await realpath(repoPath);
         let probe = target;
         for (;;) {
