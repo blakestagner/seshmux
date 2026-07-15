@@ -1,4 +1,5 @@
 @use 'tokens';
+@use './syntax';
 
 // Reset + base body + scrollbars. No text styling lives here (see hard rule 1).
 *,

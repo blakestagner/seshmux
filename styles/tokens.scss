@@ -84,6 +84,29 @@
   // instead of duplicated rgba() literals per component).
   --overlay-bg: rgba(0, 0, 0, 0.55);
   --shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.4);
+  // Syntax highlighting (changes panel diff/full views). Hues sit in the
+  // muted VSCode-dark register; contrast tuned for #0f0f12 family bg.
+  --syn-keyword: #c792ea;
+  --syn-string: #9ece8c;
+  --syn-number: #f2b76e;
+  --syn-comment: #63636b; // = --text-faint
+  --syn-function: #82aaff;
+  --syn-type: #5fd0c7;
+  --syn-tag: #e06c75;
+  --syn-attr: #d8b56c;
+  --syn-punct: #9a9aa3; // = --text-dim
+  --syn-variable: #e9e9ec; // = --text
+  // Filetype identity (tree glyphs + name tints).
+  --ft-styles: #e26fa8;
+  --ft-script-ts: #6cb2f0;
+  --ft-script-js: #d8b56c;
+  --ft-test: #4bb87a; // = --live
+  --ft-config: #9a9aa3;
+  --ft-docs: #5fd0c7;
+  --ft-image: #b48ee8;
+  --ft-shell: #7fbf6a;
+  --ft-markup: #e0885f;
+  --ft-dim: #63636b; // lockfiles/generated
 }
 
 :root[data-theme="light"] {
@@ -119,4 +142,26 @@
   --shadow: 0 8px 24px rgba(20, 35, 50, 0.1);
   --overlay-bg: rgba(20, 20, 24, 0.4);
   --shadow-modal: 0 20px 60px rgba(20, 35, 50, 0.25);
+  // Syntax highlighting — darkened for contrast on near-white bg.
+  --syn-keyword: #8f4bbf;
+  --syn-string: #3e7d3a;
+  --syn-number: #a25d0e;
+  --syn-comment: #9a9aa1; // = --text-faint
+  --syn-function: #2a5fb8;
+  --syn-type: #157f76;
+  --syn-tag: #b3403c;
+  --syn-attr: #8a6410;
+  --syn-punct: #6b6b73; // = --text-dim
+  --syn-variable: #1d1d21; // = --text
+  // Filetype identity.
+  --ft-styles: #b8437e;
+  --ft-script-ts: #2a6fb8;
+  --ft-script-js: #8a6410;
+  --ft-test: #2f9e63; // = --live
+  --ft-config: #6b6b73;
+  --ft-docs: #157f76;
+  --ft-image: #7a4fc0;
+  --ft-shell: #3e7d3a;
+  --ft-markup: #a25428;
+  --ft-dim: #9a9aa1;
 }
