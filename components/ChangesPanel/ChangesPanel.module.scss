@@ -69,15 +69,23 @@
   color: var(--text-faint);
 }
 
-.caretSpacer {
+.glyph {
   flex: 0 0 auto;
   width: 12px;
+  text-align: center;
 }
 
 .name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+// Filetype hue at reduced strength for unchanged rows — changed rows get the
+// full-saturation name so the working set still pops out of the tree.
+.row:not(.rowChanged) .name,
+.row:not(.rowChanged) .glyph {
+  opacity: 0.55;
 }
 
 .deleted {

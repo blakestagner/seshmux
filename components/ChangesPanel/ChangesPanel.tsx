@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { getGitChanges, getGitFileDiff, type FileChange, type GitChanges } from '../../lib/client/api';
 import { buildTree, collapsedByDefault, type TreeNode } from '../../lib/client/git-tree';
 import { parseUnifiedDiff, type DiffLine } from '../../lib/client/diff';
+import { glyphFor } from '../../lib/client/file-glyphs';
 import Button from '../ui/Button/Button';
 import IconButton from '../ui/IconButton/IconButton';
 import styles from './ChangesPanel.module.scss';
@@ -42,6 +43,7 @@ function Row({
 }) {
   const isCollapsed = collapsed.has(node.path);
   const hasDirShape = node.children.length > 0;
+  const fg = hasDirShape ? null : glyphFor(node.name);
   return (
     <>
       <div
@@ -55,9 +57,14 @@ function Row({
         {hasDirShape ? (
           <span className={styles.caret}>{isCollapsed ? '▸' : '▾'}</span>
         ) : (
-          <span className={styles.caretSpacer} />
+          <span className={styles.glyph} style={{ color: `var(${fg!.colorVar})` }}>
+            {fg!.glyph}
+          </span>
         )}
-        <span className={`${styles.name} ${node.change?.status === 'D' ? styles.deleted : ''}`}>
+        <span
+          className={`${styles.name} ${node.change?.status === 'D' ? styles.deleted : ''}`}
+          style={fg ? { color: `var(${fg.colorVar})` } : undefined}
+        >
           {node.name}
           {hasDirShape ? '/' : ''}
         </span>
