@@ -198,6 +198,29 @@ export class ClaudeProvider implements AgentProvider {
         : scanMcpJson(join(s.repoPath, '.mcp.json'), 'claude', 'project'),
   };
 
+  // Marketplace phase 2 (Task 4): plugin list/install argv. Verified against the real
+  // CLI (commander-based): `--` ends option parsing for the whole remaining argv, so a
+  // flag placed AFTER `--` (e.g. `-s user`) is silently swallowed as an inert extra
+  // positional, NOT bound to the `-s/--scope` option — confirmed via
+  // `claude plugin install -- foo -s badscope` accepting the bogus scope silently vs.
+  // `claude plugin install -s badscope -- foo` correctly rejecting it. So `-s <scope>`
+  // must come BEFORE `--`, with the untrusted plugin name shielded AFTER it (confirmed
+  // `-- --sneaky-flag` installs a plugin literally named "--sneaky-flag", never parsed
+  // as a flag).
+  pluginCommands = {
+    listAvailable: (): string[] => [CLAUDE_BIN, 'plugin', 'list', '--available', '--json'],
+    listMarketplaces: (): string[] => [CLAUDE_BIN, 'plugin', 'marketplace', 'list', '--json'],
+    install: (plugin: string, scope: 'user' | 'project'): string[] => [
+      CLAUDE_BIN,
+      'plugin',
+      'install',
+      '-s',
+      scope,
+      '--',
+      plugin,
+    ],
+  };
+
   private custRoot(s: CustomizationScope, kind: 'agents' | 'skills'): string {
     return s.kind === 'global' ? join(this.homeDir, '.claude', kind) : join(s.repoPath, '.claude', kind);
   }

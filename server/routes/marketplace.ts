@@ -5,6 +5,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { randomBytes } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { rename, rm } from 'node:fs/promises';
 import { dirname, join, basename } from 'node:path';
 import { parseFrontmatter } from '../lib/providers/customizations';
@@ -18,6 +19,21 @@ export interface MarketplaceRouteOpts {
   readSettings?: () => Promise<Record<string, unknown>>;
   resolveRepo?: (projectId: string) => Promise<string | null>;
   listProviders?: () => Promise<AgentProvider[]>;
+  runArgv?: (argv: string[], cwd: string) => Promise<{ text: string; ok: boolean }>;
+}
+
+// Mirrors server/routes/customizations.ts:defaultRunHeadless — execFile, never a shell
+// string, stdin closed so an interactive prompt can't hang the child.
+function defaultRunArgv(argv: string[], cwd: string): Promise<{ text: string; ok: boolean }> {
+  const [bin, ...rest] = argv;
+  return new Promise((resolve) => {
+    const child = execFile(
+      bin, rest,
+      { cwd, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 },
+      (err, stdout) => resolve({ text: (stdout || '').trim(), ok: !err }),
+    );
+    child.stdin?.end();
+  });
 }
 
 const SOURCE_RE = /^[\w.-]+\/[\w.-]+$/;
@@ -121,7 +137,7 @@ const INSTALL_NAME_RE = /^[a-z0-9-]{1,64}$/;
 // joined onto it. writeWithinRepo still fails closed on an actual escape, this
 // is a cheap pre-check so we never even attempt a write for an obviously bad path.
 function isSafeRelPath(rel: string): boolean {
-  if (!rel || rel.startsWith('/') || rel.includes('\0')) return false;
+  if (!rel || rel.startsWith('/') || rel.includes('\0') || rel.includes('\\')) return false;
   return rel.split('/').every((part) => part !== '' && part !== '..');
 }
 
@@ -135,11 +151,14 @@ function stampSource(content: string, source: string): string {
   return `${content.slice(0, end)}\nsource: ${source}${content.slice(end)}`;
 }
 
+const PLUGIN_NAME_RE = /^[A-Za-z0-9@/._-]{1,128}$/;
+
 export default async function marketplaceRoutes(f: FastifyInstance, opts: MarketplaceRouteOpts = {}) {
   const fetchText = opts.fetchText ?? defaultFetchText;
   const readSettings = opts.readSettings ?? defaultReadSettings;
   const resolveRepo = opts.resolveRepo ?? scannedResolveRepo;
   const listProviders = opts.listProviders ?? getProviders;
+  const runArgv = opts.runArgv ?? defaultRunArgv;
 
   f.get<{ Querystring: { source?: string } }>('/api/marketplace/browse', async (req, reply) => {
     const parsed = parseSource(req.query.source);
@@ -252,6 +271,8 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
     );
     if (matches.length === 0) return reply.code(404).send({ error: 'not found' });
     if (matches.length > MAX_FILES) return reply.code(400).send({ error: 'too many files' });
+    if (section === 'agents' && matches.length !== 1)
+      return reply.code(400).send({ error: 'agent path must match exactly one file' });
 
     // Belt over the guard's suspenders: reject any relative path that could
     // escape the skill dir, before we fetch or write anything.
@@ -312,6 +333,57 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
       return reply.code(400).send({ error: message });
     }
   });
+
+  // Probe endpoint, not a normal CRUD read: any failure along the way (unknown project,
+  // spawn error, non-JSON output, no provider with pluginCommands) resolves to
+  // `{ supported: false }` with a 200, never an error status — the client uses this to
+  // decide whether to show the plugin marketplace UI at all.
+  f.get<{ Querystring: { projectId?: string } }>('/api/marketplace/plugins', async (req) => {
+    const { projectId } = req.query;
+    const repoPath = projectId ? await resolveRepo(projectId) : null;
+    const cwd = repoPath ?? process.cwd();
+
+    const provider = (await listProviders()).find((p) => p.pluginCommands);
+    if (!provider?.pluginCommands) return { supported: false };
+
+    try {
+      const [avail, mkts] = await Promise.all([
+        runArgv(provider.pluginCommands.listAvailable(), cwd),
+        runArgv(provider.pluginCommands.listMarketplaces(), cwd),
+      ]);
+      if (!avail.ok || !mkts.ok) return { supported: false };
+
+      const availParsed = JSON.parse(avail.text);
+      const mktsParsed = JSON.parse(mkts.text);
+      const plugins = Array.isArray(availParsed?.available) ? availParsed.available : null;
+      const marketplaces = Array.isArray(mktsParsed) ? mktsParsed : null;
+      if (!plugins || !marketplaces) return { supported: false };
+
+      return { supported: true, plugins, marketplaces };
+    } catch {
+      return { supported: false };
+    }
+  });
+
+  f.post<{ Body: { projectId?: string; plugin?: string; scope?: string } }>(
+    '/api/marketplace/plugins/install',
+    async (req, reply) => {
+      const { projectId, plugin, scope } = req.body ?? {};
+      if (typeof plugin !== 'string' || !PLUGIN_NAME_RE.test(plugin))
+        return reply.code(400).send({ error: 'bad plugin' });
+      if (scope !== 'user' && scope !== 'project') return reply.code(400).send({ error: 'bad scope' });
+
+      const repoPath = projectId ? await resolveRepo(projectId) : null;
+      if (!repoPath) return reply.code(404).send({ error: 'unknown project' });
+
+      const provider = (await listProviders()).find((p) => p.pluginCommands);
+      if (!provider?.pluginCommands) return reply.code(400).send({ error: 'provider does not support plugins' });
+
+      const { text, ok } = await runArgv(provider.pluginCommands.install(plugin, scope), repoPath);
+      if (!ok) return reply.code(502).send({ error: text || 'install failed' });
+      return { ok: true, output: text };
+    },
+  );
 
   f.get('/api/marketplace/sources', async () => {
     const settings = await readSettings();

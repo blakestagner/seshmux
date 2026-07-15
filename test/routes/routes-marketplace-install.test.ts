@@ -141,6 +141,47 @@ describe('POST /api/marketplace/install', () => {
     await expect(stat(join(repoPath, '.claude', 'skills', 'foo'))).rejects.toThrow();
   });
 
+  it('400s a file with a backslash segment (win32 traversal defense-in-depth) and writes nothing', async () => {
+    const { f, repoPath } = await app(async (url: string) => {
+      if (url === 'https://api.github.com/repos/acme/backslash-repo/git/trees/HEAD?recursive=1') {
+        return JSON.stringify({
+          tree: [
+            { path: 'skills/foo/SKILL.md', type: 'blob' },
+            { path: 'skills/foo/sub\\..\\..\\evil.md', type: 'blob' },
+          ],
+        });
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/marketplace/install',
+      payload: { projectId: 'proj-1', source: 'acme/backslash-repo', path: 'skills/foo', section: 'skills', name: 'foo' },
+    });
+    expect(res.statusCode).toBe(400);
+    await expect(stat(join(repoPath, '.claude', 'skills', 'foo'))).rejects.toThrow();
+  });
+
+  it('400s an agent install whose path matches more than one blob', async () => {
+    const { f } = await app(async (url: string) => {
+      if (url === 'https://api.github.com/repos/acme/multi-agent-repo/git/trees/HEAD?recursive=1') {
+        return JSON.stringify({
+          tree: [
+            { path: 'agents/baz.md', type: 'blob' },
+            { path: 'agents/baz.md/extra.md', type: 'blob' },
+          ],
+        });
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/marketplace/install',
+      payload: { projectId: 'proj-1', source: 'acme/multi-agent-repo', path: 'agents/baz.md', section: 'agents', name: 'baz' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
   it('502s when a fetch fails mid-set and writes nothing (temp-dir rename semantics)', async () => {
     const { f, repoPath } = await app(async (url: string) => {
       if (url === 'https://api.github.com/repos/acme/fail-mid-repo/git/trees/HEAD?recursive=1') {
