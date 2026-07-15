@@ -37,6 +37,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { Lru } from '../store/lru';
 import { decodeProjectDir, derivedWorkspaceParent, encodeProjectId, storeBytes } from '../store/scan';
 import type { SearchHit, SearchOpts } from '../store/search';
 import { pricingFor, type UsageSummary } from '../store/usage';
@@ -128,26 +129,35 @@ const summaryCache = new Map<string, RolloutSummary>();
 
 // Full-file line cache for search (PERF-6): search re-read every rollout end-to-end on
 // each keystroke. Keyed (file,mtime) like summaryCache — a rollout append bumps mtime and
-// orphans the old key; codex trees are a handful of files so unbounded is fine (same
-// ceiling summaryCache already accepts).
-const searchLinesCache = new Map<string, string[]>();
+// orphans the old key. LRU-bounded: unlike summaryCache's small head entries, these hold
+// WHOLE files, so a months-old rollout tree would otherwise pin the entire store in RSS.
+const searchLinesCache = new Lru<string[]>(100);
+
+// See CodexProvider.allSummaries — TTL promise-memo of the full-store walk.
+const SUMMARIES_TTL_MS = 3000;
+const summariesCache = new Map<string, { at: number; p: Promise<{ file: string; mtime: number; touchedAt: number; s: RolloutSummary }[]> }>();
+
+// Drop the memoized walk so the next read re-walks disk. Wired to the codex chokidar
+// watcher in events-hub (alongside invalidateScanCache, which only covers claude's
+// scanRoot — codex never went through it).
+export function invalidateCodexSummaries(): void {
+  summariesCache.clear();
+}
 
 async function readSearchLines(file: string, mtime: number): Promise<string[]> {
-  const key = `${file}:${mtime}`;
-  const cached = searchLinesCache.get(key);
-  if (cached) return cached;
-  const lines: string[] = [];
-  const rl = createInterface({
-    input: createReadStream(file, { encoding: 'utf8' }),
-    crlfDelay: Infinity,
+  return searchLinesCache.get(`${file}:${mtime}`, async () => {
+    const lines: string[] = [];
+    const rl = createInterface({
+      input: createReadStream(file, { encoding: 'utf8' }),
+      crlfDelay: Infinity,
+    });
+    try {
+      for await (const line of rl) lines.push(line);
+    } finally {
+      rl.close();
+    }
+    return lines;
   });
-  try {
-    for await (const line of rl) lines.push(line);
-  } finally {
-    rl.close();
-  }
-  searchLinesCache.set(key, lines);
-  return lines;
 }
 
 async function readSummary(filePath: string, mtime: number): Promise<RolloutSummary> {
@@ -293,7 +303,24 @@ export class CodexProvider implements AgentProvider {
     this.root = opts.root ?? (opts.homeDir ? join(opts.homeDir, '.codex', 'sessions') : codexStoreRoot());
   }
 
+  // Short-TTL promise-memo of the store walk, keyed per root (mirrors scan.ts PERF-2).
+  // Without it every scanProjects/listSessions/search/readCtx call re-walked the whole
+  // YYYY/MM/DD tree + stat'd every file — and the watch→ctx fan-out did that PER rollout
+  // change. Caching the PROMISE lets concurrent callers (e.g. /api/sessions/live's
+  // Promise.all over N PTYs) share one in-flight walk. Invalidated by the codex chokidar
+  // watcher via invalidateCodexSummaries, so staleness is watcher-debounce-bounded.
   private async allSummaries(): Promise<{ file: string; mtime: number; touchedAt: number; s: RolloutSummary }[]> {
+    const hit = summariesCache.get(this.root);
+    if (hit && Date.now() - hit.at < SUMMARIES_TTL_MS) return hit.p;
+    const p = this.computeAllSummaries();
+    summariesCache.set(this.root, { at: Date.now(), p });
+    p.catch(() => {
+      if (summariesCache.get(this.root)?.p === p) summariesCache.delete(this.root);
+    });
+    return p;
+  }
+
+  private async computeAllSummaries(): Promise<{ file: string; mtime: number; touchedAt: number; s: RolloutSummary }[]> {
     const files = await findRolloutFiles(this.root);
     const results = [];
     for (const file of files) {

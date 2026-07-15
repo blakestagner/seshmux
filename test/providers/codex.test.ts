@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { cpSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
-import { CodexProvider } from '../../server/lib/providers/codex';
+import { CodexProvider, invalidateCodexSummaries } from '../../server/lib/providers/codex';
 
 const root = new URL('../fixtures/codex-sessions', import.meta.url).pathname;
 
@@ -115,8 +115,12 @@ describe('CodexProvider.search (PERF-6 (file,mtime) line cache)', () => {
       expect(cached.length).toBe(first.length);
 
       // Bump mtime → cache key changes → the now-empty file is re-read → no hit.
+      // In production the chokidar watcher fires invalidateCodexSummaries on the
+      // change; here we call it directly (the walk memo would otherwise hold the
+      // old mtime for its 3s TTL).
       const later = new Date(t0.getTime() + 5_000);
       utimesSync(rollout, later, later);
+      invalidateCodexSummaries();
       expect(await cx.search('feature')).toEqual([]);
     } finally {
       rmSync(tmp, { recursive: true, force: true });

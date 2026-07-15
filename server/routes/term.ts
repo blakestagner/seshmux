@@ -146,9 +146,17 @@ export default async function termRoutes(f: FastifyInstance, deps: TermRouteDeps
       conn = await (deps.dialFn ?? dial)();
       const { ptys } = await conn.list();
       const alive = ptys.filter((p) => p.alive);
+      // N PTYs in the same repo share one resolve — the scan behind it is
+      // provider-wide, so per-PTY calls with the same cwd were pure duplication.
+      const byCwd = new Map<string, Promise<{ projectId?: string; sessionId?: string }>>();
       const live = await Promise.all(
         alive.map(async (p) => {
-          const { projectId, sessionId } = await resolveSessionForCwd(p.cwd);
+          let r = byCwd.get(p.cwd);
+          if (!r) {
+            r = resolveSessionForCwd(p.cwd);
+            byCwd.set(p.cwd, r);
+          }
+          const { projectId, sessionId } = await r;
           return { ptyId: p.ptyId, cwd: p.cwd, tmuxName: p.tmuxName, projectId, sessionId };
         }),
       );

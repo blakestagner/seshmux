@@ -29,6 +29,7 @@ import { startWatching, type WatchEvent, type Watcher } from './lib/store/watch'
 import { invalidateScanCache } from './lib/store/scan';
 import { getProviders } from './lib/providers/types';
 import { claudeStoreRoot, claudeSubagentWatchConfig } from './lib/providers/claude';
+import { invalidateCodexSummaries } from './lib/providers/codex';
 import chokidar from 'chokidar';
 import fsSync from 'node:fs';
 import path from 'node:path';
@@ -384,7 +385,12 @@ export async function createEventsHub(): Promise<EventsHub> {
         // mtime → rail sort). Drop that provider's cached scan so the next read
         // re-walks; staleness is now bounded by the watcher debounce, not the
         // TTL floor. ctx-only events don't affect the scan.
-        if (ev.event === 'session-new' || ev.event === 'session-touch') invalidateScanCache(ev.provider);
+        if (ev.event === 'session-new' || ev.event === 'session-touch') {
+          invalidateScanCache(ev.provider);
+          // invalidateScanCache only covers scanRoot (claude); codex's store walk
+          // is memoized separately in the provider.
+          if (ev.provider === 'codex') invalidateCodexSummaries();
+        }
         broadcast(ev);
       },
     });
