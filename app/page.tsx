@@ -329,7 +329,12 @@ function AppShell() {
         }
         activeLoadedRef.current = true;
       })
-      .catch(() => {}); // no daemon / no live sessions → nothing to rehydrate
+      .catch(() => {
+        // No daemon / getProjects failed → nothing to rehydrate, but persistence
+        // must still arm: leaving the ref false killed active-tab saving for the
+        // whole session (next reload silently lost the active tab).
+        activeLoadedRef.current = true;
+      });
 
     // Live events: needs-input status → tab dots, ctx → statusbar meter. On every
     // (re)connect the server replays status for ALL live PTYs, so dots self-heal
@@ -339,7 +344,8 @@ function AppShell() {
       waiting: 'waiting',
       idle: 'live',
     };
-    const client = openEventsSocket((e) => {
+    const client = openEventsSocket(
+      (e) => {
       setRestarting(e.event === 'server-restarting');
       switch (e.event) {
         case 'status': {
@@ -418,7 +424,11 @@ function AppShell() {
         default:
           break;
       }
-    });
+      },
+      // onOpen: with zero live PTYs a reconnect replays no events, so the
+      // event-based reset above never fires and the banner stuck forever.
+      () => setRestarting(false),
+    );
 
     // A background BROWSER tab can mark the currently-active seshmux tab
     // unviewed (activateTab-clear alone can't catch that — the tab was never

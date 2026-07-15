@@ -81,7 +81,10 @@ export default function GridView() {
     // carries whatever else changed in that window, with gridLayout pinned
     // to this tree.
     dispatch({ type: 'setConfig', config: { ...configRef.current, gridLayout: t } });
-    if (saveTimer.current) clearTimeout(saveTimer.current);
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null; // a cleared handle must not look pending to the unmount flush
+    }
     if (!configLoadedRef.current) {
       // Config hasn't hydrated yet — nothing to PUT (would stomp the real
       // config.json with defaults). The tree is still tracked in-memory
@@ -93,6 +96,10 @@ export default function GridView() {
     pendingSave.current = t;
     saveTimer.current = setTimeout(() => {
       pendingSave.current = null;
+      // Null the handle too: the unmount flush gates on saveTimer.current, and a
+      // stale fired timer made it PUT the already-nulled pendingSave — wiping the
+      // layout that the debounced PUT had just written (reload lost the grid).
+      saveTimer.current = null;
       putConfig({ ...configRef.current, gridLayout: t });
     }, 500);
   }
