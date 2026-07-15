@@ -19,6 +19,7 @@ import {
   browseMarketplace,
   getMarketplaceItem,
   installMarketplaceItem,
+  runSafetyCheck,
   getMarketplacePlugins,
   installMarketplacePlugin,
   uninstallMarketplacePlugin,
@@ -30,8 +31,11 @@ import {
   type MarketplaceSource,
 } from '../../lib/client/api';
 import Button from '../ui/Button/Button';
+import { PROV } from '../ui/ProviderBadge/ProviderBadge';
 import { useAppState } from '../../lib/client/store';
-import type { Project } from '../../lib/client/types';
+import type { Project, ProviderId } from '../../lib/client/types';
+
+type SafetyResult = { verdict: 'ok' | 'caution' | 'danger'; concerns: string[]; cached: boolean };
 
 // Mirrors server SOURCE_RE (server/routes/marketplace.ts) — kebab owner/repo.
 const MARKETPLACE_SOURCE_RE = /^[\w.-]+\/[\w.-]+$/;
@@ -121,6 +125,12 @@ export default function MarketplaceSection({
   const [confirmInstall, setConfirmInstall] = useState(false);
   const [installedItem, setInstalledItem] = useState<MarketplaceItem | null>(null);
   const [installedTo, setInstalledTo] = useState<string>('');
+  // Opt-in Layer 3 AI safety check (Task 6) — strictly click-triggered, never
+  // auto-run on openItem (costs provider tokens). Reset alongside warnings
+  // whenever the previewed item changes.
+  const [safetyChecking, setSafetyChecking] = useState(false);
+  const [safetyResult, setSafetyResult] = useState<SafetyResult | null>(null);
+  const [safetyError, setSafetyError] = useState<string | null>(null);
   // Install targets: user level plus every ENABLED (non-hidden, non-missing)
   // project — the Projects section's visibility toggles double as the opt-in.
   const enabledProjects = state.projects.filter((p) => !state.config.hidden.includes(p.id) && !p.missing);
@@ -173,6 +183,8 @@ export default function MarketplaceSection({
     setInstalledItem(null);
     setInstalledTo('');
     setConfirmInstall(false);
+    setSafetyResult(null);
+    setSafetyError(null);
     openItemPathRef.current = item.path;
     getMarketplaceItem(source, item.path, sha)
       .then((r) => {
@@ -239,6 +251,24 @@ export default function MarketplaceSection({
       setInstallError(stale ? 'Source changed since preview — re-open it to install the latest version.' : err.message || 'install failed');
     } finally {
       setInstalling(false);
+    }
+  }
+
+  // Opt-in Layer 3 AI review of the previewed item (Task 4's /safety-check).
+  // Needs a project in scope — the route resolves a repo cwd to run the
+  // provider CLI against — so the button is disabled/hidden without one (see
+  // the global-modal disabled title below). Click-triggered only.
+  async function handleSafetyCheck(provider: ProviderId) {
+    if (!selected || !sha || !projectId || safetyChecking) return;
+    setSafetyChecking(true);
+    setSafetyError(null);
+    try {
+      const result = await runSafetyCheck({ source, sha, path: selected.path, provider, projectId });
+      setSafetyResult(result);
+    } catch (e) {
+      setSafetyError((e as Error).message || 'safety check failed');
+    } finally {
+      setSafetyChecking(false);
     }
   }
 
@@ -385,6 +415,30 @@ export default function MarketplaceSection({
                   </div>
                 ))}
               </div>
+            ) : null}
+            <div className={styles.mpSafetyRow}>
+              <SafetyCheckMenu
+                label={safetyChecking ? 'Checking…' : 'Safety check with'}
+                disabled={safetyChecking || !files}
+                projectId={projectId}
+                onPick={handleSafetyCheck}
+              />
+              {safetyResult ? (
+                <>
+                  <span className={styles[`mpVerdict${safetyResult.verdict[0].toUpperCase()}${safetyResult.verdict.slice(1)}`]}>
+                    {safetyResult.verdict}
+                  </span>
+                  {safetyResult.cached ? <span className={styles.mpSafetyCached}>cached</span> : null}
+                </>
+              ) : null}
+            </div>
+            {safetyError ? <div className={styles.badge}>{safetyError}</div> : null}
+            {safetyResult && safetyResult.concerns.length > 0 ? (
+              <ul className={styles.mpSafetyConcerns}>
+                {safetyResult.concerns.map((c, i) => (
+                  <li key={i}>{c}</li>
+                ))}
+              </ul>
             ) : null}
             {fileError ? (
               <div className={styles.empty}>Failed to load: {fileError}</div>
@@ -579,6 +633,50 @@ function SourceMenu({
             <MenuItem onClick={() => setShowAdd(true)}>+ Add source…</MenuItem>
           )}
           {addError ? <div className={styles.badge}>{addError}</div> : null}
+        </>
+      )}
+    </LabeledDropdown>
+  );
+}
+
+// Provider picker for the opt-in safety check — same LabeledDropdown +
+// PROV pattern as CustomizationsModal's AssistMenu ("Polish with"). The route
+// needs a repo cwd to run the provider CLI against, so without a projectId
+// (global modal) the trigger is a disabled Button with a title explaining why,
+// matching how PluginRow disables project-scope actions in the global modal.
+function SafetyCheckMenu({
+  label,
+  disabled,
+  projectId,
+  onPick,
+}: {
+  label: string;
+  disabled?: boolean;
+  projectId?: string;
+  onPick: (provider: ProviderId) => void;
+}) {
+  if (!projectId) {
+    return (
+      <span title="Safety check needs an open project — open this item from a project's Customizations panel.">
+        <Button disabled>Safety check with</Button>
+      </span>
+    );
+  }
+  return (
+    <LabeledDropdown label={label} disabled={disabled} menuClassName={styles.mpSafetyMenu}>
+      {(close) => (
+        <>
+          {(Object.keys(PROV) as ProviderId[]).map((p) => (
+            <MenuItem
+              key={p}
+              onClick={() => {
+                close();
+                onPick(p);
+              }}
+            >
+              {PROV[p].glyph} {p}
+            </MenuItem>
+          ))}
         </>
       )}
     </LabeledDropdown>

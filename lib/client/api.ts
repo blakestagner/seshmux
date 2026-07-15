@@ -399,6 +399,20 @@ export function installMarketplaceItem(body: {
   return req('/api/marketplace/install', { method: 'POST', body: JSON.stringify(body) });
 }
 
+// Opt-in Layer 3 AI review of a sha-pinned item (Task 4 route). Verdict is
+// cached server-side (sha-pinned content is immutable) — `cached: true` means
+// no fresh CLI run happened. Strictly click-triggered from the UI; never call
+// this automatically (it spends provider tokens).
+export function runSafetyCheck(body: {
+  source: string;
+  sha: string;
+  path: string;
+  provider: ProviderId;
+  projectId: string;
+}): Promise<{ verdict: 'ok' | 'caution' | 'danger'; concerns: string[]; cached: boolean }> {
+  return req('/api/marketplace/safety-check', { method: 'POST', body: JSON.stringify(body) });
+}
+
 export function getMarketplacePlugins(
   projectId?: string,
 ): Promise<{
