@@ -188,9 +188,14 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
         continue;
       }
 
-      const agentMatch = /^agents\/([^/]+)\.md$/.exec(entry.path);
+      // Top-level agents/<name>.md AND plugin-nested <plugin>/agents/<name>.md
+      // (claude-plugins-official nests 27 agents inside plugins/). Nested ones
+      // get the same plugin-dir prefix as nested skills.
+      const agentMatch = /^(?:(.+)\/)?agents\/([^/]+)\.md$/.exec(entry.path);
       if (agentMatch) {
-        matched.push({ path: entry.path, name: agentMatch[1], section: 'agents' });
+        const plugin = agentMatch[1]?.split('/').pop();
+        const name = plugin ? `${plugin}-${agentMatch[2]}` : agentMatch[2];
+        matched.push({ path: entry.path, name, section: 'agents' });
       }
     }
     const items: MarketplaceItem[] = await Promise.all(

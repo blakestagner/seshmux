@@ -47,6 +47,7 @@ describe('GET /api/marketplace/browse', () => {
       tree: [
         { path: 'plugins/discord/skills/access/SKILL.md', type: 'blob' },
         { path: 'skills/plain/SKILL.md', type: 'blob' },
+        { path: 'plugins/code-modernization/agents/scaffolder.md', type: 'blob' },
       ],
     };
     const f = app(async (url: string) => {
@@ -54,7 +55,11 @@ describe('GET /api/marketplace/browse', () => {
       return skillMd('desc');
     });
     const res = await f.inject({ method: 'GET', url: '/api/marketplace/browse?source=acme/nested-repo' });
-    expect(res.json().items.map((i: { name: string }) => i.name)).toEqual(['discord-access', 'plain']);
+    expect(res.json().items.map((i: { name: string }) => i.name)).toEqual([
+      'discord-access',
+      'plain',
+      'code-modernization-scaffolder',
+    ]);
   });
 
   it('400s a bad source', async () => {
