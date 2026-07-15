@@ -59,4 +59,19 @@ describe('writeWithinRepo', () => {
     }
     await rm(outside, { recursive: true, force: true });
   });
+
+  it('surfaces a real write failure (not FsGuardError) when the parent path is a file', async () => {
+    // Containment passes (everything resolves inside repo); mkdir on the write
+    // phase then fails with EEXIST because ".claude/agents" is a plain file.
+    await mkdir(join(repo, '.claude'), { recursive: true });
+    await writeFile(join(repo, '.claude', 'agents'), 'not a directory', 'utf8');
+    const target = join(repo, '.claude', 'agents', 'my-agent.md');
+    try {
+      await writeWithinRepo(repo, target, '# hi');
+      throw new Error('expected rejection');
+    } catch (err) {
+      expect(err).not.toBeInstanceOf(FsGuardError);
+      expect((err as NodeJS.ErrnoException).code).toBe('EEXIST');
+    }
+  });
 });

@@ -18,6 +18,8 @@ export async function writeWithinRepo(repoPath: string, target: string, content:
   // would otherwise fall through to the parent dir check) is rejected outright
   // by lstat below — we never write through a symlink, existing or dangling,
   // since writeFile follows it regardless of where it points.
+  // Containment check: fail closed. Any fs error here (including a bogus
+  // repoPath) is treated as an escape attempt, not a generic write failure.
   try {
     const leafStat = await lstat(target).catch(() => null);
     if (leafStat?.isSymbolicLink()) {
@@ -40,12 +42,15 @@ export async function writeWithinRepo(repoPath: string, target: string, content:
         probe = parent;
       }
     }
-    await mkdir(dirname(target), { recursive: true });
-    // ponytail: check-then-write TOCTOU window remains; closing it needs O_NOFOLLOW/openat,
-    // revisit if seshmux ever serves non-local users
-    await writeFile(target, content, 'utf8');
   } catch (err) {
     if (err instanceof FsGuardError) throw err;
     throw new FsGuardError('target escapes project');
   }
+
+  // Write phase: containment is already proven, so let real fs errors
+  // (EACCES, ENOSPC, ENOTDIR, ...) surface as-is for the route's 'write failed' branch.
+  await mkdir(dirname(target), { recursive: true });
+  // ponytail: check-then-write TOCTOU window remains; closing it needs O_NOFOLLOW/openat,
+  // revisit if seshmux ever serves non-local users
+  await writeFile(target, content, 'utf8');
 }
