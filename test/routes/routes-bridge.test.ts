@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Fastify from 'fastify';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import bridgeRoutes, { type BridgeRouteDeps } from '../../server/routes/bridge';
@@ -25,6 +25,8 @@ function makeApp(over: Partial<BridgeRouteDeps> = {}) {
   const deps: BridgeRouteDeps = {
     startSession,
     resolveRepo: () => repo,
+    // Hermetic: never let the default hit the real provider stores.
+    resolveSessionCwd: async () => null,
     // Source session is claude → target must be codex.
     resolveSessionProvider: async () => 'claude',
     composeBrief: async () => '# Handoff brief\ntask: do the thing',
@@ -304,5 +306,49 @@ describe('GET /api/bridge/peek', () => {
       method: 'GET', url: '/api/bridge/peek?projectId=demo&callerProjectId=demo', headers: { origin },
     });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+// Worktree fold: a folded worktree session lists under the PARENT projectId, but its
+// work happened in the worktree checkout — spawn/compose/scratchpad must use the
+// session's OWN cwd, or the handoff diffs/executes against the wrong tree.
+describe('bridge uses the session\'s own cwd for folded worktree sessions', () => {
+  it('handoff spawns and writes the brief in the session cwd, not the parent repo', async () => {
+    const wt = join(repo, '.claude', 'worktrees', 'agent-a');
+    mkdirSync(wt, { recursive: true });
+    const { f, calls } = makeApp({ resolveSessionCwd: async () => wt });
+    const res = await f.inject({
+      method: 'POST', url: '/api/bridge/handoff', headers: { origin },
+      payload: { projectId: 'demo', sessionId: 's1' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(calls[0].projectPath).toBe(wt);
+    expect(existsSync(join(wt, '.seshmux', 'handoff-brief.md'))).toBe(true);
+    expect(existsSync(join(repo, '.seshmux', 'handoff-brief.md'))).toBe(false);
+  });
+
+  it('falls back to the repo when the session cwd no longer exists (worktree removed)', async () => {
+    const gone = join(repo, '.claude', 'worktrees', 'gone');
+    const { f, calls } = makeApp({ resolveSessionCwd: async () => gone });
+    const res = await f.inject({
+      method: 'POST', url: '/api/bridge/handoff', headers: { origin },
+      payload: { projectId: 'demo', sessionId: 's1' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(calls[0].projectPath).toBe(repo);
+  });
+
+  it('wait resolves a live PTY whose cwd is a worktree of the project repo', async () => {
+    const wt = join(repo, '.claude', 'worktrees', 'agent-a');
+    const { f } = makeApp({
+      listLivePtys: async () => [{ ptyId: 'pty-wt', cwd: wt }],
+      waitForStatus: async (ptyId) => ({ status: 'idle' as const }),
+    });
+    const res = await f.inject({
+      method: 'POST', url: '/api/bridge/wait', headers: { origin },
+      payload: { projectId: 'demo', status: 'idle' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe('idle');
   });
 });

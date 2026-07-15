@@ -7,7 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scanProjects, listSessions } from '../../server/lib/store/scan';
+import { scanProjects, listSessions, sessionFilePath } from '../../server/lib/store/scan';
+import { ClaudeProvider } from '../../server/lib/providers/claude';
 import * as workspaces from '../../server/lib/workspaces';
 
 let configDir: string;
@@ -144,5 +145,86 @@ describe('scanProjects workspace grouping', () => {
     expect(sessions.map((s) => s.id)).toContain('ws-1');
 
     await workspaces.remove(wsDir, { mode: 'discard' });
+  });
+});
+
+// Claude Code's own EnterWorktree creates `<repo>/.claude/worktrees/<name>` with
+// no workspaces.json record at all — must fold in from the cwd pattern alone.
+describe('scanProjects .claude/worktrees pattern grouping', () => {
+  it('folds a .claude/worktrees cwd into its parent (one group, summed count), no workspaces.json record', async () => {
+    const parentDirName = repo.replace(/\//g, '-');
+    writeSessionFile(join(storeRoot, parentDirName), 'parent-1', repo, 'main', 'do the main thing');
+
+    const wtDir = join(repo, '.claude', 'worktrees', 'skills-agents-authoring');
+    const wtDirName = wtDir.replace(/\//g, '-');
+    writeSessionFile(join(storeRoot, wtDirName), 'wt-1', wtDir, 'marketplace', 'worktree thing');
+
+    const projects = await scanProjects(storeRoot, 'claude');
+
+    const matches = projects.filter((p) => p.path === repo);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].sessionCount).toBe(2);
+    expect(projects.some((p) => p.path === wtDir)).toBe(false);
+
+    const sessions = await listSessions(matches[0].id, { root: storeRoot, provider: 'claude' });
+    const ids = sessions.map((s) => s.id);
+    expect(ids).toContain('parent-1');
+    expect(ids).toContain('wt-1');
+  });
+
+  it('a .claude/worktrees cwd with no parent-repo sessions yet still synthesizes the parent project', async () => {
+    const wtDir = join(repo, '.claude', 'worktrees', 'skills-agents-authoring');
+    const wtDirName = wtDir.replace(/\//g, '-');
+    writeSessionFile(join(storeRoot, wtDirName), 'wt-1', wtDir, 'marketplace', 'worktree thing');
+
+    const projects = await scanProjects(storeRoot, 'claude');
+    const match = projects.find((p) => p.path === repo);
+    expect(match).toBeDefined();
+    expect(match!.sessionCount).toBe(1);
+    expect(match!.missing).toBe(false);
+
+    const sessions = await listSessions(match!.id, { root: storeRoot, provider: 'claude' });
+    expect(sessions.map((s) => s.id)).toContain('wt-1');
+  });
+
+  // The verified 49-empty-transcripts bug: listSessions stamps a folded worktree
+  // session with the PARENT projectId, but every file-path consumer joined
+  // root/projectId/sessionId.jsonl and missed — the transcript came back empty.
+  it("resolves a folded worktree session's file + transcript under the PARENT projectId", async () => {
+    const parentDirName = repo.replace(/\//g, '-');
+    writeSessionFile(join(storeRoot, parentDirName), 'parent-1', repo, 'main', 'do the main thing');
+
+    const wtDir = join(repo, '.claude', 'worktrees', 'skills-agents-authoring');
+    const wtDirName = wtDir.replace(/\//g, '-');
+    writeSessionFile(join(storeRoot, wtDirName), 'wt-1', wtDir, 'marketplace', 'worktree task prompt');
+
+    const projects = await scanProjects(storeRoot, 'claude');
+    const project = projects.find((p) => p.path === repo)!;
+
+    // Shared lookup finds the jsonl in the worktree's OWN dirent…
+    expect(await sessionFilePath(project.id, 'wt-1', storeRoot, 'claude')).toBe(
+      join(storeRoot, wtDirName, 'wt-1.jsonl'),
+    );
+    // …and the provider transcript path returns real msgs, not [].
+    const provider = new ClaudeProvider({ root: storeRoot });
+    const { msgs } = await provider.parseTranscript(project.id, 'wt-1');
+    expect(msgs.length).toBeGreaterThan(0);
+    expect(msgs[0].text).toBe('worktree task prompt');
+    // Session meta carries the session's REAL cwd (bridge spawn/diff consumes it).
+    const sessions = await listSessions(project.id, { root: storeRoot, provider: 'claude' });
+    expect(sessions.find((s) => s.id === 'wt-1')!.cwd).toBe(wtDir);
+  });
+
+  it('a session cwd DEEPER inside a worktree (worktrees/x/subdir) still folds to the parent', async () => {
+    const deepCwd = join(repo, '.claude', 'worktrees', 'x', 'packages', 'app');
+    writeSessionFile(join(storeRoot, deepCwd.replace(/\//g, '-')), 'deep-1', deepCwd, 'b', 'deep thing');
+
+    const projects = await scanProjects(storeRoot, 'claude');
+    const match = projects.find((p) => p.path === repo);
+    expect(match).toBeDefined();
+    expect(projects.some((p) => p.path === deepCwd)).toBe(false);
+
+    const sessions = await listSessions(match!.id, { root: storeRoot, provider: 'claude' });
+    expect(sessions.map((s) => s.id)).toContain('deep-1');
   });
 });

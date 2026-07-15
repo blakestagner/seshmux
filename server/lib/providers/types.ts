@@ -137,6 +137,16 @@ export interface AgentProvider {
   // Only providers with a writable layout implement it (claude); the route 400s
   // when absent. Path knowledge stays here (hard rule 3).
   customizationWriteTarget?(scope: CustomizationScope, section: 'agents' | 'skills', name: string): string;
+  // Marketplace phase 2: plugin list/install argv. Optional — only providers with a
+  // documented plugin CLI surface implement it (claude); the route reports
+  // `{ supported: false }` when absent. Argv (binary name, flag order) stays here
+  // (hard rule 3); callers only exec + parse JSON.
+  pluginCommands?: {
+    listAvailable(): string[];
+    listMarketplaces(): string[];
+    install(plugin: string, scope: 'user' | 'project'): string[];
+    uninstall(plugin: string, scope: 'user' | 'project'): string[];
+  };
 }
 
 // Lazily built registry: claude is always present; codex is included only when its store

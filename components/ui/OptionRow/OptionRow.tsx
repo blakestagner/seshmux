@@ -5,7 +5,9 @@ import styles from './OptionRow.module.scss';
 
 export type OptionRowProps = {
   icon: ReactNode;
-  title: string;
+  // ReactNode so callers can compose the title row (e.g. a right-aligned
+  // installed chip); plain strings render exactly as before.
+  title: ReactNode;
   desc: ReactNode;
   danger?: boolean;
   disabled?: boolean;

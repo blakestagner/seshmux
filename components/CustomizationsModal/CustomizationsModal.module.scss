@@ -277,3 +277,114 @@
   left: 0;
   min-width: 140px;
 }
+
+// ── Marketplace section ─────────────────────────────────────────────────────
+.marketplace {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mpSourceRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sourceMenu {
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 200px;
+}
+
+.addSourceRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+}
+
+.mpFileList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+}
+
+.mpFileName {
+  @include t-mono-micro;
+  color: var(--text-dim);
+}
+
+.mpNote {
+  @include t-section-note;
+}
+
+.mpMarketplaces {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.mpMarketplacesLabel {
+  @include t-sub;
+}
+
+.mpCount {
+  @include t-sub;
+  margin-bottom: 6px;
+}
+
+// Source picker + search share one row; search takes the remaining width.
+.mpSearch {
+  flex: 1;
+  min-width: 160px;
+}
+
+.mpPluginRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  > :first-child {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+// Plugin row title line: name left, installed chip right.
+.mpPluginTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mpScopeMenu {
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 100px;
+  // The install-target menu lists every enabled project — cap and scroll.
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+// Item-preview install menu sits at the bottom of the scrolling content pane —
+// open UPWARD (same reasoning as .assistMenu) so it never clips off the modal,
+// and LEFT-aligned: the trigger hugs the pane's left edge, so a right-aligned
+// menu would poke past .content's overflow clip box on the left.
+.mpInstallMenu {
+  top: auto;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: auto;
+}
+
+// Preview body is bounded — a long SKILL.md scrolls inside its own box instead
+// of burying the Install button below the fold.
+.mpPreview {
+  max-height: 320px;
+  overflow-y: auto;
+}

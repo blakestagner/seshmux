@@ -50,6 +50,11 @@ export interface SessionMeta {
   startedAt: number | null;
   durationMs: number | null;
   live: boolean;
+  // The session's REAL working directory from its jsonl head. For a folded worktree
+  // session this is the worktree dir, NOT the parent repo the projectId names —
+  // consumers that spawn/diff in "the session's directory" must use this, never
+  // re-derive a path from projectId (bridge handoff/review cwd fix).
+  cwd?: string;
   // Teams v1 (additive): present only on teammate sessions, which stamp both fields in
   // their jsonl head. The lead session stamps neither, so these stay undefined for it.
   teamName?: string;
@@ -245,6 +250,41 @@ async function workspaceParentMap(): Promise<Map<string, string>> {
   return map;
 }
 
+// Claude Code's own EnterWorktree creates `<repo>/.claude/worktrees/<name>` —
+// no workspaces.json record (that store is seshmux-owned, hard rule 3 keeps
+// provider-specific paths out of it), so these must be recognized purely from
+// the cwd pattern rather than a lookup. Record-driven workspaceParentMap()
+// can't hold this: it's built from workspaces.json BEFORE the scan discovers
+// any cwd, so there's no candidate list to pre-populate. Every parentOf.get()
+// call site below falls back to this so all three consumers (grouping,
+// memberDirs, listSessions id-resolution) agree on the same parent.
+// Matches the worktree root AND any cwd deeper inside it (a session started in
+// worktrees/x/subdir must fold too). Greedy `(.+)` takes the LAST occurrence, so a
+// nested worktree-in-worktree folds to its innermost parent — fine.
+const CLAUDE_WORKTREE_RE = /^(.+)\/\.claude\/worktrees\/[^/]+(?:\/|$)/;
+// Exported: CodexProvider.scanProjects()/listSessions() do their own cwd->id grouping
+// (they don't route through computeRootScan above) and must apply the same fold so a
+// repo cwd resolves to the same project id regardless of which provider recorded it
+// (cross-provider-merge D5-1).
+// NOTE (fold scope, deliberate): scannedResolveRepo (routes/customizations.ts) resolves a
+// folded project id to the PARENT repo path, so project-scope customization/marketplace
+// writes intentionally land in the parent repo's .claude — not in a transient worktree.
+export function derivedWorkspaceParent(cwd: string): string | null {
+  return CLAUDE_WORKTREE_RE.exec(cwd)?.[1] ?? null;
+}
+
+// Encoded-id sibling of derivedWorkspaceParent, for callers that only have a store
+// DIRENT name (watch.ts events see file paths, and decodeProjectDir is lossy — the
+// "." in ".claude" decodes to "/", so path-level matching can't work there).
+// encodeProjectId maps "/.claude/worktrees/" to "--claude-worktrees-", so strip that
+// suffix to recover the parent's encoded id. Greedy `(.+)` = innermost fold wins.
+// ponytail: a repo literally named "*--claude-worktrees-*" would false-fold; encode is
+// lossy so this can't be told apart — acceptable, same ceiling as decodeProjectDir.
+const CLAUDE_WORKTREE_ID_RE = /^(.+)--claude-worktrees-.+$/;
+export function derivedWorkspaceParentId(encodedId: string): string | null {
+  return CLAUDE_WORKTREE_ID_RE.exec(encodedId)?.[1] ?? null;
+}
+
 // Intermediate per-dirent scan result before the byPath merge pass folds
 // workspace dirents into their parent. `isWorkspace` is scan-internal only —
 // dropped before Project[] is returned.
@@ -384,7 +424,7 @@ async function computeRootScan(root: string, provider: ProviderId): Promise<Root
         // parentPath set = this dirent's cwd is a known workspace worktree dir —
         // folded into the parent project below, never listed on its own (no rail
         // sprout of one project group per workspace).
-        const parentPath = parentOf.get(path);
+        const parentPath = parentOf.get(path) ?? derivedWorkspaceParent(path) ?? null;
         return {
           id: d.name,
           provider,
@@ -482,6 +522,7 @@ export async function readDirSessions(dirPath: string, projectId: string, provid
       startedAt: head.startedAt,
       durationMs: head.startedAt !== null ? mtime - head.startedAt : null,
       live: now - mtime < LIVE_WINDOW_MS,
+      cwd: head.cwd ?? undefined,
       teamName: head.teamName ?? undefined,
       agentName: head.agentName ?? undefined,
     });
@@ -504,12 +545,16 @@ function memberDirs(
 ): string[] {
   const workspaceDirs = new Set([...parentOf.entries()].filter(([, p]) => p === parentPath).map(([dir]) => dir));
   return dirCwds
-    .filter(({ cwd }) => cwd === parentPath || workspaceDirs.has(cwd))
+    .filter(({ cwd }) => cwd === parentPath || workspaceDirs.has(cwd) || derivedWorkspaceParent(cwd) === parentPath)
     .map(({ dirPath }) => dirPath);
 }
 
-export async function listSessions(projectId: string, opts: ListOpts): Promise<SessionMeta[]> {
-  const { root, provider, before, limit, q } = opts;
+// Resolve a projectId to EVERY store dirent holding its sessions: the parent repo's
+// own dirent plus every folded workspace/worktree dirent. This is the single
+// projectId→disk lookup — listSessions AND sessionFilePath below both route through
+// it, so "session listed under this id" and "session file found under this id" can
+// never disagree. Returns [] only for an unsafe id.
+export async function projectSessionDirs(projectId: string, root: string, provider: ProviderId): Promise<string[]> {
   if (!isSafeId(projectId)) return []; // traversal guard (SEC-4): never join a "../" id
   const dirPath = join(root, projectId);
 
@@ -531,14 +576,60 @@ export async function listSessions(projectId: string, opts: ListOpts): Promise<S
   const { dirCwds } = await scanRoot(root, provider);
   const cwdByDir = new Map(dirCwds.map(({ dirPath: d, cwd }) => [d, cwd]));
   const parentOf = await workspaceParentMap();
-  const repoByEncodedId = new Map(
-    [...new Set(parentOf.values())].map((repoPath) => [encodeProjectId(repoPath), repoPath]),
-  );
+  // Known parent repo paths for the reverse-encode guard above: recorded workspace parents
+  // PLUS pattern-derived parents of every cwd this scan actually saw (a .claude/worktrees
+  // parent has no workspaces.json record to supply it otherwise).
+  const knownParents = new Set(parentOf.values());
+  for (const { cwd } of dirCwds) {
+    const derived = derivedWorkspaceParent(cwd);
+    if (derived) knownParents.add(derived);
+  }
+  const repoByEncodedId = new Map([...knownParents].map((repoPath) => [encodeProjectId(repoPath), repoPath]));
   const enteredCwd = cwdByDir.get(dirPath) ?? decodeProjectDir(projectId).path;
-  const parentPath = parentOf.get(enteredCwd) ?? repoByEncodedId.get(projectId) ?? enteredCwd;
+  const parentPath =
+    parentOf.get(enteredCwd) ?? derivedWorkspaceParent(enteredCwd) ?? repoByEncodedId.get(projectId) ?? enteredCwd;
 
   const members = memberDirs(dirCwds, parentPath, parentOf);
-  const dirs = members.length ? members : [dirPath]; // no workspaces -> plain project, read its own dirent
+  return members.length ? members : [dirPath]; // no workspaces -> plain project, read its own dirent
+}
+
+// Resolve (projectId, sessionId) to the owning session file. A folded worktree
+// session LISTS under the parent projectId but its jsonl lives in the worktree's own
+// dirent — the naive join(root, projectId, id + '.jsonl') misses it (49 real sessions
+// returned empty transcripts). Cheap path first: one stat on the direct join; only a
+// miss pays for the member-dir scan. Returns null only for an unsafe id; a session
+// that exists nowhere returns the direct path so callers degrade exactly as before
+// (stat fails -> empty transcript / null ctx).
+export async function sessionFilePath(
+  projectId: string,
+  sessionId: string,
+  root: string,
+  provider: ProviderId,
+): Promise<string | null> {
+  if (!isSafeId(projectId) || !isSafeId(sessionId)) return null;
+  const direct = join(root, projectId, `${sessionId}.jsonl`);
+  try {
+    await stat(direct);
+    return direct;
+  } catch {
+    /* fall through to member-dir search */
+  }
+  for (const dir of await projectSessionDirs(projectId, root, provider)) {
+    const candidate = join(dir, `${sessionId}.jsonl`);
+    if (candidate === direct) continue; // already checked
+    try {
+      await stat(candidate);
+      return candidate;
+    } catch {
+      /* not in this member dir */
+    }
+  }
+  return direct;
+}
+
+export async function listSessions(projectId: string, opts: ListOpts): Promise<SessionMeta[]> {
+  const { root, provider, before, limit, q } = opts;
+  const dirs = await projectSessionDirs(projectId, root, provider);
 
   const metas: SessionMeta[] = [];
   for (const dir of dirs) {

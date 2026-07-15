@@ -84,13 +84,13 @@ export type RailProps = {
   jumpTo?: { projectId: string; sessionId: string } | null;
   onJumped?: () => void;
   onOpenCustomizations?: (scope: { projectId: string; projectName: string }) => void;
-  onOpenProjectVisibility?: () => void;
+  onOpenGlobalCustomizations?: () => void;
   // Drag-resize (page.tsx owns the state + persistence); undefined falls back
   // to the CSS 288px default for SSR/first paint.
   width?: number;
 };
 
-export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenProjectVisibility, width }: RailProps) {
+export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlobalCustomizations, width }: RailProps) {
   const { state, dispatch } = useAppState();
   const { config, provFilter, railSort } = state;
   // Hide repos whose folder no longer exists on disk (deleted worktrees, /tmp
@@ -349,7 +349,10 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenPro
           </div>
         ) : null}
         <FilterMenu />
-        <IconButton label="Project visibility" variant="boxed" size={28} onClick={() => onOpenProjectVisibility?.()}>
+        {/* Global (user-level) customizations + marketplace — same modal the
+            per-project gear opens, unscoped. Its Projects section carries the
+            show/hide list the old ProjectVisibilityModal held. */}
+        <IconButton label="User customizations & marketplace" variant="boxed" size={28} onClick={() => onOpenGlobalCustomizations?.()}>
           ⋯
         </IconButton>
       </div>

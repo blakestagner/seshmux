@@ -15,6 +15,7 @@ import type { FastifyInstance } from 'fastify';
 import type { WebSocket } from '@fastify/websocket';
 import { DaemonConnection, dial, withTimeout } from '../daemon-client';
 import { getProviders, type ProviderId } from '../lib/providers/types';
+import { derivedWorkspaceParent } from '../lib/store/scan';
 import { startSession } from '../session-start';
 import type { StatusExplain } from '../events-hub';
 
@@ -24,35 +25,47 @@ export interface TermRouteDeps {
   getStatusExplain?: (ptyId: string) => StatusExplain | null;
   // Injected for hermetic WS tests (fake daemon); defaults to the real dial.
   dialFn?: typeof dial;
-  // BUG A part 2 (reload enrichment): cwd -> newest session id, so a rehydrated
-  // live tab can arm the subagent chip immediately instead of waiting on a
-  // session-new/touch event. Injectable for hermetic tests (mirrors bridge.ts's
-  // defaultResolveLatest injection pattern); defaults to the real provider scan.
-  resolveSessionForCwd?: (cwd: string) => Promise<string | undefined>;
+  // BUG A part 2 (reload enrichment): cwd -> owning project id + newest session id, so
+  // a rehydrated live tab binds to the right project card and arms the subagent chip
+  // immediately instead of waiting on a session-new/touch event. Injectable for
+  // hermetic tests (mirrors bridge.ts's defaultResolveLatest injection pattern);
+  // defaults to the real provider scan.
+  resolveSessionForCwd?: (cwd: string) => Promise<{ projectId?: string; sessionId?: string }>;
 }
 
-// cwd -> projectId (match against scanned providers' project.path, same join
-// key session-new/touch events carry) -> newest session id (bridge.ts's
-// defaultResolveLatest logic, reused rather than re-invented). Never throws —
-// callers treat "no match" as "omit sessionId", not a route failure.
-export async function defaultResolveSessionForCwd(cwd: string): Promise<string | undefined> {
+// cwd -> projectId (match against scanned providers' project.path, same join key
+// session-new/touch events carry) -> newest session id (bridge.ts's
+// defaultResolveLatest logic, reused rather than re-invented). A worktree PTY's cwd
+// is FOLDED into its parent project (scan.ts), so canonicalize before the path match,
+// and prefer the session that actually ran in THIS cwd over the project's newest
+// (the parent repo may have a newer, unrelated session). Never throws — callers
+// treat "no match" as "omit ids", not a route failure.
+export async function defaultResolveSessionForCwd(
+  cwd: string,
+  providersFn: typeof getProviders = getProviders, // injectable for hermetic tests only
+): Promise<{ projectId?: string; sessionId?: string }> {
   try {
-    const providers = await getProviders();
+    const canonical = derivedWorkspaceParent(cwd) ?? cwd;
+    const providers = await providersFn();
     for (const p of providers) {
       const projects = await p.scanProjects().catch(() => []);
-      const proj = projects.find((pr) => pr.path === cwd);
+      const proj = projects.find((pr) => pr.path === canonical);
       if (!proj) continue;
       const sessions = await p.listSessions(proj.id).catch(() => []);
       let best: { id: string; mtime: number } | null = null;
+      let bestOwn: { id: string; mtime: number } | null = null;
       for (const s of sessions) {
         if (!best || s.mtime > best.mtime) best = { id: s.id, mtime: s.mtime };
+        if (s.cwd === cwd && (!bestOwn || s.mtime > bestOwn.mtime)) bestOwn = { id: s.id, mtime: s.mtime };
       }
-      if (best) return best.id;
+      const pick = bestOwn ?? best;
+      if (pick) return { projectId: proj.id, sessionId: pick.id };
+      return { projectId: proj.id };
     }
   } catch {
-    /* omit sessionId — never fail the live route over enrichment */
+    /* omit ids — never fail the live route over enrichment */
   }
-  return undefined;
+  return {};
 }
 
 type Mode = 'new' | 'continue' | 'plan';
@@ -134,12 +147,10 @@ export default async function termRoutes(f: FastifyInstance, deps: TermRouteDeps
       const { ptys } = await conn.list();
       const alive = ptys.filter((p) => p.alive);
       const live = await Promise.all(
-        alive.map(async (p) => ({
-          ptyId: p.ptyId,
-          cwd: p.cwd,
-          tmuxName: p.tmuxName,
-          sessionId: await resolveSessionForCwd(p.cwd),
-        })),
+        alive.map(async (p) => {
+          const { projectId, sessionId } = await resolveSessionForCwd(p.cwd);
+          return { ptyId: p.ptyId, cwd: p.cwd, tmuxName: p.tmuxName, projectId, sessionId };
+        }),
       );
       return { live };
     } catch {

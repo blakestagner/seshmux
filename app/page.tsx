@@ -7,7 +7,6 @@ import { openEventsSocket } from '../lib/client/ws';
 import type { EventMessage } from '../lib/client/ws';
 import TopNav from '../components/TopNav/TopNav';
 import CustomizationsModal from '../components/CustomizationsModal/CustomizationsModal';
-import ProjectVisibilityModal from '../components/ProjectVisibilityModal/ProjectVisibilityModal';
 import Rail from '../components/Rail/Rail';
 import Tabs from '../components/Tabs/Tabs';
 import Transcript from '../components/Transcript/Transcript';
@@ -82,7 +81,6 @@ function AppShell() {
   const [jumpTo, setJumpTo] = useState<{ projectId: string; sessionId: string } | null>(null);
   const [toast, setToast] = useState<{ ptyId: string; repo: string } | null>(null);
   const [custOpen, setCustOpen] = useState<{ projectId?: string; projectName?: string } | null>(null);
-  const [projVisOpen, setProjVisOpen] = useState(false);
   const [approval, setApproval] = useState<Extract<EventMessage, { event: 'approval' }> | null>(null);
   // Subagent viewer: which term tab has its viewer open (synthetic right-pane, NOT a Tab —
   // keeps tab semantics/rollup untouched, mirrors how `pair` is derived locally). Plus a
@@ -294,12 +292,15 @@ function AppShell() {
         }
         for (const s of live) {
           if (dismissed.includes(s.ptyId)) continue;
-          const proj = projects.find((p) => p.path === s.cwd);
+          // Prefer the server-resolved owning project id: a worktree PTY's cwd never
+          // equals any project.path (folded into the parent), so the path match alone
+          // left the tab keyed on a raw cwd that no bridge/session lookup understands.
+          const proj = projects.find((p) => p.id === s.projectId) ?? projects.find((p) => p.path === s.cwd);
           const label = proj?.name ?? s.cwd.split('/').filter(Boolean).pop() ?? 'session';
           dispatch({
             type: 'openTerm',
             ptyId: s.ptyId,
-            projectId: proj?.id ?? s.cwd,
+            projectId: proj?.id ?? s.projectId ?? s.cwd,
             label,
             provider: proj?.provider,
             sessionId: s.sessionId,
@@ -563,7 +564,7 @@ function AppShell() {
               jumpTo={jumpTo}
               onJumped={() => setJumpTo(null)}
               onOpenCustomizations={setCustOpen}
-              onOpenProjectVisibility={() => setProjVisOpen(true)}
+              onOpenGlobalCustomizations={() => setCustOpen({})}
             />
             <div
               className={styles.railHandle}
@@ -752,13 +753,6 @@ function AppShell() {
         hidden={state.config.hidden}
         onToggleHidden={handleToggleHidden}
         onClose={() => setCustOpen(null)}
-      />
-      <ProjectVisibilityModal
-        open={projVisOpen}
-        onClose={() => setProjVisOpen(false)}
-        projects={state.projects}
-        hidden={state.config.hidden}
-        onToggleHidden={handleToggleHidden}
       />
     </div>
   );

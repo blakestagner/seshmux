@@ -3,12 +3,11 @@
 // write endpoints; v2 editing PUTs against item.filePath (see roadmap doc).
 
 import type { FastifyInstance } from 'fastify';
-import { mkdir, writeFile, realpath, lstat } from 'node:fs/promises';
-import { dirname, sep } from 'node:path';
-import { execFile } from 'node:child_process';
 import type { AgentProvider } from '../lib/providers/types';
 import type { CustomizationItem, CustomizationScope, CustomizationScanners } from '../lib/providers/customizations';
 import { getProviders } from '../lib/providers/types';
+import { writeWithinRepo, FsGuardError } from '../lib/fs-guard';
+import { execCapture } from '../lib/exec-capture';
 
 export interface CustomizationsRouteOpts {
   listProviders?: () => Promise<AgentProvider[]>;
@@ -16,17 +15,10 @@ export interface CustomizationsRouteOpts {
   runHeadless?: (argv: string[], cwd: string) => Promise<{ text: string; ok: boolean }>;
 }
 
-// Mirrors server/lib/bridge/mcp.ts:177-189 — execFile, never a shell string.
+// Thin wrapper over the shared execCapture (see server/lib/exec-capture.ts).
 function defaultRunHeadless(argv: string[], cwd: string): Promise<{ text: string; ok: boolean }> {
   const [bin, ...rest] = argv;
-  return new Promise((resolve) => {
-    const child = execFile(
-      bin, rest,
-      { cwd, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 },
-      (err, stdout) => resolve({ text: (stdout || '').trim(), ok: !err }),
-    );
-    child.stdin?.end();
-  });
+  return execCapture(bin, rest, { cwd, timeoutMs: 60_000, maxBuffer: 4 * 1024 * 1024 });
 }
 
 const SECTIONS = ['agents', 'skills', 'instructions', 'hooks', 'mcpServers'] as const;
@@ -36,7 +28,7 @@ const SECTIONS = ['agents', 'skills', 'instructions', 'hooks', 'mcpServers'] as 
 // path: the project scope reads CLAUDE.md/.mcp.json/settings.json, so a crafted id could
 // otherwise pull config (possible secrets) from any directory. A hyphenated repo that
 // actually scans is still matched here by its exact scanned id.
-async function scannedResolveRepo(id: string): Promise<string | null> {
+export async function scannedResolveRepo(id: string): Promise<string | null> {
   const providers = await getProviders();
   for (const p of providers) {
     const projects = await p.scanProjects().catch(() => []);
@@ -103,39 +95,11 @@ export default async function customizationsRoutes(f: FastifyInstance, opts: Cus
 
       const target = provider.customizationWriteTarget({ kind: 'project', repoPath }, section, name);
 
-      // Containment, symlink-proof: walk from the leaf up, realpath-resolving each
-      // EXISTING ancestor (leaf first, then parents) inside the real repo root. Fail
-      // closed on any fs error. A symlink AT the leaf (even dangling, where realpath
-      // ENOENTs and the loop would otherwise fall through to the parent dir check) is
-      // rejected outright by lstat below — we never write through a symlink, existing
-      // or dangling, since writeFile follows it regardless of where it points.
       try {
-        const leafStat = await lstat(target).catch(() => null);
-        if (leafStat?.isSymbolicLink()) {
-          return reply.code(400).send({ error: 'target escapes project' });
-        }
-
-        const repoReal = await realpath(repoPath);
-        let probe = target;
-        for (;;) {
-          try {
-            const real = await realpath(probe);
-            if (real !== repoReal && !real.startsWith(repoReal + sep)) {
-              return reply.code(400).send({ error: 'target escapes project' });
-            }
-            break;
-          } catch {
-            const parent = dirname(probe);
-            if (parent === probe) return reply.code(400).send({ error: 'target escapes project' });
-            probe = parent;
-          }
-        }
-        await mkdir(dirname(target), { recursive: true });
-        // ponytail: check-then-write TOCTOU window remains; closing it needs O_NOFOLLOW/openat,
-        // revisit if seshmux ever serves non-local users
-        await writeFile(target, content, 'utf8');
-      } catch {
-        return reply.code(400).send({ error: 'write failed' });
+        await writeWithinRepo(repoPath, target, content);
+      } catch (err) {
+        const message = err instanceof FsGuardError ? err.message : 'write failed';
+        return reply.code(400).send({ error: message });
       }
       return { ok: true, filePath: target };
     },

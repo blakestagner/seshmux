@@ -37,7 +37,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { decodeProjectDir, encodeProjectId, storeBytes } from '../store/scan';
+import { decodeProjectDir, derivedWorkspaceParent, encodeProjectId, storeBytes } from '../store/scan';
 import type { SearchHit, SearchOpts } from '../store/search';
 import { pricingFor, type UsageSummary } from '../store/usage';
 import type { Ctx, Msg, ToolCall } from '../store/transcript';
@@ -323,7 +323,9 @@ export class CodexProvider implements AgentProvider {
   private async fileForSession(projectId: string, sessionId: string): Promise<string | null> {
     const all = await this.allSummaries();
     for (const { file, s } of all) {
-      if (s.sessionId === sessionId && s.cwd && encodeProjectId(s.cwd) === projectId) {
+      // Same fold as listSessions below: a worktree session lists under the PARENT
+      // projectId, so match its cwd through the fold or the strict match misses.
+      if (s.sessionId === sessionId && s.cwd && encodeProjectId(derivedWorkspaceParent(s.cwd) ?? s.cwd) === projectId) {
         return file;
       }
     }
@@ -364,7 +366,12 @@ export class CodexProvider implements AgentProvider {
     const byProject = new Map<string, { cwd: string; count: number; createdAt: number; updatedAt: number }>();
     for (const { s, mtime } of all) {
       if (!s.cwd) continue;
-      const id = encodeProjectId(s.cwd);
+      // A Claude Code EnterWorktree cwd (<repo>/.claude/worktrees/<name>) folds into its
+      // parent repo's project id, same as ClaudeProvider (scan.ts computeRootScan) — a
+      // repo cwd must resolve to the same id regardless of which provider recorded it
+      // (cross-provider-merge D5-1).
+      const cwd = derivedWorkspaceParent(s.cwd) ?? s.cwd;
+      const id = encodeProjectId(cwd);
       const created = s.startedAt ?? mtime;
       const prev = byProject.get(id);
       if (prev) {
@@ -372,7 +379,7 @@ export class CodexProvider implements AgentProvider {
         prev.updatedAt = Math.max(prev.updatedAt, mtime);
         prev.createdAt = Math.min(prev.createdAt, created);
       } else {
-        byProject.set(id, { cwd: s.cwd, count: 1, createdAt: created, updatedAt: mtime });
+        byProject.set(id, { cwd, count: 1, createdAt: created, updatedAt: mtime });
       }
     }
     const projects: Project[] = [];
@@ -399,7 +406,7 @@ export class CodexProvider implements AgentProvider {
     const all = await this.allSummaries();
     const now = Date.now();
     let metas: SessionMeta[] = all
-      .filter(({ s }) => s.cwd && encodeProjectId(s.cwd) === projectId)
+      .filter(({ s }) => s.cwd && encodeProjectId(derivedWorkspaceParent(s.cwd) ?? s.cwd) === projectId)
       .map(({ mtime, s }) => ({
         id: s.sessionId,
         provider: this.id,
@@ -410,6 +417,7 @@ export class CodexProvider implements AgentProvider {
         startedAt: s.startedAt,
         durationMs: s.startedAt !== null ? mtime - s.startedAt : null,
         live: now - mtime < LIVE_WINDOW_MS,
+        cwd: s.cwd ?? undefined,
       }));
 
     metas.sort((a, b) => b.mtime - a.mtime);

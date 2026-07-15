@@ -146,7 +146,9 @@ export function startSession(opts: {
   return req('/api/sessions/start', { method: 'POST', body: JSON.stringify(opts) });
 }
 
-export type LiveSession = { ptyId: string; cwd: string; tmuxName: string | null; sessionId?: string };
+// projectId = the OWNING project's id (a worktree PTY folds to its parent project) —
+// prefer it over matching project.path === cwd, which misses folded worktrees.
+export type LiveSession = { ptyId: string; cwd: string; tmuxName: string | null; projectId?: string; sessionId?: string };
 
 export function getLive(): Promise<{ live: LiveSession[] }> {
   return req('/api/sessions/live');
@@ -326,6 +328,90 @@ export function assistCustomization(body: {
   draft: string;
 }): Promise<{ text: string }> {
   return req('/api/customizations/assist', { method: 'POST', body: JSON.stringify(body) });
+}
+
+// ── Marketplace (Task 5 — community browse/install + claude plugin marketplace) ──
+export type MarketplaceItem = { path: string; name: string; description: string; section: 'agents' | 'skills' };
+export type MarketplaceFile = { path: string; content: string };
+// Raw entries from `claude plugin list --available --json` / `marketplace list --json`
+// (see server/routes/marketplace.ts) — shape beyond `name` is not our contract to own.
+export type MarketplacePlugin = { pluginId?: string; name: string; description?: string; [k: string]: unknown };
+export type MarketplaceInfo = { name?: string; [k: string]: unknown };
+// One entry of `claude plugin list --available --json`'s `installed` array.
+export type InstalledMarketplacePlugin = {
+  id: string;
+  version?: string;
+  scope?: string;
+  enabled?: boolean;
+  installPath?: string;
+  installedAt?: string;
+  lastUpdated?: string;
+  [k: string]: unknown;
+};
+
+export function getMarketplaceSources(): Promise<{ sources: string[] }> {
+  return req('/api/marketplace/sources');
+}
+
+// Read-modify-write settings.marketplaceSources through the existing config PUT
+// (mirrors Settings.tsx's persistSetting — no dedicated marketplace-sources route).
+export function addMarketplaceSource(cfg: Config, source: string): Promise<Config> {
+  const settings = cfg.settings ?? {};
+  const existing = Array.isArray(settings.marketplaceSources)
+    ? (settings.marketplaceSources as string[])
+    : [];
+  const next: Config = { ...cfg, settings: { ...settings, marketplaceSources: [...new Set([...existing, source])] } };
+  return putConfig(next);
+}
+
+export function browseMarketplace(source: string): Promise<{ items: MarketplaceItem[] }> {
+  return req(`/api/marketplace/browse?source=${encodeURIComponent(source)}`);
+}
+
+export function getMarketplaceItem(source: string, path: string): Promise<{ files: MarketplaceFile[] }> {
+  return req(`/api/marketplace/item?source=${encodeURIComponent(source)}&path=${encodeURIComponent(path)}`);
+}
+
+export function installMarketplaceItem(body: {
+  // Optional: user-scope installs are project-independent (global modal).
+  projectId?: string;
+  source: string;
+  path: string;
+  section: 'agents' | 'skills';
+  name: string;
+  target?: 'project' | 'user';
+}): Promise<{ ok: true; filePaths: string[] }> {
+  return req('/api/marketplace/install', { method: 'POST', body: JSON.stringify(body) });
+}
+
+export function getMarketplacePlugins(
+  projectId?: string,
+): Promise<{
+  supported: boolean;
+  plugins?: MarketplacePlugin[];
+  marketplaces?: MarketplaceInfo[];
+  installed?: InstalledMarketplacePlugin[];
+}> {
+  const q = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+  return req(`/api/marketplace/plugins${q}`);
+}
+
+export function installMarketplacePlugin(body: {
+  // Optional: user-scope installs are project-independent (global modal).
+  projectId?: string;
+  plugin: string;
+  scope: 'user' | 'project';
+}): Promise<{ ok: true; output: string }> {
+  return req('/api/marketplace/plugins/install', { method: 'POST', body: JSON.stringify(body) });
+}
+
+export function uninstallMarketplacePlugin(body: {
+  // Optional: user-scope uninstalls are project-independent (global modal).
+  projectId?: string;
+  plugin: string;
+  scope: 'user' | 'project';
+}): Promise<{ ok: true; output: string }> {
+  return req('/api/marketplace/plugins/uninstall', { method: 'POST', body: JSON.stringify(body) });
 }
 
 // ── Teams (v1, Task 5) ───────────────────────────────────────────────────────

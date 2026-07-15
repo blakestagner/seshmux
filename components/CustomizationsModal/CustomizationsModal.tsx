@@ -13,6 +13,7 @@ import { useDropdown } from '../ui/Menu/useDropdown';
 import OptionRow from '../ui/OptionRow/OptionRow';
 import TextInput from '../ui/TextInput/TextInput';
 import ProjectVisibilityList from '../ProjectVisibilityList/ProjectVisibilityList';
+import MarketplaceSection from './MarketplaceSection';
 import {
   getCustomizations,
   putCustomizationItem,
@@ -61,7 +62,7 @@ function fillBlankFrontmatterName(content: string, name: string): string {
   return fm.replace(/^name:[ \t]*$/m, `name: ${name}`) + content.slice(end);
 }
 
-type Section = 'overview' | 'agents' | 'skills' | 'instructions' | 'hooks' | 'mcp' | 'projects';
+type Section = 'overview' | 'agents' | 'skills' | 'instructions' | 'hooks' | 'mcp' | 'marketplace' | 'projects';
 
 const NAV: { key: Section; label: string }[] = [
   { key: 'overview', label: 'Overview' },
@@ -70,10 +71,11 @@ const NAV: { key: Section; label: string }[] = [
   { key: 'instructions', label: 'Instructions' },
   { key: 'hooks', label: 'Hooks' },
   { key: 'mcp', label: 'MCP Servers' },
+  { key: 'marketplace', label: 'Marketplace' },
   { key: 'projects', label: 'Projects' },
 ];
 
-const OVERVIEW_SECTIONS: { key: Exclude<Section, 'overview' | 'projects'>; label: string; icon: string }[] = [
+const OVERVIEW_SECTIONS: { key: Exclude<Section, 'overview' | 'projects' | 'marketplace'>; label: string; icon: string }[] = [
   { key: 'agents', label: 'Agents', icon: '◈' },
   { key: 'skills', label: 'Skills', icon: '✦' },
   { key: 'instructions', label: 'Instructions', icon: '▤' },
@@ -201,7 +203,15 @@ export default function CustomizationsModal({
     setEditing(null);
   }
 
-  const items: CustomizationItem[] = data && section !== 'overview' && section !== 'projects' ? data[section] : [];
+  const items: CustomizationItem[] =
+    data && section !== 'overview' && section !== 'projects' && section !== 'marketplace' ? data[section] : [];
+  // Marketplace browse rows get a "✓ installed" chip when their derived
+  // install-name matches an already-installed skill/agent (same kebab logic
+  // Save uses — see kebabFromItem).
+  const installedNames = new Set<string>([
+    ...(data?.skills.map((i) => kebabFromItem('skills', i)) ?? []),
+    ...(data?.agents.map((i) => kebabFromItem('agents', i)) ?? []),
+  ]);
   const project = projects.find((p) => p.id === projectId);
   // Editor only offered when scoped to a project and viewing an editable
   // section (agents/skills). Read-only otherwise (global scope, other sections).
@@ -352,6 +362,13 @@ export default function CustomizationsModal({
               />
             ) : section === 'projects' ? (
               <ProjectVisibilityList projects={projects} hidden={hidden} onToggleHidden={(id) => onToggleHidden?.(id)} />
+            ) : section === 'marketplace' ? (
+              <MarketplaceSection
+                projectId={projectId}
+                projectName={projectName}
+                installedNames={installedNames}
+                onInstalled={() => setReloadKey((k) => k + 1)}
+              />
             ) : loadError ? (
               <div className={styles.empty}>
                 Failed to load: {loadError} <Button onClick={() => setReloadKey((k) => k + 1)}>Retry</Button>
