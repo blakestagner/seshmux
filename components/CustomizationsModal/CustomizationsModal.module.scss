@@ -44,8 +44,9 @@
 }
 
 // Header close gets the larger glyph size; the detail back arrow keeps
-// t-heading via .glyphBtn below.
-.glyphBtnLg {
+// t-heading via .glyphBtn below. Compound selector so it outweighs
+// .glyphBtn's own t-heading size regardless of source order.
+.glyphBtn.glyphBtnLg {
   @include t-glyph-lg;
 }
 
