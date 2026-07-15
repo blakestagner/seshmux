@@ -12,14 +12,18 @@ export type TextInputProps = {
   // input chrome (border/radius/focus/placeholder) — kbdHint is ignored.
   multiline?: number;
   disabled?: boolean;
+  // Layout-only passthrough (flex/min-height/resize) for callers embedding
+  // TextInput in a custom layout — chrome (border/bg/radius/padding) stays
+  // owned by TextInput.module.scss, never overridden by consumers.
+  className?: string;
 };
 
-export default function TextInput({ value, onChange, placeholder, kbdHint, multiline, disabled }: TextInputProps) {
+export default function TextInput({ value, onChange, placeholder, kbdHint, multiline, disabled, className }: TextInputProps) {
   if (multiline) {
     const onArea: ChangeEventHandler<HTMLTextAreaElement> = (e) => onChange(e.target.value);
     return (
       <textarea
-        className={`${styles.input} ${styles.area}`}
+        className={`${styles.input} ${styles.area}${className ? ` ${className}` : ''}`}
         value={value}
         onChange={onArea}
         placeholder={placeholder}
@@ -32,7 +36,7 @@ export default function TextInput({ value, onChange, placeholder, kbdHint, multi
   return (
     <span className={styles.wrap}>
       <input
-        className={`${styles.input}${kbdHint ? ` ${styles.hasHint}` : ''}`}
+        className={`${styles.input}${kbdHint ? ` ${styles.hasHint}` : ''}${className ? ` ${className}` : ''}`}
         type="text"
         value={value}
         onChange={handleChange}

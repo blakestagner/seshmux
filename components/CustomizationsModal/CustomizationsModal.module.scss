@@ -199,16 +199,11 @@
   word-break: break-all;
 }
 
-.editorTextarea {
-  @include t-mono-data;
+// Layout-only override passed to TextInput — chrome (border/bg/radius/padding)
+// stays owned by TextInput.module.scss (see hard rule: primitives own chrome).
+.editorArea {
   flex: 1;
   min-height: 260px;
-  resize: vertical;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 10px;
-  color: var(--text);
 }
 
 .editorActions {
@@ -223,8 +218,11 @@
   display: inline-block;
 }
 
+// editorActions sits at the bottom of the editor pane (which fills .content,
+// itself overflow-y: auto) — a downward menu gets clipped by the modal edge.
+// Open upward instead, same as BridgeMenu's `up` mode.
 .assistMenu {
-  top: calc(100% + 4px);
+  bottom: calc(100% + 6px);
   left: 0;
   min-width: 140px;
 }

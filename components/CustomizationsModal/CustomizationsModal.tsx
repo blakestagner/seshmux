@@ -43,6 +43,17 @@ function kebabFromItem(section: 'agents' | 'skills', item: CustomizationItem): s
 
 type Editing = { section: 'agents' | 'skills'; name: string; content: string; isNew: boolean };
 
+// SKILL_TEMPLATE seeds `name: ` blank — if the user never touches it, save
+// would otherwise ship an empty frontmatter name and the list falls back to
+// showing the filename ("SKILL") instead of the item's real name.
+function fillBlankFrontmatterName(content: string, name: string): string {
+  if (!content.startsWith('---\n')) return content;
+  const end = content.indexOf('\n---', 4);
+  if (end === -1) return content;
+  const fm = content.slice(0, end);
+  return fm.replace(/^name:[ \t]*$/m, `name: ${name}`) + content.slice(end);
+}
+
 type Section = 'overview' | 'agents' | 'skills' | 'instructions' | 'hooks' | 'mcp' | 'projects';
 
 const NAV: { key: Section; label: string }[] = [
@@ -195,7 +206,7 @@ export default function CustomizationsModal({
         provider: 'claude',
         section: editing.section,
         name: editing.name,
-        content: editing.content,
+        content: fillBlankFrontmatterName(editing.content, editing.name),
       });
       setEditing(null);
       setUndoText(null);
@@ -393,7 +404,15 @@ function AssistMenu({
     const onClick = (e: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    // stopPropagation (not just close) so the modal's own window-level Escape
+    // listener never sees this keypress — bubble order runs document-level
+    // listeners before window-level ones regardless of registration order,
+    // so this is deterministic, not a listener-order race.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      setOpen(false);
+    };
     document.addEventListener('click', onClick);
     document.addEventListener('keydown', onKey);
     return () => {
@@ -469,11 +488,12 @@ function EditorPane({
         disabled={!editing.isNew}
       />
       <div className={styles.editorFilePath}>{filePath}</div>
-      <textarea
-        className={styles.editorTextarea}
+      <TextInput
         value={editing.content}
-        onChange={(e) => setEditing({ ...editing, content: e.target.value })}
+        onChange={(v) => setEditing({ ...editing, content: v })}
         placeholder="Write the body…"
+        multiline={12}
+        className={styles.editorArea}
       />
       {editorError ? <div className={styles.badge}>{editorError}</div> : null}
       <div className={styles.editorActions}>
