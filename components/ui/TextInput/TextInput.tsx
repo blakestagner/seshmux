@@ -11,9 +11,10 @@ export type TextInputProps = {
   // when set, render a resizable <textarea rows={multiline}> sharing the same
   // input chrome (border/radius/focus/placeholder) — kbdHint is ignored.
   multiline?: number;
+  disabled?: boolean;
 };
 
-export default function TextInput({ value, onChange, placeholder, kbdHint, multiline }: TextInputProps) {
+export default function TextInput({ value, onChange, placeholder, kbdHint, multiline, disabled }: TextInputProps) {
   if (multiline) {
     const onArea: ChangeEventHandler<HTMLTextAreaElement> = (e) => onChange(e.target.value);
     return (
@@ -23,6 +24,7 @@ export default function TextInput({ value, onChange, placeholder, kbdHint, multi
         onChange={onArea}
         placeholder={placeholder}
         rows={multiline}
+        disabled={disabled}
       />
     );
   }
@@ -35,6 +37,7 @@ export default function TextInput({ value, onChange, placeholder, kbdHint, multi
         value={value}
         onChange={handleChange}
         placeholder={placeholder}
+        disabled={disabled}
       />
       {kbdHint ? <span className={styles.kbd}>{kbdHint}</span> : null}
     </span>

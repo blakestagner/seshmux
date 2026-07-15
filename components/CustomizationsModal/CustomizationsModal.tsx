@@ -117,6 +117,7 @@ export default function CustomizationsModal({
   const [editing, setEditing] = useState<Editing | null>(null);
   const [saving, setSaving] = useState(false);
   const [assisting, setAssisting] = useState(false);
+  const [making, setMaking] = useState(false);
   const [editorError, setEditorError] = useState<string | null>(null);
   const [undoText, setUndoText] = useState<string | null>(null);
 
@@ -228,7 +229,8 @@ export default function CustomizationsModal({
   }
 
   async function handleMakeIt(provider: ProviderId) {
-    if (!editing || !project) return;
+    if (!editing || !project || making) return;
+    setMaking(true);
     const file = editing.section === 'skills' ? `.claude/skills/${editing.name}/SKILL.md` : `.claude/agents/${editing.name}.md`;
     const brief =
       `Create ${file} in this repo${editing.content.trim() ? ` for this purpose:\n${editing.content}` : ` named "${editing.name}"`}.\n` +
@@ -239,6 +241,8 @@ export default function CustomizationsModal({
       onClose(); // watch the session work
     } catch (e) {
       setEditorError((e as Error).message || 'session start failed');
+    } finally {
+      setMaking(false);
     }
   }
 
@@ -279,6 +283,7 @@ export default function CustomizationsModal({
                 setEditing={setEditing}
                 saving={saving}
                 assisting={assisting}
+                making={making}
                 editorError={editorError}
                 undoText={undoText}
                 onSave={handleSave}
@@ -425,6 +430,7 @@ type EditorPaneProps = {
   setEditing: (e: Editing) => void;
   saving: boolean;
   assisting: boolean;
+  making: boolean;
   editorError: string | null;
   undoText: string | null;
   onSave: () => void;
@@ -439,6 +445,7 @@ function EditorPane({
   setEditing,
   saving,
   assisting,
+  making,
   editorError,
   undoText,
   onSave,
@@ -459,6 +466,7 @@ function EditorPane({
           setEditing({ ...editing, name: v.toLowerCase().replace(/[^a-z0-9-]+/g, '-') });
         }}
         placeholder="name"
+        disabled={!editing.isNew}
       />
       <div className={styles.editorFilePath}>{filePath}</div>
       <textarea
@@ -475,7 +483,7 @@ function EditorPane({
         <Button onClick={onCancel}>Cancel</Button>
         {undoText !== null ? <Button onClick={onUndo}>Undo polish</Button> : null}
         <AssistMenu label="✦ Polish with" disabled={assisting || !editing.content.trim()} onPick={onPolish} />
-        <AssistMenu label="◈ Make it for me" disabled={assisting} onPick={onMakeIt} />
+        <AssistMenu label="◈ Make it for me" disabled={assisting || making} onPick={onMakeIt} />
       </div>
     </div>
   );
