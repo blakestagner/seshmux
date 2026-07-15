@@ -333,8 +333,19 @@ export type MarketplaceItem = { path: string; name: string; description: string;
 export type MarketplaceFile = { path: string; content: string };
 // Raw entries from `claude plugin list --available --json` / `marketplace list --json`
 // (see server/routes/marketplace.ts) — shape beyond `name` is not our contract to own.
-export type MarketplacePlugin = { name: string; description?: string; installed?: boolean; [k: string]: unknown };
+export type MarketplacePlugin = { pluginId?: string; name: string; description?: string; [k: string]: unknown };
 export type MarketplaceInfo = { name?: string; [k: string]: unknown };
+// One entry of `claude plugin list --available --json`'s `installed` array.
+export type InstalledMarketplacePlugin = {
+  id: string;
+  version?: string;
+  scope?: string;
+  enabled?: boolean;
+  installPath?: string;
+  installedAt?: string;
+  lastUpdated?: string;
+  [k: string]: unknown;
+};
 
 export function getMarketplaceSources(): Promise<{ sources: string[] }> {
   return req('/api/marketplace/sources');
@@ -371,7 +382,12 @@ export function installMarketplaceItem(body: {
 
 export function getMarketplacePlugins(
   projectId?: string,
-): Promise<{ supported: boolean; plugins?: MarketplacePlugin[]; marketplaces?: MarketplaceInfo[] }> {
+): Promise<{
+  supported: boolean;
+  plugins?: MarketplacePlugin[];
+  marketplaces?: MarketplaceInfo[];
+  installed?: InstalledMarketplacePlugin[];
+}> {
   const q = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
   return req(`/api/marketplace/plugins${q}`);
 }

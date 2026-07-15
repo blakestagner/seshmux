@@ -358,8 +358,9 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
       const plugins = Array.isArray(availParsed?.available) ? availParsed.available : null;
       const marketplaces = Array.isArray(mktsParsed) ? mktsParsed : null;
       if (!plugins || !marketplaces) return { supported: false };
+      const installed = Array.isArray(availParsed?.installed) ? availParsed.installed : [];
 
-      return { supported: true, plugins, marketplaces };
+      return { supported: true, plugins, marketplaces, installed };
     } catch {
       return { supported: false };
     }

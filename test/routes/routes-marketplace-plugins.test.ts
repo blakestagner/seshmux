@@ -29,10 +29,26 @@ function app(
 }
 
 describe('GET /api/marketplace/plugins', () => {
-  it('returns supported:true with parsed plugins + marketplaces on happy JSON', async () => {
+  it('returns supported:true with parsed plugins + marketplaces + installed on happy JSON', async () => {
     const f = app(async (argv: string[]) => {
       if (argv.includes('--available')) {
-        return { ok: true, text: JSON.stringify({ available: [{ name: 'foo' }], installed: [] }) };
+        return {
+          ok: true,
+          text: JSON.stringify({
+            available: [{ pluginId: 'foo@some-marketplace', name: 'foo', description: 'a plugin' }],
+            installed: [
+              {
+                id: 'bar@some-marketplace',
+                version: '1.0.0',
+                scope: 'user',
+                enabled: true,
+                installPath: '/home/user/.claude/plugins/bar',
+                installedAt: '2026-07-01T00:00:00Z',
+                lastUpdated: '2026-07-01T00:00:00Z',
+              },
+            ],
+          }),
+        };
       }
       if (argv.includes('marketplace')) {
         return { ok: true, text: JSON.stringify([{ name: 'mkt-1' }]) };
@@ -43,9 +59,37 @@ describe('GET /api/marketplace/plugins', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
       supported: true,
-      plugins: [{ name: 'foo' }],
+      plugins: [{ pluginId: 'foo@some-marketplace', name: 'foo', description: 'a plugin' }],
       marketplaces: [{ name: 'mkt-1' }],
+      installed: [
+        {
+          id: 'bar@some-marketplace',
+          version: '1.0.0',
+          scope: 'user',
+          enabled: true,
+          installPath: '/home/user/.claude/plugins/bar',
+          installedAt: '2026-07-01T00:00:00Z',
+          lastUpdated: '2026-07-01T00:00:00Z',
+        },
+      ],
     });
+  });
+
+  it('missing installed key on available JSON -> installed defaults to [] (still supported)', async () => {
+    const f = app(async (argv: string[]) => {
+      if (argv.includes('--available')) {
+        return { ok: true, text: JSON.stringify({ available: [{ pluginId: 'foo@mkt', name: 'foo' }] }) };
+      }
+      if (argv.includes('marketplace')) {
+        return { ok: true, text: JSON.stringify([{ name: 'mkt-1' }]) };
+      }
+      throw new Error(`unexpected argv ${argv.join(' ')}`);
+    });
+    const res = await f.inject({ method: 'GET', url: '/api/marketplace/plugins?projectId=proj-1' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.supported).toBe(true);
+    expect(body.installed).toEqual([]);
   });
 
   it('non-JSON output -> supported:false (not an error status)', async () => {

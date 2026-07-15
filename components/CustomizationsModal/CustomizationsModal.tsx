@@ -676,7 +676,17 @@ function MarketplaceSection({
     if (tab !== 'plugins' || pluginsFetchedRef.current) return;
     pluginsFetchedRef.current = true;
     getMarketplacePlugins(projectId)
-      .then((r) => setPluginsResult({ supported: r.supported, plugins: r.plugins ?? [], marketplaces: r.marketplaces ?? [] }))
+      .then((r) => {
+        setPluginsResult({ supported: r.supported, plugins: r.plugins ?? [], marketplaces: r.marketplaces ?? [] });
+        // `installed[].id` is "name@marketplace" — keep both the full id and the
+        // bare name so a match works whether the plugin row exposes pluginId or name.
+        const serverInstalled = (r.installed ?? []).flatMap((entry) =>
+          entry.id ? [entry.id, entry.id.split('@')[0]] : [],
+        );
+        if (serverInstalled.length) {
+          setInstalledPlugins((prev) => new Set([...prev, ...serverInstalled]));
+        }
+      })
       .catch((e) => {
         setPluginsResult({ supported: false, plugins: [], marketplaces: [] });
         setPluginsError((e as Error).message || 'failed to load');
@@ -923,7 +933,7 @@ function PluginsPane({
           <PluginRow
             key={p.name}
             plugin={p}
-            installed={p.installed === true || installedNames.has(p.name)}
+            installed={installedNames.has(p.name) || (typeof p.pluginId === 'string' && installedNames.has(p.pluginId))}
             busy={installing === p.name}
             projectId={projectId}
             onInstall={(scope) => onInstall(p.name, scope)}
