@@ -1,7 +1,7 @@
-// GET /api/marketplace/{browse,item,sources} — community skill/agent browser
-// (Phase 2). GitHub tree/raw URL construction lives entirely in this file.
-// v1 is read-only: install itself is a client-side write against the
-// existing customizations write endpoint, not added here.
+// Marketplace routes (Phase 2): community browse/item/sources + guarded
+// install (server re-fetches and writes via fs-guard), and the claude
+// plugin-marketplace probe/list/install (argv from provider.pluginCommands,
+// hard rule 3). GitHub tree/raw URL construction lives entirely in this file.
 
 import type { FastifyInstance } from 'fastify';
 import { randomBytes } from 'node:crypto';
