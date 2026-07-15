@@ -5,6 +5,7 @@
 import type { FastifyInstance } from 'fastify';
 import { mkdir, writeFile, realpath } from 'node:fs/promises';
 import { dirname, sep } from 'node:path';
+import { execFile } from 'node:child_process';
 import type { AgentProvider } from '../lib/providers/types';
 import type { CustomizationItem, CustomizationScope, CustomizationScanners } from '../lib/providers/customizations';
 import { getProviders } from '../lib/providers/types';
@@ -12,6 +13,20 @@ import { getProviders } from '../lib/providers/types';
 export interface CustomizationsRouteOpts {
   listProviders?: () => Promise<AgentProvider[]>;
   resolveRepo?: (projectId: string) => Promise<string | null>;
+  runHeadless?: (argv: string[], cwd: string) => Promise<{ text: string; ok: boolean }>;
+}
+
+// Mirrors server/lib/bridge/mcp.ts:177-189 — execFile, never a shell string.
+function defaultRunHeadless(argv: string[], cwd: string): Promise<{ text: string; ok: boolean }> {
+  const [bin, ...rest] = argv;
+  return new Promise((resolve) => {
+    const child = execFile(
+      bin, rest,
+      { cwd, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 },
+      (err, stdout) => resolve({ text: (stdout || '').trim(), ok: !err }),
+    );
+    child.stdin?.end();
+  });
 }
 
 const SECTIONS = ['agents', 'skills', 'instructions', 'hooks', 'mcpServers'] as const;
@@ -34,6 +49,7 @@ async function scannedResolveRepo(id: string): Promise<string | null> {
 export default async function customizationsRoutes(f: FastifyInstance, opts: CustomizationsRouteOpts = {}) {
   const listProviders = opts.listProviders ?? getProviders;
   const resolveRepo = opts.resolveRepo ?? scannedResolveRepo;
+  const runHeadless = opts.runHeadless ?? defaultRunHeadless;
 
   f.get<{ Querystring: { scope?: string; project?: string } }>('/api/customizations', async (req, reply) => {
     let scope: CustomizationScope;
@@ -113,6 +129,32 @@ export default async function customizationsRoutes(f: FastifyInstance, opts: Cus
         return reply.code(400).send({ error: 'write failed' });
       }
       return { ok: true, filePath: target };
+    },
+  );
+
+  f.post<{ Body: { projectId?: string; provider?: string; section?: string; name?: string; draft?: string } }>(
+    '/api/customizations/assist',
+    async (req, reply) => {
+      const { projectId, provider: providerId, section, name, draft } = req.body ?? {};
+      if (section !== 'agents' && section !== 'skills') return reply.code(400).send({ error: 'bad section' });
+      if (typeof draft !== 'string' || !draft.trim()) return reply.code(400).send({ error: 'empty draft' });
+      const repoPath = projectId ? await resolveRepo(projectId) : null;
+      if (!repoPath) return reply.code(404).send({ error: 'unknown project' });
+      const providers = await listProviders();
+      const provider = providers.find((p) => p.id === providerId);
+      if (!provider?.commands?.headlessAsk) return reply.code(400).send({ error: 'unknown provider' });
+
+      const kind = section === 'skills' ? 'a SKILL.md skill file' : 'an agent definition markdown file';
+      const prompt =
+        `You are polishing ${kind} named "${name ?? ''}" for a Claude Code project.\n` +
+        `Rewrite the draft below into a complete, well-structured file. Requirements:\n` +
+        `- Start with --- frontmatter containing name and a one-line description.\n` +
+        `- Keep the author's intent; tighten wording; add missing sections a good ${section === 'skills' ? 'SKILL.md' : 'agent file'} needs.\n` +
+        `- Output ONLY the file content, no commentary, no code fences.\n\nDRAFT:\n${draft}`;
+
+      const { text, ok } = await runHeadless(provider.commands.headlessAsk(repoPath, prompt), repoPath);
+      if (!ok) return reply.code(502).send({ error: text || 'agent run failed' });
+      return { text };
     },
   );
 }
