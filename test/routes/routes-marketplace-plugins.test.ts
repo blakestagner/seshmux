@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import Fastify from 'fastify';
+import { tmpdir } from 'node:os';
 import marketplaceRoutes from '../../server/routes/marketplace';
 import type { AgentProvider } from '../../server/lib/providers/types';
+
+// realpath() must resolve these, so use real, always-present directories rather
+// than fake strings like '/repo' — cwd and the OS temp dir both exist everywhere
+// tests run, and (unlike '/repo') are guaranteed to realpath-resolve.
+const REPO_DIR = process.cwd();
+const OTHER_DIR = tmpdir();
 
 function fakeProvider(overrides: Partial<AgentProvider> = {}): AgentProvider {
   return {
@@ -143,10 +150,100 @@ describe('GET /api/marketplace/plugins', () => {
   });
 
   it('unknown project -> supported:false (probe, not 404)', async () => {
-    const f = app(async () => ({ ok: true, text: JSON.stringify({ available: [] }) }));
+    const f = app(async () => {
+      throw new Error('should not run the CLI for an unresolvable projectId');
+    });
     const res = await f.inject({ method: 'GET', url: '/api/marketplace/plugins?projectId=nope' });
     expect(res.statusCode).toBe(200);
-    expect(res.json().supported).toBeDefined();
+    expect(res.json()).toEqual({ supported: false });
+  });
+
+  it('drops a project-scope installed entry whose projectPath belongs to a different project', async () => {
+    const f = app(
+      async (argv: string[]) => {
+        if (argv.includes('--available')) {
+          return {
+            ok: true,
+            text: JSON.stringify({
+              available: [],
+              installed: [
+                { id: 'foo@mkt', scope: 'project', projectPath: OTHER_DIR },
+              ],
+            }),
+          };
+        }
+        return { ok: true, text: JSON.stringify([{ name: 'mkt-1' }]) };
+      },
+      { resolveRepo: async (id: string) => (id === 'proj-1' ? REPO_DIR : null) },
+    );
+    const res = await f.inject({ method: 'GET', url: '/api/marketplace/plugins?projectId=proj-1' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.supported).toBe(true);
+    expect(body.installed).toEqual([]);
+  });
+
+  it('keeps a project-scope installed entry whose projectPath matches the requested project', async () => {
+    const f = app(
+      async (argv: string[]) => {
+        if (argv.includes('--available')) {
+          return {
+            ok: true,
+            text: JSON.stringify({
+              available: [],
+              installed: [{ id: 'foo@mkt', scope: 'project', projectPath: REPO_DIR }],
+            }),
+          };
+        }
+        return { ok: true, text: JSON.stringify([{ name: 'mkt-1' }]) };
+      },
+      { resolveRepo: async (id: string) => (id === 'proj-1' ? REPO_DIR : null) },
+    );
+    const res = await f.inject({ method: 'GET', url: '/api/marketplace/plugins?projectId=proj-1' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.installed).toEqual([{ id: 'foo@mkt', scope: 'project', projectPath: REPO_DIR }]);
+  });
+
+  it('always keeps user-scope installed entries regardless of project', async () => {
+    const f = app(
+      async (argv: string[]) => {
+        if (argv.includes('--available')) {
+          return {
+            ok: true,
+            text: JSON.stringify({
+              available: [],
+              installed: [{ id: 'foo@mkt', scope: 'user' }],
+            }),
+          };
+        }
+        return { ok: true, text: JSON.stringify([{ name: 'mkt-1' }]) };
+      },
+      { resolveRepo: async (id: string) => (id === 'proj-1' ? '/repo' : null) },
+    );
+    const res = await f.inject({ method: 'GET', url: '/api/marketplace/plugins?projectId=proj-1' });
+    expect(res.json().installed).toEqual([{ id: 'foo@mkt', scope: 'user' }]);
+  });
+
+  it('global request (no projectId) drops all project-scope entries but keeps user-scope', async () => {
+    const f = app(async (argv: string[]) => {
+      if (argv.includes('--available')) {
+        return {
+          ok: true,
+          text: JSON.stringify({
+            available: [],
+            installed: [
+              { id: 'foo@mkt', scope: 'project', projectPath: REPO_DIR },
+              { id: 'bar@mkt', scope: 'user' },
+            ],
+          }),
+        };
+      }
+      return { ok: true, text: JSON.stringify([{ name: 'mkt-1' }]) };
+    });
+    const res = await f.inject({ method: 'GET', url: '/api/marketplace/plugins' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().installed).toEqual([{ id: 'bar@mkt', scope: 'user' }]);
   });
 });
 

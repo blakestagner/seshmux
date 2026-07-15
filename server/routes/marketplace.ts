@@ -5,7 +5,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { randomBytes } from 'node:crypto';
-import { mkdir, rename, rm } from 'node:fs/promises';
+import { mkdir, rename, rm, realpath } from 'node:fs/promises';
 import { dirname, join, basename } from 'node:path';
 import { parseFrontmatter } from '../lib/providers/customizations';
 import type { AgentProvider } from '../lib/providers/types';
@@ -372,13 +372,52 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
     }
   });
 
+  // The CLI reports project-scope installs from EVERY project on disk regardless of
+  // cwd, so `installed[]` is unscoped by default. Drop any project-scope entry whose
+  // projectPath doesn't realpath-match the requested project — user-scope entries are
+  // cwd-independent and always kept. No resolved project (global modal, or an
+  // unresolvable projectId) means no project-scope entry can match, so all are dropped.
+  // `any[]` matches the untyped-JSON.parse convention already used for availParsed/plugins above.
+  async function filterInstalledForProject(installed: any[], repoPath: string | null): Promise<any[]> {
+    let repoReal: string | null = null;
+    if (repoPath) {
+      try {
+        repoReal = await realpath(repoPath);
+      } catch {
+        repoReal = null;
+      }
+    }
+    const out: any[] = [];
+    for (const entry of installed) {
+      if (entry?.scope !== 'project') {
+        out.push(entry);
+        continue;
+      }
+      if (!repoReal) continue;
+      if (typeof entry?.projectPath !== 'string') continue;
+      try {
+        if ((await realpath(entry.projectPath)) === repoReal) out.push(entry);
+      } catch {
+        // dangling/unreadable projectPath -> drop, fail closed
+      }
+    }
+    return out;
+  }
+
   // Probe endpoint, not a normal CRUD read: any failure along the way (unknown project,
   // spawn error, non-JSON output, no provider with pluginCommands) resolves to
   // `{ supported: false }` with a 200, never an error status — the client uses this to
   // decide whether to show the plugin marketplace UI at all.
   f.get<{ Querystring: { projectId?: string } }>('/api/marketplace/plugins', async (req) => {
     const { projectId } = req.query;
-    const repoPath = projectId ? await resolveRepo(projectId) : null;
+    // cwd fallback to process.cwd() only applies to the no-projectId (global) case —
+    // a projectId that's given but doesn't resolve is a stale/unknown project, not
+    // "run from the server's own cwd", or the CLI phantom-lists that project's plugins.
+    let repoPath: string | null = null;
+    if (projectId) {
+      repoPath = await resolveRepo(projectId);
+      if (!repoPath) return { supported: false };
+    }
     const cwd = repoPath ?? process.cwd();
 
     const provider = (await listProviders()).find((p) => p.pluginCommands);
@@ -396,7 +435,8 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
       const plugins = Array.isArray(availParsed?.available) ? availParsed.available : null;
       const marketplaces = Array.isArray(mktsParsed) ? mktsParsed : null;
       if (!plugins || !marketplaces) return { supported: false };
-      const installed = Array.isArray(availParsed?.installed) ? availParsed.installed : [];
+      const rawInstalled = Array.isArray(availParsed?.installed) ? availParsed.installed : [];
+      const installed = await filterInstalledForProject(rawInstalled, repoPath);
 
       // `--available` is genuinely "available to install" — the CLI excludes
       // anything already installed, so an installed plugin otherwise has no
