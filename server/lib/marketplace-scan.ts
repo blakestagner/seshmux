@@ -13,7 +13,7 @@ export interface ScanWarning {
 const SCRIPT_EXT = /\.(sh|bash|zsh|py|js|ts|rb)$/i;
 const LINE_RULES: { rule: string; re: RegExp }[] = [
   { rule: 'pipe-to-shell', re: /\b(curl|wget|fetch)\b[^\n|]*\|\s*(sudo\s+)?(sh|bash|zsh|python\d?|node)\b/i },
-  // network-exfil is applied only to script-looking files (see below)
+  // network-exfil lives outside this table (separate EXFIL regex at the call site)
   { rule: 'base64-blob', re: /[A-Za-z0-9+/=]{200,}|base64\s+-d|atob\(|Buffer\.from\([^)]*['"]base64['"]/i },
   {
     rule: 'credential-path',
