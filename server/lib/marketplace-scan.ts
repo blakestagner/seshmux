@@ -38,12 +38,13 @@ export function scanFiles(files: { path: string; content: string }[]): ScanWarni
   for (const f of files) {
     const isMd = /\.md$/i.test(f.path);
     const lines = f.content.split('\n');
-    const scriptish = !isMd || SCRIPT_EXT.test(f.path);
     if (SCRIPT_EXT.test(f.path)) push(f.path, 1, 'bundled-executable', lines[0] ?? '');
     else if (!isMd && lines[0]?.startsWith('#!')) push(f.path, 1, 'bundled-executable', lines[0]);
     lines.forEach((text, i) => {
       for (const { rule, re } of LINE_RULES) if (re.test(text)) push(f.path, i + 1, rule, text);
-      if (scriptish && EXFIL.test(text)) push(f.path, i + 1, 'network-exfil', text);
+      // EXFIL applies to all files: a curl/wget invocation line is script-looking
+      // content regardless of extension — SKILL.md is the primary attack surface.
+      if (EXFIL.test(text)) push(f.path, i + 1, 'network-exfil', text);
     });
   }
   return out;

