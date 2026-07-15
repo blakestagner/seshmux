@@ -519,6 +519,7 @@ function AppShell() {
           key={tab.id}
           projectId={tab.projectId}
           repo={tab.label}
+          sessionId={tab.sessionId}
           onExecute={(provider, ptyId) =>
             dispatch({
               type: 'openTerm',

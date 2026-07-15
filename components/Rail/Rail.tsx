@@ -568,8 +568,11 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
           onPlanoff={() => {
             const project = modalProject;
             setModalProject(null);
-            // TODO(wire): planoff tab triggers bridgePlanoff run
-            dispatch({ type: 'openPlanoff', projectId: project.id, label: project.name });
+            // Thread the requesting session (active tab in THIS project) so plan-off
+            // runs in its real cwd — a folded worktree, not the parent repo.
+            const active = state.tabs.find((t) => t.id === state.activeTab);
+            const sessionId = active?.projectId === project.id ? active.sessionId : undefined;
+            dispatch({ type: 'openPlanoff', projectId: project.id, label: project.name, sessionId });
           }}
           onStartWorkspace={(provider, mode) => {
             const project = modalProject;

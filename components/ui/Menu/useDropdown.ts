@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 // Shared open/close/click-outside/Escape behavior for the menu-style dropdowns
-// (BridgeMenu, AssistMenu). stopPropagation on Escape (not just close) so a
+// (LabeledDropdown, BridgeMenu). stopPropagation on Escape (not just close) so a
 // modal's own window-level Escape listener never sees this keypress — bubble
 // order runs document-level listeners before window-level ones regardless of
 // registration order, so this is deterministic, not a listener-order race.

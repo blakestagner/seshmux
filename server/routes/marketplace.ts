@@ -19,11 +19,11 @@ export interface MarketplaceRouteOpts {
   readSettings?: () => Promise<Record<string, unknown>>;
   resolveRepo?: (projectId: string) => Promise<string | null>;
   listProviders?: () => Promise<AgentProvider[]>;
-  runArgv?: (argv: string[], cwd: string) => Promise<{ text: string; ok: boolean }>;
+  runArgv?: (argv: string[], cwd: string) => Promise<{ text: string; ok: boolean; stderr?: string }>;
 }
 
 // Thin wrapper over the shared execCapture (see server/lib/exec-capture.ts).
-function defaultRunArgv(argv: string[], cwd: string): Promise<{ text: string; ok: boolean }> {
+function defaultRunArgv(argv: string[], cwd: string): Promise<{ text: string; ok: boolean; stderr: string }> {
   const [bin, ...rest] = argv;
   return execCapture(bin, rest, { cwd, timeoutMs: 60_000, maxBuffer: 4 * 1024 * 1024 });
 }
@@ -56,15 +56,18 @@ const cache = new Map<string, { at: number; value: Promise<string> }>();
 function cachedFetch(url: string, fetchText: (url: string) => Promise<string>): Promise<string> {
   const hit = cache.get(url);
   if (hit) {
-    if (Date.now() - hit.at < CACHE_TTL_MS) return hit.value;
+    if (Date.now() - hit.at < CACHE_TTL_MS) {
+      // LRU: re-insert so Map insertion order tracks recency, not first-fetch.
+      cache.delete(url);
+      cache.set(url, hit);
+      return hit.value;
+    }
     cache.delete(url); // expired: evict on read, don't serve stale
   }
   const value = fetchText(url).catch((err) => {
     cache.delete(url);
     throw err;
   });
-  // ponytail: FIFO eviction via Map insertion order, not true LRU; upgrade if
-  // hit-rate under real traffic ever matters.
   if (cache.size >= CACHE_MAX_ENTRIES) {
     const oldestKey = cache.keys().next().value;
     if (oldestKey !== undefined) cache.delete(oldestKey);
@@ -482,8 +485,10 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
       const provider = (await listProviders()).find((p) => p.pluginCommands);
       if (!provider?.pluginCommands) return reply.code(400).send({ error: 'provider does not support plugins' });
 
-      const { text, ok } = await runArgv(provider.pluginCommands[cmd](plugin, scope), repoPath ?? process.cwd());
-      if (!ok) return reply.code(502).send({ error: text || `${cmd} failed` });
+      const { text, ok, stderr } = await runArgv(provider.pluginCommands[cmd](plugin, scope), repoPath ?? process.cwd());
+      // CLI errors land on stderr; surface it (bounded to the last 500 chars)
+      // instead of a generic message when stdout is empty.
+      if (!ok) return reply.code(502).send({ error: (stderr || text || '').trim().slice(-500) || `${cmd} failed` });
       return { ok: true, output: text };
     };
   }

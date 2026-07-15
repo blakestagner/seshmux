@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from 'react';
 import styles from './CustomizationsModal.module.scss';
 import menu from '../ui/Menu/Menu.module.scss';
-import { useDropdown } from '../ui/Menu/useDropdown';
+import LabeledDropdown, { MenuItem } from '../ui/LabeledDropdown/LabeledDropdown';
 import OptionRow from '../ui/OptionRow/OptionRow';
 import TextInput from '../ui/TextInput/TextInput';
 import Segmented from '../ui/Segmented/Segmented';
@@ -464,9 +464,7 @@ export default function MarketplaceSection({
 }
 
 // Source picker: dropdown of known sources + inline "Add source…" form that
-// kebab-validates `owner/repo` before enabling Add (mirrors AssistMenu's
-// useDropdown + Menu.module.scss composition).
-// ponytail: 4th useDropdown+ui/Menu hand-assembly; extract a LabeledDropdown primitive when the next consumer appears
+// kebab-validates `owner/repo` before enabling Add.
 function SourceMenu({
   sources,
   value,
@@ -482,7 +480,6 @@ function SourceMenu({
   adding: boolean;
   addError: string | null;
 }) {
-  const { open, setOpen, wrapRef } = useDropdown();
   const [showAdd, setShowAdd] = useState(false);
   const [text, setText] = useState('');
   const valid = MARKETPLACE_SOURCE_RE.test(text);
@@ -498,25 +495,19 @@ function SourceMenu({
   }
 
   return (
-    <span className={styles.assistMenuWrap} ref={wrapRef}>
-      <Button onClick={() => setOpen((v) => !v)}>
-        {value || 'Loading…'} <span>{open ? '▴' : '▾'}</span>
-      </Button>
-      {open ? (
-        <div className={`${menu.menu} ${styles.sourceMenu}`} role="menu">
+    <LabeledDropdown label={value || 'Loading…'} menuClassName={styles.sourceMenu}>
+      {(close) => (
+        <>
           {sources.map((s) => (
-            <button
+            <MenuItem
               key={s}
-              type="button"
-              className={menu.item}
-              role="menuitem"
               onClick={() => {
                 onPick(s);
-                setOpen(false);
+                close();
               }}
             >
               {s}
-            </button>
+            </MenuItem>
           ))}
           <div className={menu.sep} />
           {showAdd ? (
@@ -527,19 +518,17 @@ function SourceMenu({
               </Button>
             </div>
           ) : (
-            <button type="button" className={menu.item} role="menuitem" onClick={() => setShowAdd(true)}>
-              + Add source…
-            </button>
+            <MenuItem onClick={() => setShowAdd(true)}>+ Add source…</MenuItem>
           )}
           {addError ? <div className={styles.badge}>{addError}</div> : null}
-        </div>
-      ) : null}
-    </span>
+        </>
+      )}
+    </LabeledDropdown>
   );
 }
 
 // Install button for a selected skill/agent preview. With a projectId, "Install"
-// is a primary action plus a useDropdown menu of install targets: user level
+// is a primary action plus a dropdown menu of install targets: user level
 // first, then every ENABLED project (the modal's current project pinned to the
 // top of that list). Same menu in project and global scope — only the pin
 // differs.
@@ -556,41 +545,35 @@ function InstallMenu({
   disabled: boolean;
   onInstall: (target: 'user' | { id: string; name: string }) => void;
 }) {
-  const { open, setOpen, wrapRef } = useDropdown();
   const current = projects.find((p) => p.id === currentProjectId);
   const others = projects.filter((p) => p.id !== currentProjectId);
   const ordered = current ? [current, ...others] : others;
 
-  const pick = (target: 'user' | { id: string; name: string }) => {
-    setOpen(false);
-    onInstall(target);
-  };
-
   return (
-    <span className={styles.assistMenuWrap} ref={wrapRef}>
-      <Button variant="primary" disabled={installing || disabled} onClick={() => setOpen((v) => !v)}>
-        {installing ? 'Installing…' : 'Install to'} <span>{open ? '▴' : '▾'}</span>
-      </Button>
-      {open ? (
-        <div className={`${menu.menu} ${styles.mpScopeMenu} ${styles.mpInstallMenu}`} role="menu">
-          <button type="button" className={menu.item} role="menuitem" onClick={() => pick('user')}>
-            user (all projects)
-          </button>
-          {ordered.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              className={menu.item}
-              role="menuitem"
-              onClick={() => pick({ id: p.id, name: p.name })}
-            >
-              {p.name}
-              {p.id === currentProjectId ? ' · current' : ''}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </span>
+    <LabeledDropdown
+      variant="primary"
+      disabled={installing || disabled}
+      label={installing ? 'Installing…' : 'Install to'}
+      menuClassName={`${styles.mpScopeMenu} ${styles.mpInstallMenu}`}
+    >
+      {(close) => {
+        const pick = (target: 'user' | { id: string; name: string }) => {
+          close();
+          onInstall(target);
+        };
+        return (
+          <>
+            <MenuItem onClick={() => pick('user')}>user (all projects)</MenuItem>
+            {ordered.map((p) => (
+              <MenuItem key={p.id} onClick={() => pick({ id: p.id, name: p.name })}>
+                {p.name}
+                {p.id === currentProjectId ? ' · current' : ''}
+              </MenuItem>
+            ))}
+          </>
+        );
+      }}
+    </LabeledDropdown>
   );
 }
 
@@ -683,7 +666,7 @@ function PluginsPane({
 const EMPTY_SCOPE_SET: Set<string> = new Set();
 
 // Install scope defaults to 'user'; a project-scoped modal offers a small
-// useDropdown menu to pick 'user' vs 'project' instead. An installed scope's
+// dropdown menu to pick 'user' vs 'project' instead. An installed scope's
 // menu item is no longer disabled — it becomes an uninstall action for that
 // scope, so the same menu drives both install and uninstall per scope.
 function PluginRow({
@@ -701,7 +684,6 @@ function PluginRow({
   onInstall: (scope: 'user' | 'project') => void;
   onUninstall: (scope: 'user' | 'project') => void;
 }) {
-  const { open, setOpen, wrapRef } = useDropdown();
   // Global (no-project) modal can still install/uninstall at USER scope —
   // that's cwd-independent. Project scope needs a project to act on.
   const canProjectScope = !!projectId;
@@ -721,43 +703,36 @@ function PluginRow({
         }
         desc={typeof plugin.description === 'string' ? plugin.description : ''}
       />
-      {(
-        <span className={styles.assistMenuWrap} ref={wrapRef}>
-          <Button disabled={busy} onClick={() => setOpen((v) => !v)}>
-            {busy ? 'Working…' : anyInstalled ? 'Manage' : 'Install'} <span>{open ? '▴' : '▾'}</span>
-          </Button>
-          {open ? (
-            <div className={`${menu.menu} ${styles.mpScopeMenu}`} role="menu">
-              <button
-                type="button"
-                className={menu.item}
-                role="menuitem"
+      <LabeledDropdown
+        disabled={busy}
+        label={busy ? 'Working…' : anyInstalled ? 'Manage' : 'Install'}
+        menuClassName={styles.mpScopeMenu}
+      >
+        {(close) => (
+          <>
+            <MenuItem
+              onClick={() => {
+                close();
+                if (installedScopes.has('user')) onUninstall('user');
+                else onInstall('user');
+              }}
+            >
+              {installedScopes.has('user') ? 'uninstall (user)' : 'user'}
+            </MenuItem>
+            {canProjectScope ? (
+              <MenuItem
                 onClick={() => {
-                  setOpen(false);
-                  if (installedScopes.has('user')) onUninstall('user');
-                  else onInstall('user');
+                  close();
+                  if (installedScopes.has('project')) onUninstall('project');
+                  else onInstall('project');
                 }}
               >
-                {installedScopes.has('user') ? 'uninstall (user)' : 'user'}
-              </button>
-              {canProjectScope ? (
-                <button
-                  type="button"
-                  className={menu.item}
-                  role="menuitem"
-                  onClick={() => {
-                    setOpen(false);
-                    if (installedScopes.has('project')) onUninstall('project');
-                    else onInstall('project');
-                  }}
-                >
-                  {installedScopes.has('project') ? 'uninstall (project)' : 'project'}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-        </span>
-      )}
+                {installedScopes.has('project') ? 'uninstall (project)' : 'project'}
+              </MenuItem>
+            ) : null}
+          </>
+        )}
+      </LabeledDropdown>
     </div>
   );
 }

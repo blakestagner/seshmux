@@ -105,6 +105,10 @@ export async function composeBrief(
   projectId: string,
   sessionId: string,
   deps: BriefDeps = {},
+  // Scratchpad reference embedded in the prompt. For folded worktree sessions the route
+  // passes the PARENT repo's absolute handoff.md path — one scratchpad per repo — so the
+  // spawned agent doesn't write to a worktree copy the UI/watcher never reads.
+  scratchpadRef = '.seshmux/handoff.md',
 ): Promise<string> {
   const load = deps.loadTranscript ?? defaultLoadTranscript;
   const { msgs, meta } = await load(projectId, sessionId);
@@ -142,7 +146,7 @@ export async function composeBrief(
       : '(no assistant summary — review the recent activity above)',
   );
   lines.push('');
-  lines.push(`_Continue this task. Note progress in \`.seshmux/handoff.md\`._`);
+  lines.push(`_Continue this task. Note progress in \`${scratchpadRef}\`._`);
 
   return clampBytes(lines.join('\n'), MAX_BYTES);
 }
@@ -152,6 +156,8 @@ export async function composeDiffReview(
   sessionId: string,
   deps: BriefDeps = {},
   repo?: string,
+  // Same contract as composeBrief's scratchpadRef (absolute parent path for worktrees).
+  scratchpadRef = '.seshmux/handoff.md',
 ): Promise<string> {
   const load = deps.loadTranscript ?? defaultLoadTranscript;
   const gitDiff = deps.gitDiff ?? defaultGitDiff;
@@ -174,7 +180,7 @@ export async function composeDiffReview(
   lines.push(
     `Adversarially review the diff below. Assume it is buggy until proven otherwise. ` +
       `Critique correctness, edge cases, security, and style. Be specific and cite lines. ` +
-      `Write your verdict to \`.seshmux/handoff.md\`.`,
+      `Write your verdict to \`${scratchpadRef}\`.`,
   );
   lines.push('');
   lines.push(`## Diff`);

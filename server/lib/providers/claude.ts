@@ -334,11 +334,12 @@ export const claudeWatchConfig = {
 // (claudeStoreRoot()) so no ~/.claude path is built outside this module.
 export const claudeSubagentWatchConfig = {
   depth: 2,
-  // ponytail: bare join — a folded worktree session's subagents dir actually lives under
-  // the worktree's own dirent, so this watcher watches a nonexistent dir for those
-  // (chip still populates via the viewer's resolved fetch, just without live refresh).
-  // Upgrade path: make this async over scan.ts sessionFilePath and ripple events-hub.
-  sessionDir(root: string, projectId: string, sessionId: string): string {
-    return join(root, projectId, sessionId, 'subagents');
+  // A folded worktree session's subagents dir lives under the worktree's OWN dirent,
+  // not root/projectId — resolve the session jsonl via scan.ts sessionFilePath (the
+  // single (projectId, sessionId)→file lookup) and watch beside it, same as the viewer.
+  // null only for unsafe ids (don't watch).
+  async sessionDir(root: string, projectId: string, sessionId: string): Promise<string | null> {
+    const file = await sessionFilePath(projectId, sessionId, root, 'claude');
+    return file ? join(dirname(file), sessionId, 'subagents') : null;
   },
 };

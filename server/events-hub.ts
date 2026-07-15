@@ -477,30 +477,51 @@ export async function createEventsHub(): Promise<EventsHub> {
     subagentTouched.set(key, Date.now());
     if (subagentWatched.has(key)) return;
     // The subagents/ layout stays in the provider (hard rule 3) — resolve the dir there.
-    const dir = claudeSubagentWatchConfig.sessionDir(claudeStoreRoot(), projectId, sessionId);
-    try {
-      const w = chokidar.watch(dir, {
-        ignoreInitial: true,
-        depth: claudeSubagentWatchConfig.depth,
-      });
-      const ping = () => {
-        const prev = subagentDebounce.get(key);
-        if (prev) clearTimeout(prev);
-        subagentDebounce.set(
-          key,
-          setTimeout(() => {
-            subagentDebounce.delete(key);
-            broadcast({ event: 'subagents', projectId, sessionId });
-          }, 250),
-        );
-      };
-      w.on('add', ping);
-      w.on('change', ping);
-      w.on('addDir', ping);
-      subagentWatched.set(key, w);
-    } catch {
-      /* watching unavailable — the viewer still works via manual refetch */
-    }
+    // Resolution is async (folded worktree sessions live in another dirent), so register
+    // a handle synchronously: sweep/close before the dir resolves cancels the arm.
+    let closed = false;
+    let watcher: { close(): Promise<void> } | undefined;
+    subagentWatched.set(key, {
+      async close() {
+        closed = true;
+        if (watcher) await watcher.close().catch(() => {});
+      },
+    });
+    // A failed arm must evict its stub so the next viewer touch retries.
+    const evictStub = () => {
+      if (!closed && !watcher) subagentWatched.delete(key);
+    };
+    void (async () => {
+      try {
+        const dir = await claudeSubagentWatchConfig.sessionDir(claudeStoreRoot(), projectId, sessionId);
+        if (!dir || closed) {
+          evictStub();
+          return;
+        }
+        const w = chokidar.watch(dir, {
+          ignoreInitial: true,
+          depth: claudeSubagentWatchConfig.depth,
+        });
+        watcher = w;
+        const ping = () => {
+          const prev = subagentDebounce.get(key);
+          if (prev) clearTimeout(prev);
+          subagentDebounce.set(
+            key,
+            setTimeout(() => {
+              subagentDebounce.delete(key);
+              broadcast({ event: 'subagents', projectId, sessionId });
+            }, 250),
+          );
+        };
+        w.on('add', ping);
+        w.on('change', ping);
+        w.on('addDir', ping);
+      } catch {
+        /* watching unavailable — the viewer still works via manual refetch */
+        evictStub();
+      }
+    })();
   }
 
   // ── Idle watcher eviction (MEM-5/MEM-6): scratchpad + subagent watchers were armed

@@ -172,12 +172,14 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
   // Both composers accept the route's resolved repo as a 3rd arg; only the real review
   // composer uses it (to run git diff against the true cwd — R2-1). Injected test composers
   // keep their (projectId, sessionId) shape; the repo arg is simply not forwarded to them.
-  const brief: (p: string, s: string, repo: string) => Promise<string> = deps.composeBrief
-    ? (p, s) => deps.composeBrief!(p, s)
-    : (p, s) => realBrief(p, s);
-  const review: (p: string, s: string, repo: string) => Promise<string> = deps.composeDiffReview
-    ? (p, s) => deps.composeDiffReview!(p, s)
-    : (p, s, repo) => realReview(p, s, {}, repo);
+  const brief: (p: string, s: string, repo: string, scratchpadRef: string) => Promise<string> =
+    deps.composeBrief
+      ? (p, s) => deps.composeBrief!(p, s)
+      : (p, s, _repo, ref) => realBrief(p, s, {}, ref);
+  const review: (p: string, s: string, repo: string, scratchpadRef: string) => Promise<string> =
+    deps.composeDiffReview
+      ? (p, s) => deps.composeDiffReview!(p, s)
+      : (p, s, repo, ref) => realReview(p, s, {}, repo, ref);
   const planoff = deps.runPlanoff ?? ((path: string, task: string) => realPlanoff(path, task));
   const registerBridge = deps.registerBridge ?? (() => realRegister());
   const bridgeStatus = deps.bridgeStatus ?? (() => realBridgeStatus());
@@ -215,13 +217,22 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
     return hit?.ptyId ?? null;
   }
 
+  // A folded worktree session lists under the PARENT projectId but ran in the
+  // worktree — spawn/exec there, not the parent tree. Falls back to the repo when
+  // there's no sessionId, the meta has no cwd, or the dir is gone (worktree removed).
+  async function sessionWorkDir(repo: string, projectId: string, sessionId?: string): Promise<string> {
+    if (typeof sessionId !== 'string' || !sessionId) return repo;
+    const cwd = await resolveSessionCwd(projectId, sessionId).catch(() => null);
+    return cwd && cwd !== repo && (await isDir(cwd)) ? cwd : repo;
+  }
+
   // Shared handler for handoff + review: compose → write file → spawn opposite provider.
   async function bridgeStart(
     reply: import('fastify').FastifyReply,
     projectId: string,
     sessionId: string,
     kind: 'handoff' | 'review',
-    compose: (p: string, s: string, repo: string) => Promise<string>,
+    compose: (p: string, s: string, repo: string, scratchpadRef: string) => Promise<string>,
     filename: string,
   ) {
     const repo = await repoOrNull(projectId);
@@ -250,13 +261,16 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
     const target = OTHER[source];
     // Spawn + diff + brief/scratchpad files all use the SESSION'S OWN cwd: a folded
     // worktree session ran in <repo>/.claude/worktrees/<x>, and handing off in the
-    // parent tree would diff/execute against the wrong checkout. Falls back to the
-    // repo when the meta has no cwd or the dir is gone (worktree since removed).
-    const sessionCwd = await resolveSessionCwd(projectId, sessionId).catch(() => null);
-    const workDir = sessionCwd && sessionCwd !== repo && (await isDir(sessionCwd)) ? sessionCwd : repo;
+    // parent tree would diff/execute against the wrong checkout.
+    const workDir = await sessionWorkDir(repo, projectId, sessionId);
+    // One scratchpad per repo: handoff.md always lives in the PARENT repo (the UI +
+    // watcher only read there), so a worktree session's brief must point the spawned
+    // agent — whose cwd is the worktree — at the parent's copy by absolute path.
+    const scratchpadRef =
+      workDir === repo ? '.seshmux/handoff.md' : join(repo, '.seshmux', 'handoff.md');
     let md: string;
     try {
-      md = await compose(projectId, sessionId, workDir);
+      md = await compose(projectId, sessionId, workDir, scratchpadRef);
     } catch {
       reply.code(404);
       return { error: 'session not found' };
@@ -264,10 +278,11 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
     await atomicWrite(join(workDir, '.seshmux', filename), md);
     // Post a scratchpad entry so cross-review is visible in the shared handoff log from the
     // moment it's requested (the reviewing agent fills in its verdict below, per its prompt).
+    // Always the PARENT repo's handoff.md — the scratchpad UI/watcher never read a worktree's.
     if (kind === 'review') {
       const ts = new Date(deps.now ? deps.now() : Date.now()).toISOString();
       await appendScratchpad(
-        workDir,
+        repo,
         `## Review requested — ${providerName(target)} reviewing ${providerName(source)}'s work · ${ts}\n\n(Verdict to follow — ${providerName(target)} writes it here.)`,
       );
     }
@@ -292,7 +307,7 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
       bridgeStart(reply, req.body.projectId, req.body.sessionId, 'review', review, 'review.md'),
   );
 
-  f.post<{ Body: { projectId: string; task: string } }>(
+  f.post<{ Body: { projectId: string; sessionId?: string; task: string } }>(
     '/api/bridge/planoff',
     async (req, reply) => {
       const repo = await repoOrNull(req.body.projectId);
@@ -305,12 +320,14 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
         reply.code(400);
         return { error: 'task may not start with "-"' };
       }
-      return planoff(repo, req.body.task);
+      // sessionId is optional: with one, planners run in that session's own cwd
+      // (worktree); without, plan-off keeps working at the repo root.
+      return planoff(await sessionWorkDir(repo, req.body.projectId, req.body.sessionId), req.body.task);
     },
   );
 
   f.post<{
-    Body: { projectId: string; provider: PlanoffProvider; task: string; planoff: PlanoffResult };
+    Body: { projectId: string; sessionId?: string; provider: PlanoffProvider; task: string; planoff: PlanoffResult };
   }>('/api/bridge/planoff/pick', async (req, reply) => {
     const repo = await repoOrNull(req.body.projectId);
     if (!repo) {
@@ -339,13 +356,16 @@ export default async function bridgeRoutes(f: FastifyInstance, deps: BridgeRoute
       return { error: 'winning plan is empty or the planner failed — nothing to execute' };
     }
 
+    // Winner file + scratchpad stay in the PARENT repo (one scratchpad per repo —
+    // the UI/watcher only read there); only the execution session runs in the
+    // requesting session's own cwd (worktree).
     await atomicWrite(join(repo, '.seshmux', 'planoff-winner.md'), winnerMarkdown(winner, req.body.task));
     if (loser?.plan) {
       await appendScratchpad(repo, `## Plan-off runner-up (${loser.provider})\n\n${loser.plan}`);
     }
 
     const { ptyId, tabMeta } = await deps.startSession({
-      projectPath: repo,
+      projectPath: await sessionWorkDir(repo, req.body.projectId, req.body.sessionId),
       provider,
       firstPrompt: `Execute the approved plan:\n\n${winner.plan}`,
     });

@@ -2,7 +2,7 @@
 
 Read this first. It replaces the pre-build handoff (which opened with "nothing has been coded yet" — true in July 2026, now badly out of date).
 
-**Status: shipped.** `seshmux` is published on npm and installs clean on a fresh machine. `main` is green on CI (ubuntu + macOS × node 20/22), 598 tests.
+**Status: shipped.** `seshmux` is published on npm and installs clean on a fresh machine. `main` is green on CI (ubuntu + macOS × node 20/22), 751 tests.
 
 ---
 
@@ -10,24 +10,22 @@ Read this first. It replaces the pre-build handoff (which opened with "nothing h
 
 | | |
 | --- | --- |
-| npm | `seshmux` — published, latest **0.1.5** |
-| `main` | version **0.1.5**, CI green |
-| Tests | 598 passing (`npm test` = lint:styles gate, then vitest) |
+| npm | `seshmux` — published, latest **0.1.7** |
+| `main` | version **0.1.7**, CI green |
+| Tests | 751 passing as of 2026-07-15 (`npm test` = lint:styles gate, then vitest) |
 | CI | `.github/workflows/ci.yml` — ubuntu + macOS × node 20/22. Installs tmux, because the daemon's tmux-tier tests **silently SKIP** without it (a CI that gates on nothing looks green). |
 
-### One thing is merged but NOT published
+### Shipped since 0.1.5 (on main, in 0.1.7)
 
-`seshmux update` (the CLI updater) is on `main` but is in no published version. **Cut a `0.1.6` to ship it.** Slightly circular — the command can't reach users until it's inside a release.
+- `seshmux update` CLI updater.
+- **Grid workspace** (PR #21) — multi-terminal grid view; handoff notes in `docs/local/handoffs/`.
+- **Customizations authoring** (PR #23) — create/edit skills & agents from the modal, Polish + Make-it-for-me.
+- **Marketplace** (PR #24) — browse/install community skills, agents, plugins; `claude plugin` CLI behind the `pluginCommands` provider seam; worktree folding (`.claude/worktrees/*` sessions fold into parent project).
+- Dev server is `tsx watch` now — server edits hot-restart, no manual bounce.
 
-```bash
-# on a branch
-npm version 0.1.6 --no-git-tag-version
-# after merge:
-git checkout main && git pull && npm publish
-```
+Queued next: marketplace safety verification — spec at `docs/superpowers/specs/2026-07-15-marketplace-safety-design.md`.
 
-Publishing uses the granular npm token in `~/.npmrc` (account has 2FA; the token bypasses it).
-**That token was pasted into a chat transcript — rotate it.**
+Publishing is manual (`npm publish` from `main`) using the granular npm token in `~/.npmrc` (account has 2FA; the token bypasses it).
 
 ---
 

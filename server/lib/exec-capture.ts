@@ -8,13 +8,14 @@ export function execCapture(
   bin: string,
   args: string[],
   opts: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; maxBuffer?: number },
-): Promise<{ text: string; ok: boolean }> {
+): Promise<{ text: string; ok: boolean; stderr: string }> {
   return new Promise((resolve) => {
     const child = execFile(
       bin,
       args,
       { cwd: opts.cwd, env: opts.env, timeout: opts.timeoutMs, maxBuffer: opts.maxBuffer },
-      (err, stdout) => resolve({ text: (stdout || '').trim(), ok: !err }),
+      (err, stdout, stderr) =>
+        resolve({ text: (stdout || '').trim(), ok: !err, stderr: (stderr || '').trim() }),
     );
     child.stdin?.end();
   });

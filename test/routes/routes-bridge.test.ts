@@ -327,6 +327,22 @@ describe('bridge uses the session\'s own cwd for folded worktree sessions', () =
     expect(existsSync(join(repo, '.seshmux', 'handoff-brief.md'))).toBe(false);
   });
 
+  it('review writes review.md in the session cwd but the scratchpad seed in the PARENT repo', async () => {
+    const wt = join(repo, '.claude', 'worktrees', 'agent-a');
+    mkdirSync(wt, { recursive: true });
+    const { f } = makeApp({ resolveSessionCwd: async () => wt });
+    const res = await f.inject({
+      method: 'POST', url: '/api/bridge/review', headers: { origin },
+      payload: { projectId: 'demo', sessionId: 's1' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(existsSync(join(wt, '.seshmux', 'review.md'))).toBe(true);
+    // one scratchpad per repo — the UI/watcher only read the parent's handoff.md
+    expect(existsSync(join(wt, '.seshmux', 'handoff.md'))).toBe(false);
+    const sp = readFileSync(join(repo, '.seshmux', 'handoff.md'), 'utf8');
+    expect(sp).toContain('Review requested');
+  });
+
   it('falls back to the repo when the session cwd no longer exists (worktree removed)', async () => {
     const gone = join(repo, '.claude', 'worktrees', 'gone');
     const { f, calls } = makeApp({ resolveSessionCwd: async () => gone });
@@ -336,6 +352,63 @@ describe('bridge uses the session\'s own cwd for folded worktree sessions', () =
     });
     expect(res.statusCode).toBe(200);
     expect(calls[0].projectPath).toBe(repo);
+  });
+
+  it('plan-off with a sessionId runs planners + execution in the session cwd; winner/scratchpad stay in the parent', async () => {
+    const wt = join(repo, '.claude', 'worktrees', 'agent-a');
+    mkdirSync(wt, { recursive: true });
+    const planPaths: string[] = [];
+    const { f, calls } = makeApp({
+      resolveSessionCwd: async () => wt,
+      runPlanoff: async (path) => {
+        planPaths.push(path);
+        return {
+          claude: { provider: 'claude', ok: true, plan: 'plan A', durationMs: 1 },
+          codex: { provider: 'codex', ok: true, plan: 'plan B', durationMs: 1 },
+        };
+      },
+    });
+    const run = await f.inject({
+      method: 'POST', url: '/api/bridge/planoff', headers: { origin },
+      payload: { projectId: 'demo', sessionId: 's1', task: 'ship it' },
+    });
+    expect(run.statusCode).toBe(200);
+    expect(planPaths).toEqual([wt]); // planners run in the worktree
+    const pick = await f.inject({
+      method: 'POST', url: '/api/bridge/planoff/pick', headers: { origin },
+      payload: {
+        projectId: 'demo', sessionId: 's1', provider: 'claude', task: 'ship it',
+        planoff: {
+          claude: { provider: 'claude', ok: true, plan: 'winning plan', durationMs: 1 },
+          codex: { provider: 'codex', ok: true, plan: 'losing plan', durationMs: 1 },
+        },
+      },
+    });
+    expect(pick.statusCode).toBe(200);
+    expect(calls[0].projectPath).toBe(wt); // execution session in the worktree
+    // one scratchpad + winner record per repo — always the parent's
+    expect(existsSync(join(repo, '.seshmux', 'planoff-winner.md'))).toBe(true);
+    expect(existsSync(join(wt, '.seshmux', 'planoff-winner.md'))).toBe(false);
+    expect(readFileSync(join(repo, '.seshmux', 'handoff.md'), 'utf8')).toContain('runner-up');
+  });
+
+  it('plan-off without a sessionId keeps running at the repo root', async () => {
+    const planPaths: string[] = [];
+    const { f } = makeApp({
+      runPlanoff: async (path) => {
+        planPaths.push(path);
+        return {
+          claude: { provider: 'claude', ok: true, plan: 'plan A', durationMs: 1 },
+          codex: { provider: 'codex', ok: true, plan: 'plan B', durationMs: 1 },
+        };
+      },
+    });
+    const res = await f.inject({
+      method: 'POST', url: '/api/bridge/planoff', headers: { origin },
+      payload: { projectId: 'demo', task: 'ship it' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(planPaths).toEqual([repo]);
   });
 
   it('wait resolves a live PTY whose cwd is a worktree of the project repo', async () => {

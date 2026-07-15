@@ -171,8 +171,10 @@ export function bridgeReview(projectId: string, sessionId: string): Promise<Brid
 export type PlanResult = { provider: ProviderId; ok: boolean; plan: string; error?: string; durationMs: number };
 export type PlanoffResult = { claude: PlanResult; codex: PlanResult };
 
-export function bridgePlanoff(projectId: string, task: string): Promise<PlanoffResult> {
-  return req('/api/bridge/planoff', { method: 'POST', body: JSON.stringify({ projectId, task }) });
+// sessionId is optional: with one, the server runs plan-off in that session's own
+// cwd (a folded worktree); without, it runs at the project repo root.
+export function bridgePlanoff(projectId: string, task: string, sessionId?: string): Promise<PlanoffResult> {
+  return req('/api/bridge/planoff', { method: 'POST', body: JSON.stringify({ projectId, sessionId, task }) });
 }
 
 export function bridgePlanoffPick(
@@ -180,10 +182,11 @@ export function bridgePlanoffPick(
   provider: ProviderId,
   task: string,
   planoff: PlanoffResult,
+  sessionId?: string,
 ): Promise<BridgeStart> {
   return req('/api/bridge/planoff/pick', {
     method: 'POST',
-    body: JSON.stringify({ projectId, provider, task, planoff }),
+    body: JSON.stringify({ projectId, sessionId, provider, task, planoff }),
   });
 }
 
