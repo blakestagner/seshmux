@@ -36,4 +36,9 @@ describe('POST /api/customizations/assist', () => {
     const res = await post(app(async () => ({ text: 'boom', ok: false })), base);
     expect(res.statusCode).toBe(502);
   });
+  it('400s a draft over the 256KB cap', async () => {
+    const res = await post(app(), { ...base, draft: 'a'.repeat(256 * 1024 + 1) });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('draft too large');
+  });
 });

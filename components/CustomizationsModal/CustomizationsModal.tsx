@@ -6,9 +6,10 @@
 // (global vs one project) drives which GET /api/customizations call fires;
 // pre-scoped when opened from a project row via projectId/projectName.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import styles from './CustomizationsModal.module.scss';
 import menu from '../ui/Menu/Menu.module.scss';
+import { useDropdown } from '../ui/Menu/useDropdown';
 import OptionRow from '../ui/OptionRow/OptionRow';
 import TextInput from '../ui/TextInput/TextInput';
 import ProjectVisibilityList from '../ProjectVisibilityList/ProjectVisibilityList';
@@ -30,6 +31,13 @@ import type { CustomizationItem, Project, ProviderId } from '../../lib/client/ty
 const NAME_RE = /^[a-z0-9-]{1,64}$/;
 
 const SKILL_TEMPLATE = '---\nname: \ndescription: \n---\n\n';
+
+// Display/brief-only path preview — NOT the write path. The real target is
+// resolved server-side by provider.customizationWriteTarget() (the provider
+// seam owns actual paths; see server/lib/providers/customizations.ts).
+function targetPathFor(section: 'agents' | 'skills', name: string): string {
+  return section === 'skills' ? `.claude/skills/${name}/SKILL.md` : `.claude/agents/${name}.md`;
+}
 
 // filePath -> the kebab name Save needs. Skills live at .../skills/<name>/SKILL.md
 // (parent dir is the name); agents are flat .../agents/<name>.md.
@@ -136,10 +144,17 @@ export default function CustomizationsModal({
     setData(null);
     setLoadError(null);
     // Project scope shows BOTH levels (project first, then user-global) — each
-    // item keeps its own `scope` field, rendered as a project/user chip.
+    // item keeps its own `scope` field, rendered as a project/user chip. The
+    // global fetch is best-effort: if it fails, project items still render
+    // (empty payload swapped in) rather than blanking the whole view. Only a
+    // failure of the PROJECT fetch itself is a real loadError.
+    const EMPTY: CustomizationsPayload = { agents: [], skills: [], instructions: [], hooks: [], mcp: [] };
     const load =
       scope === 'project'
-        ? Promise.all([getCustomizations('project', projectId), getCustomizations('global')]).then(([p, g]) => ({
+        ? Promise.all([
+            getCustomizations('project', projectId),
+            getCustomizations('global').catch(() => EMPTY),
+          ]).then(([p, g]) => ({
             agents: [...p.agents, ...g.agents],
             skills: [...p.skills, ...g.skills],
             instructions: [...p.instructions, ...g.instructions],
@@ -251,7 +266,7 @@ export default function CustomizationsModal({
   async function handleMakeIt(provider: ProviderId) {
     if (!editing || !project || making) return;
     setMaking(true);
-    const file = editing.section === 'skills' ? `.claude/skills/${editing.name}/SKILL.md` : `.claude/agents/${editing.name}.md`;
+    const file = targetPathFor(editing.section, editing.name);
     const brief =
       `Create ${file} in this repo${editing.content.trim() ? ` for this purpose:\n${editing.content}` : ` named "${editing.name}"`}.\n` +
       `Follow ${editing.section === 'skills' ? 'SKILL.md' : 'Claude Code agent-definition'} conventions (frontmatter with name + description, clear body). Write the file, then stop.`;
@@ -414,9 +429,9 @@ export default function CustomizationsModal({
   );
 }
 
-// Dropdown of provider choices for the two AI-assist actions — same
-// open/close/Escape/click-outside pattern as BridgeMenu, composing the
-// shared ui/Menu surface.
+// Dropdown of provider choices for the two AI-assist actions — shares
+// open/close/Escape/click-outside behavior with BridgeMenu via useDropdown,
+// composing the shared ui/Menu surface.
 function AssistMenu({
   label,
   disabled,
@@ -426,30 +441,7 @@ function AssistMenu({
   disabled?: boolean;
   onPick: (provider: ProviderId) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLSpanElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    // stopPropagation (not just close) so the modal's own window-level Escape
-    // listener never sees this keypress — bubble order runs document-level
-    // listeners before window-level ones regardless of registration order,
-    // so this is deterministic, not a listener-order race.
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      e.stopPropagation();
-      setOpen(false);
-    };
-    document.addEventListener('click', onClick);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('click', onClick);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
+  const { open, setOpen, wrapRef } = useDropdown();
 
   const pick = (provider: ProviderId) => {
     setOpen(false);
@@ -503,8 +495,7 @@ function EditorPane({
   onMakeIt,
   onUndo,
 }: EditorPaneProps) {
-  const filePath =
-    editing.section === 'skills' ? `.claude/skills/${editing.name || '<name>'}/SKILL.md` : `.claude/agents/${editing.name || '<name>'}.md`;
+  const filePath = targetPathFor(editing.section, editing.name || '<name>');
 
   return (
     <div className={styles.editor}>
@@ -533,7 +524,9 @@ function EditorPane({
         <Button onClick={onCancel}>Cancel</Button>
         {undoText !== null ? <Button onClick={onUndo}>Undo polish</Button> : null}
         <AssistMenu label="✦ Polish with" disabled={assisting || !editing.content.trim()} onPick={onPolish} />
-        <AssistMenu label="◈ Make it for me" disabled={assisting || making} onPick={onMakeIt} />
+        {editing.isNew ? (
+          <AssistMenu label="◈ Make it for me" disabled={assisting || making || !NAME_RE.test(editing.name)} onPick={onMakeIt} />
+        ) : null}
       </div>
     </div>
   );

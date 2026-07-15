@@ -41,6 +41,11 @@
   @include t-heading;
   color: var(--text-dim);
   margin-left: auto;
+  max-width: 40%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 // Header close gets the larger glyph size; the detail back arrow keeps
@@ -56,13 +61,15 @@
   @include t-heading;
   background: transparent;
   border: none;
-  padding: 2px 6px;
+  padding: 4px 6px;
+  border-radius: var(--radius-xs);
   color: var(--text-dim);
   cursor: pointer;
   line-height: 1;
 }
 
 .glyphBtn:hover {
+  background: var(--bg-hover);
   color: var(--text);
 }
 

@@ -147,6 +147,7 @@ export default async function customizationsRoutes(f: FastifyInstance, opts: Cus
       const { projectId, provider: providerId, section, name, draft } = req.body ?? {};
       if (section !== 'agents' && section !== 'skills') return reply.code(400).send({ error: 'bad section' });
       if (typeof draft !== 'string' || !draft.trim()) return reply.code(400).send({ error: 'empty draft' });
+      if (Buffer.byteLength(draft, 'utf8') > MAX_CONTENT) return reply.code(400).send({ error: 'draft too large' });
       const repoPath = projectId ? await resolveRepo(projectId) : null;
       if (!repoPath) return reply.code(404).send({ error: 'unknown project' });
       const providers = await listProviders();
