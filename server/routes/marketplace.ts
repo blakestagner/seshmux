@@ -460,16 +460,21 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
     }
   });
 
-  f.post<{ Body: { projectId?: string; plugin?: string; scope?: string } }>(
-    '/api/marketplace/plugins/install',
-    async (req, reply) => {
+  // install/uninstall are otherwise-identical: same body shape, same scope
+  // gate, same provider lookup, differing only in which pluginCommands verb
+  // runs and the fallback error text. Shared as one handler factory.
+  function pluginAction(cmd: 'install' | 'uninstall') {
+    return async (
+      req: { body?: { projectId?: string; plugin?: string; scope?: string } },
+      reply: import('fastify').FastifyReply,
+    ) => {
       const { projectId, plugin, scope } = req.body ?? {};
       if (typeof plugin !== 'string' || !PLUGIN_NAME_RE.test(plugin))
         return reply.code(400).send({ error: 'bad plugin' });
       if (scope !== 'user' && scope !== 'project') return reply.code(400).send({ error: 'bad scope' });
 
-      // Project-scope installs need a real project (the CLI writes into its
-      // .claude); user-scope installs are cwd-independent, so the global modal
+      // Project-scope installs/uninstalls need a real project (the CLI writes
+      // into its .claude); user-scope is cwd-independent, so the global modal
       // (no project) may run them from the server's own cwd.
       const repoPath = projectId ? await resolveRepo(projectId) : null;
       if (!repoPath && scope === 'project') return reply.code(404).send({ error: 'unknown project' });
@@ -477,32 +482,20 @@ export default async function marketplaceRoutes(f: FastifyInstance, opts: Market
       const provider = (await listProviders()).find((p) => p.pluginCommands);
       if (!provider?.pluginCommands) return reply.code(400).send({ error: 'provider does not support plugins' });
 
-      const { text, ok } = await runArgv(provider.pluginCommands.install(plugin, scope), repoPath ?? process.cwd());
-      if (!ok) return reply.code(502).send({ error: text || 'install failed' });
+      const { text, ok } = await runArgv(provider.pluginCommands[cmd](plugin, scope), repoPath ?? process.cwd());
+      if (!ok) return reply.code(502).send({ error: text || `${cmd} failed` });
       return { ok: true, output: text };
-    },
+    };
+  }
+
+  f.post<{ Body: { projectId?: string; plugin?: string; scope?: string } }>(
+    '/api/marketplace/plugins/install',
+    pluginAction('install'),
   );
 
   f.post<{ Body: { projectId?: string; plugin?: string; scope?: string } }>(
     '/api/marketplace/plugins/uninstall',
-    async (req, reply) => {
-      const { projectId, plugin, scope } = req.body ?? {};
-      if (typeof plugin !== 'string' || !PLUGIN_NAME_RE.test(plugin))
-        return reply.code(400).send({ error: 'bad plugin' });
-      if (scope !== 'user' && scope !== 'project') return reply.code(400).send({ error: 'bad scope' });
-
-      // Same project-scope gate as install: project-scope uninstalls need a real
-      // project; user-scope is cwd-independent (global modal).
-      const repoPath = projectId ? await resolveRepo(projectId) : null;
-      if (!repoPath && scope === 'project') return reply.code(404).send({ error: 'unknown project' });
-
-      const provider = (await listProviders()).find((p) => p.pluginCommands);
-      if (!provider?.pluginCommands) return reply.code(400).send({ error: 'provider does not support plugins' });
-
-      const { text, ok } = await runArgv(provider.pluginCommands.uninstall(plugin, scope), repoPath ?? process.cwd());
-      if (!ok) return reply.code(502).send({ error: text || 'uninstall failed' });
-      return { ok: true, output: text };
-    },
+    pluginAction('uninstall'),
   );
 
   f.get('/api/marketplace/sources', async () => {
