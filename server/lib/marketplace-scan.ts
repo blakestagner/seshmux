@@ -24,7 +24,11 @@ const LINE_RULES: { rule: string; re: RegExp }[] = [
     re: /ignore (all |your )?(previous|prior|above) instructions|disregard .{0,20}instructions|do not (tell|inform|show) the user|hide this from the user|without asking the user/i,
   },
 ];
-const EXFIL = /\b(curl|wget|nc|fetch\(|http\.request)\b[^\n]*https?:\/\/(?![^\s'"]*(github\.com|githubusercontent\.com))[^\s'"]+/i;
+// Allowlist is anchored to the URL HOST (subdomains ok, must end at / or end
+// of host) — a substring check would let `evil.example/x?github.com` or
+// `github.com.evil.io` slip through.
+const EXFIL =
+  /\b(curl|wget|nc|fetch\(|http\.request)\b[^\n]*https?:\/\/(?!([\w-]+\.)*(github\.com|githubusercontent\.com)(\/|[\s'"]|$))[^\s'"]+/i;
 
 export function scanFiles(files: { path: string; content: string }[]): ScanWarning[] {
   const out: ScanWarning[] = [];

