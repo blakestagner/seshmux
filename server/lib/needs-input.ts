@@ -93,88 +93,21 @@ function globalize(patterns: RegExp[]): RegExp[] {
   return patterns.map((re) => new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g'));
 }
 
-function lastMatchIndex(text: string, patterns: RegExp[]): number {
-  let best = -1;
-  let offset = 0;
-  const globals = globalize(patterns);
-  for (const line of text.split('\n')) {
-    for (const g of globals) {
-      g.lastIndex = 0;
-      let m: RegExpExecArray | null;
-      while ((m = g.exec(line)) !== null) {
-        if (offset + m.index > best) best = offset + m.index;
-        if (m.index === g.lastIndex) g.lastIndex++; // avoid zero-width loop
-      }
-    }
-    offset += line.length + 1; // +1 for the split-out '\n'
-  }
-  return best;
-}
-
 // classify one chunk (may be '' for a bare silence tick). Mutates + reads `state`.
+// Thin wrapper over classifyExplain — the authoritative logic lives THERE so the
+// hot path (events-hub monitor, which needs the evidence anyway) pays for one
+// strip + one match pass, not two. Kept exported for callers that only want the
+// status; delegating (rather than duplicating) means the two can never drift.
 export function classify(chunk: string, state: NIState, waitingPatterns: RegExp[]): NIStatus {
-  const now = state.now();
-
-  if (chunk.length > 0) {
-    // Computed BEFORE any re-arm below, so the resurrection guard can tell "silence had
-    // already elapsed when this chunk arrived" apart from "this chunk is what kept us busy".
-    const wasIdle = now - state.lastActivityTs > SILENCE_MS;
-    const frame = stripAnsi(chunk).slice(-FRAME_TAIL);
-
-    // Whichever signal appears LAST in the frame reflects the current screen. A waiting
-    // prompt drawn after the spinner stopped wins over the (now stale) working text above it.
-    const waitAt = lastMatchIndex(frame, waitingPatterns);
-    const workAt = lastMatchIndex(frame, WORKING_PATTERNS);
-
-    // STICKY WAITING: once we're waiting on a prompt, a later working signal must NOT demote
-    // us back to working while the prompt chrome is STILL on screen. Claude redraws its
-    // spinner ("Cooking… (16s) · esc to interrupt") OVER a still-open "❯ 1. Yes / 2. / 3. No"
-    // permission prompt; the spinner text lands later in the buffer than the prompt (workAt >
-    // waitAt), which would otherwise flicker the dot waiting→working while the user is still
-    // being asked. Only leave waiting when the prompt chrome is ABSENT from the latest frame.
-    if (state.lastFrameWaiting) {
-      if (waitAt >= 0) {
-        state.lastActivityTs = now;
-        return 'waiting'; // prompt still present → stay waiting (ignore spinner)
-      }
-      // prompt gone (user answered / it dismissed) → resume normal classification.
-    }
-
-    if (waitAt >= 0 && waitAt >= workAt) {
-      state.lastActivityTs = now;
-      state.lastFrameWaiting = true;
-      return 'waiting';
-    }
-
-    // RESURRECTION GUARD: a repaint of an already-idle, finished screen (no working signal,
-    // no prompt) must stay idle and must NOT re-arm the silence clock — otherwise the next
-    // empty tick sees <20s silence and reports 'working' again (the "clicking a done agent
-    // flips it to working" bug: TerminalPane's jiggle-resize triggers a SIGWINCH repaint of a
-    // finished screen). A genuine resumption always redraws the working footer, so workAt >= 0
-    // correctly falls through to re-arm and resurrect below.
-    if (wasIdle && workAt < 0) {
-      state.lastFrameWaiting = false;
-      return 'idle';
-    }
-
-    // Working signal present, or non-prompt output still arriving.
-    state.lastActivityTs = now;
-    state.lastFrameWaiting = false;
-    return 'working';
-  }
-
-  // Empty tick: no new output. Decide by silence + whether a prompt is pending.
-  if (state.lastFrameWaiting) return 'waiting'; // blocked prompt persists
-  if (now - state.lastActivityTs > SILENCE_MS) return 'idle';
-  return 'working';
+  return classifyExplain(chunk, state, waitingPatterns).status;
 }
 
-// ── Spec 6: explainability wrapper ────────────────────────────────────────────
-// classify() stays untouched (hot path, called per chunk). classifyExplain() is a
-// thin wrapper for the debug/status-explain endpoint only: it captures the
-// pre-mutation state, delegates the ACTUAL status decision to classify() (so the
-// two can never drift), then reconstructs which branch/pattern produced that
-// status by re-running the same read-only match logic classify() just used.
+// ── Spec 6: explainability ─────────────────────────────────────────────────────
+// The authoritative classifier. Returns the status decision PLUS the evidence
+// (branch/pattern) the status-explain endpoint needs — computed from the same
+// single match pass that decided the status. (This used to be a wrapper that
+// re-ran stripAnsi + the match loop on top of classify(), doubling the cost of
+// the busiest server code path for evidence only a debug endpoint reads.)
 export type NIBranch =
   | 'sticky-waiting' // lastFrameWaiting was true and the prompt is still on screen
   | 'prompt-frame' // a waiting pattern matched (and won position vs a working pattern)
@@ -202,48 +135,86 @@ export function classifyExplain(
   const msSinceLastOutput = now - state.lastActivityTs;
 
   if (chunk.length > 0) {
+    // Computed BEFORE any re-arm below, so the resurrection guard can tell "silence had
+    // already elapsed when this chunk arrived" apart from "this chunk is what kept us busy".
+    const wasIdle = msSinceLastOutput > SILENCE_MS;
     const frame = stripAnsi(chunk).slice(-FRAME_TAIL);
-    const waitDetail = lastMatchDetail(frame, waitingPatterns);
-    const workDetail = lastMatchDetail(frame, WORKING_PATTERNS);
 
-    const status = classify(chunk, state, waitingPatterns); // authoritative, mutates state
+    // Whichever signal appears LAST in the frame reflects the current screen. A waiting
+    // prompt drawn after the spinner stopped wins over the (now stale) working text above it.
+    const wait = lastMatchDetail(frame, waitingPatterns);
+    const work = lastMatchDetail(frame, WORKING_PATTERNS);
 
-    if (prevLastFrameWaiting && waitDetail.index >= 0) {
+    // STICKY WAITING: once we're waiting on a prompt, a later working signal must NOT demote
+    // us back to working while the prompt chrome is STILL on screen. Claude redraws its
+    // spinner ("Cooking… (16s) · esc to interrupt") OVER a still-open "❯ 1. Yes / 2. / 3. No"
+    // permission prompt; the spinner text lands later in the buffer than the prompt (work.index >
+    // wait.index), which would otherwise flicker the dot waiting→working while the user is still
+    // being asked. Only leave waiting when the prompt chrome is ABSENT from the latest frame.
+    // (prompt gone → resume normal classification below.)
+    if (prevLastFrameWaiting && wait.index >= 0) {
+      state.lastActivityTs = now;
       return {
-        status,
+        status: 'waiting',
         branch: 'sticky-waiting',
-        matchedPattern: waitDetail.source,
+        matchedPattern: wait.source,
         msSinceLastOutput,
         lastFrameWaiting: prevLastFrameWaiting,
       };
     }
-    if (waitDetail.index >= 0 && waitDetail.index >= workDetail.index) {
+
+    if (wait.index >= 0 && wait.index >= work.index) {
+      state.lastActivityTs = now;
+      state.lastFrameWaiting = true;
       return {
-        status,
+        status: 'waiting',
         branch: 'prompt-frame',
-        matchedPattern: waitDetail.source,
+        matchedPattern: wait.source,
         msSinceLastOutput,
         lastFrameWaiting: prevLastFrameWaiting,
       };
     }
-    // status is authoritative from classify(): 'idle' here means the resurrection guard
-    // fired (repaint of an already-idle screen, no working signal) — label it distinctly
-    // rather than misreport it as 'working-activity'.
+
+    // RESURRECTION GUARD: a repaint of an already-idle, finished screen (no working signal,
+    // no prompt) must stay idle and must NOT re-arm the silence clock — otherwise the next
+    // empty tick sees <20s silence and reports 'working' again (the "clicking a done agent
+    // flips it to working" bug: TerminalPane's jiggle-resize triggers a SIGWINCH repaint of a
+    // finished screen). A genuine resumption always redraws the working footer, so work.index >= 0
+    // correctly falls through to re-arm and resurrect below.
+    if (wasIdle && work.index < 0) {
+      state.lastFrameWaiting = false;
+      return {
+        status: 'idle',
+        branch: 'repaint-idle',
+        matchedPattern: null,
+        msSinceLastOutput,
+        lastFrameWaiting: prevLastFrameWaiting,
+      };
+    }
+
+    // Working signal present, or non-prompt output still arriving.
+    state.lastActivityTs = now;
+    state.lastFrameWaiting = false;
     return {
-      status,
-      branch: status === 'idle' ? 'repaint-idle' : 'working-activity',
-      matchedPattern: workDetail.index >= 0 ? workDetail.source : null,
+      status: 'working',
+      branch: 'working-activity',
+      matchedPattern: work.index >= 0 ? work.source : null,
       msSinceLastOutput,
       lastFrameWaiting: prevLastFrameWaiting,
     };
   }
 
-  const status = classify(chunk, state, waitingPatterns);
+  // Empty tick: no new output. Decide by silence + whether a prompt is pending.
+  const status: NIStatus = prevLastFrameWaiting
+    ? 'waiting'
+    : msSinceLastOutput > SILENCE_MS
+      ? 'idle'
+      : 'working';
   return {
     status,
     branch: prevLastFrameWaiting
       ? 'sticky-waiting'
-      : msSinceLastOutput > SILENCE_MS
+      : status === 'idle'
         ? 'silence-idle'
         : 'silence-working',
     matchedPattern: null,
@@ -252,8 +223,9 @@ export function classifyExplain(
   };
 }
 
-// Like lastMatchIndex, but also reports WHICH pattern's source produced the
-// winning (last) match — the "evidence" the explain endpoint needs to name.
+// Position of the LAST occurrence of any pattern in text (-1 if none), plus WHICH
+// pattern's source produced it — the "evidence" the explain endpoint names. See the
+// per-line matching doc above globalize() for why matching never spans rows.
 function lastMatchDetail(text: string, patterns: RegExp[]): { index: number; source: string | null } {
   let best = -1;
   let bestSource: string | null = null;

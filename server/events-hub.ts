@@ -73,6 +73,12 @@ export interface StatusExplain {
   lastLines: string[]; // last 20 stripped lines of the frame classified against
 }
 
+// Internal stash shape: the raw frame tail is kept and stripped into lastLines
+// only when getStatusExplain is actually called (debug endpoint, N=1).
+interface ExplainStash extends Omit<StatusExplain, 'lastLines'> {
+  rawTail: string;
+}
+
 export interface EventsHub {
   addClient(ws: WebSocket): void;
   /** Ensure the monitor is attached to this PTY (called on spawn + startup). */
@@ -147,7 +153,7 @@ export async function createEventsHub(): Promise<EventsHub> {
   const hooksActive = new Set<string>();
   // Spec 6: latest classify evidence per PTY (N=1, overwritten every classify —
   // no history kept, see StatusExplain doc comment).
-  const explainByPty = new Map<string, StatusExplain>();
+  const explainByPty = new Map<string, ExplainStash>();
 
   // needs-input waiting patterns come from provider.needsInputPatterns (Task 15).
   // We don't know a PTY's provider from the daemon (provider-agnostic), so use
@@ -212,8 +218,12 @@ export async function createEventsHub(): Promise<EventsHub> {
   }
 
   // Spec 6: stash the latest classify evidence for a PTY (overwrites, N=1).
-  // `chunk` may be '' (empty tick) — lastLines then stays whatever the previous
-  // non-empty frame classified against (stripAnsi('') is '', so guard it).
+  // `chunk` may be '' (empty tick) — rawTail then stays whatever the previous
+  // non-empty frame classified against. The stripped lastLines view is computed
+  // LAZILY in getStatusExplain — this runs on every PTY data chunk, and paying a
+  // per-line stripAnsi there for a debug-endpoint read that may never come was
+  // pure hot-path waste.
+  const RAW_TAIL = 8192; // bounds per-PTY stash; > FRAME_TAIL so lastLines covers the frame
   function recordExplain(
     ptyId: string,
     finalStatus: NIStatus,
@@ -222,21 +232,11 @@ export async function createEventsHub(): Promise<EventsHub> {
     hookOverride: StatusExplain['hookOverride'],
   ) {
     const prev = explainByPty.get(ptyId);
-    // stripAnsi collapses ALL whitespace (including \n) into single spaces, so
-    // split the RAW chunk into lines first, then strip each line individually —
-    // otherwise there'd be no line breaks left to split on.
-    const lastLines =
-      chunk.length > 0
-        ? chunk
-            .split(/\r?\n/)
-            .map((l) => stripAnsi(l))
-            .filter((l) => l.length > 0)
-        : prev?.lastLines;
     explainByPty.set(ptyId, {
       status: finalStatus,
       evidence,
       hookOverride,
-      lastLines: (lastLines ?? []).slice(-20),
+      rawTail: chunk.length > 0 ? chunk.slice(-RAW_TAIL) : (prev?.rawTail ?? ''),
     });
   }
 
@@ -325,8 +325,13 @@ export async function createEventsHub(): Promise<EventsHub> {
     if (!statusByPty.has(ptyId)) setStatus(ptyId, 'working');
     // Seed hooksActive immediately (don't wait up to TICK_MS) — matters for a
     // resumed/rehydrated session whose hook file may already exist at attach.
-    void hookFileExists(statusDir(), ptyId).then((exists) => {
-      if (exists) hooksActive.add(ptyId);
+    // A FRESH hook status also corrects the 'working' default right away: after a
+    // server-restart reattach, an idle/waiting session otherwise shows a wrong
+    // 'working' dot until the next data chunk or tick re-classifies it.
+    void readHookStatusDetail(statusDir(), ptyId).then((detail) => {
+      if (detail.status === null) return; // no/malformed hook file — tick still probes
+      hooksActive.add(ptyId);
+      if (detail.fresh && attached.has(ptyId)) setStatus(ptyId, detail.status);
     });
   }
 
@@ -357,6 +362,13 @@ export async function createEventsHub(): Promise<EventsHub> {
         if (exists) hooksActive.add(ptyId);
         else hooksActive.delete(ptyId);
       });
+      // No hook file for this PTY (the common case) → heuristic decides; skip the
+      // per-PTY read that could never override. Same gate the data path uses.
+      if (!hooksActive.has(ptyId)) {
+        recordExplain(ptyId, heuristic, result, '', null);
+        setStatus(ptyId, heuristic);
+        continue;
+      }
       // Optional Notification-hook file is a higher-confidence override.
       void readHookStatusDetail(statusDir(), ptyId).then((detail) => {
         if (!attached.has(ptyId)) return; // exited between tick fire and resolve
@@ -688,7 +700,18 @@ export async function createEventsHub(): Promise<EventsHub> {
   }
 
   function getStatusExplain(ptyId: string): StatusExplain | null {
-    return explainByPty.get(ptyId) ?? null;
+    const stash = explainByPty.get(ptyId);
+    if (!stash) return null;
+    const { rawTail, ...rest } = stash;
+    // stripAnsi collapses ALL whitespace (including \n) into single spaces, so
+    // split the RAW tail into lines first, then strip each line individually —
+    // otherwise there'd be no line breaks left to split on.
+    const lastLines = rawTail
+      .split(/\r?\n/)
+      .map((l) => stripAnsi(l))
+      .filter((l) => l.length > 0)
+      .slice(-20);
+    return { ...rest, lastLines };
   }
 
   return {
