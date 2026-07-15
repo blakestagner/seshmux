@@ -1153,15 +1153,15 @@ function PluginRow({
     <div className={styles.mpPluginRow}>
       <OptionRow
         icon="⬡"
-        title={plugin.name}
-        desc={
-          <>
-            {typeof plugin.description === 'string' ? plugin.description : ''}
+        title={
+          <span className={styles.mpPluginTitle}>
+            {plugin.name}
             {installedScopes.size > 0 ? (
               <span className={styles.scopeProject}>✓ installed ({[...installedScopes].join(', ')})</span>
             ) : null}
-          </>
+          </span>
         }
+        desc={typeof plugin.description === 'string' ? plugin.description : ''}
       />
       {(
         <span className={styles.assistMenuWrap} ref={wrapRef}>

@@ -354,6 +354,14 @@
   }
 }
 
+// Plugin row title line: name left, installed chip right.
+.mpPluginTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .mpScopeMenu {
   top: calc(100% + 6px);
   right: 0;
