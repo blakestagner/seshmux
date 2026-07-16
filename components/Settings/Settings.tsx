@@ -234,7 +234,11 @@ export default function Settings() {
         setUpdPhase('error');
         return;
       }
-      await waitForServer();
+      if (await waitForServer()) {
+        // Reload so the browser picks up the new UI bundle, not the pre-update one.
+        window.location.reload();
+        return;
+      }
       setUpdPhase('done');
     } catch (e) {
       setUpdLog(e instanceof Error ? e.message : String(e));
