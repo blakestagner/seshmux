@@ -383,35 +383,40 @@ function askYesNo(question) {
   });
 }
 
-// Without tmux, a session's PTY is owned by the daemon and dies with it — a crash or a daemon
-// restart ends the user's running agent. session-start.ts picks the tmux tier ONLY when tmux is
-// on PATH, so a tmux-less machine silently gets the fragile tier and nobody says a word. A real
-// user lost every session this way. Offer to fix it, once, and never nag again.
+// tmux is an OPTIONAL extra persistence tier — not required for durable sessions. The daemon's
+// holder tier already keeps agent PTYs alive across browser refreshes, server restarts, and
+// updates (a detached holder owns the PTY, so even a daemon crash on posix re-adopts them). What
+// tmux adds on top: surviving a full daemon restart, and `tmux attach` from any plain terminal.
+// So this is a soft, informational offer, not a "you'll lose everything" warning.
+//
+// Windows has no native tmux, and the named-pipe holder tier covers it there anyway — so the
+// offer is posix-only (skipped below).
 //
 // NOT an npm postinstall: that needs a package manager we can't assume, is skipped entirely under
 // `npm ci --ignore-scripts` (standard in CI), would run in Docker images where tmux is pointless,
 // and shelling out to a system installer from an install hook is exactly what supply-chain
 // scanners flag. A first-run prompt asks the person who is actually there.
 async function offerTmux() {
+  if (process.platform === 'win32') return; // no native tmux; holder tier already keeps sessions durable
   if (await have('tmux')) return;
   const ackFile = path.join(configDir(), 'tmux-declined');
   if (fs.existsSync(ackFile)) return;
 
   const durability =
-    '[seshmux] tmux is not installed.\n' +
-    '  Your agent sessions will end if seshmux restarts or crashes.\n' +
-    '  With tmux, they survive restarts, updates, and crashes.';
+    '[seshmux] tmux is not installed (optional).\n' +
+    '  Your sessions already survive browser refreshes, server restarts, and updates.\n' +
+    '  tmux adds one more tier: surviving a full daemon restart, plus `tmux attach` from any terminal.';
 
   // Non-interactive (piped, CI, launched by a GUI): state it, never block on a prompt nobody
   // can answer, and do not record a decline the user never made.
   if (!process.stdin.isTTY) {
-    console.log(`${durability}\n  Install tmux to make sessions durable.`);
+    console.log(`${durability}\n  Install tmux for the extra tier.`);
     return;
   }
 
   const installer = await tmuxInstaller();
   if (!installer) {
-    console.log(`${durability}\n  Install tmux with your package manager to make sessions durable.`);
+    console.log(`${durability}\n  Install tmux with your package manager to add it.`);
     return;
   }
 
@@ -425,7 +430,7 @@ async function offerTmux() {
     } catch {
       /* best effort — worst case we ask again next launch */
     }
-    console.log('[seshmux] continuing without tmux (sessions are not crash-safe). Not asking again.');
+    console.log('[seshmux] continuing without tmux (sessions still survive restarts/updates via the holder tier). Not asking again.');
     return;
   }
 
