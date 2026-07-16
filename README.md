@@ -72,6 +72,7 @@ Updating also upgrades the session daemon, but only when nothing would be lost �
 
 | Dependency | Required? | What it unlocks |
 | --- | --- | --- |
+| macOS, Linux, or Windows via WSL | required | native Windows is not supported yet (the daemon uses unix sockets) |
 | Node ≥ 20 + npm | required | everything |
 | `claude` CLI (Claude Code) | required | if no agent CLI is found, seshmux shows a setup screen |
 | `codex` CLI | optional | Codex sessions + the cross-agent bridge |
@@ -334,6 +335,8 @@ npm run build        # Next.js standalone bundle via scripts/build-standalone.sh
 **Terminals show "disabled" / live sessions won't start.** The daemon and bridge speak over unix sockets in the config dir, and macOS caps a socket path at **104 characters**. A long `SESHMUX_CONFIG_DIR` makes the daemon fail to bind (`EINVAL`) and seshmux degrades to browse-only. Keep the config dir path short — the default is well within the limit.
 
 **A status dot looks wrong.** `GET /api/term/<ptyId>/status-explain` shows exactly which pattern or hook produced it. If an agent update changed its TUI, drop a manifest override (see [Detection manifests](#detection-manifests-add-or-fix-an-agent-without-a-rebuild)).
+
+**Windows: "running scripts is disabled on this system" when running `seshmux`.** PowerShell picked up npm's `seshmux.ps1` shim, which the default Restricted execution policy blocks. Recent versions remove that shim at install time (`npm i -g seshmux` again to pick that up). Immediate workarounds: run `seshmux.cmd`, or allow local scripts with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
 **MCP approval/wait stopped responding after a crash.** Fixed in current versions — the server now detects and reclaims stale `approval.sock`/`wait.sock` files on boot. If you're on an older version, delete the two `.sock` files in the config dir and restart.
 
