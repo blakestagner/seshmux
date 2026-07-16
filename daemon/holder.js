@@ -172,6 +172,19 @@ function handle(msg) {
 }
 
 const server = net.createServer((s) => {
+  // FIRST, before ANY write: an accepted socket with no 'error' listener turns a
+  // failed write into an unhandled 'error' event, which takes THIS PROCESS down —
+  // and this process is the only thing holding the user's agent PTY. The busy
+  // write below is the one that bit: a peer that connects and vanishes (a probe,
+  // a racing re-dial, an adopting second daemon) makes it fail EPIPE, and the
+  // holder died — silently, since we run stdio:'ignore' — taking a live session
+  // with it. The daemon then saw an attached-then-dropped socket and reported
+  // `pty is not alive`. Reproduced deterministically: connect + destroy twice.
+  // Not win32-specific — a posix peer that vanishes EPIPEs identically; Windows
+  // named pipes just lose the race far more often.
+  s.on('error', () => {
+    if (client === s) client = null;
+  });
   // Single-client rule: a second daemon can never attach the same holder.
   if (client && !client.destroyed) {
     s.write(encode({ event: 'busy' }));
@@ -185,9 +198,6 @@ const server = net.createServer((s) => {
   s.setEncoding('utf8');
   s.on('data', (chunk) => {
     for (const m of decoder.push(chunk)) handle(m);
-  });
-  s.on('error', () => {
-    if (client === s) client = null;
   });
   s.on('close', () => {
     if (client === s) client = null;
