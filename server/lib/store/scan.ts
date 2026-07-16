@@ -114,6 +114,27 @@ export function encodeProjectId(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
+// Segment separators of a REAL, OS-native path. win32 accepts both; on posix a
+// backslash is a legal FILENAME character, so treating it as a separator there
+// would change behavior — hence the platform branch rather than a blanket
+// [\\/]. Identity on posix.
+const PATH_SEP_RE = process.platform === 'win32' ? /[\\/]/ : /\//;
+
+/**
+ * Last segment of a REAL path (a cwd the agent recorded, or a repo path we
+ * resolved) — i.e. the project's display name.
+ *
+ * A `/`-only split never splits a native Windows path, so `.pop()` returned the
+ * WHOLE absolute path and every project on Windows was titled
+ * "C:\Users\b\dev\seshmux" instead of "seshmux".
+ *
+ * NOT for decodeProjectDir's output: that is a synthetic "-"→"/" decode which is
+ * forward-slash by construction and must keep splitting on "/" only.
+ */
+export function pathLeaf(p: string): string | undefined {
+  return p.split(PATH_SEP_RE).filter(Boolean).pop();
+}
+
 export function decodeProjectDir(dir: string): { path: string; name: string } {
   const path = dir.replace(/-/g, '/');
   const segments = path.split('/').filter(Boolean);
@@ -261,7 +282,17 @@ async function workspaceParentMap(): Promise<Map<string, string>> {
 // Matches the worktree root AND any cwd deeper inside it (a session started in
 // worktrees/x/subdir must fold too). Greedy `(.+)` takes the LAST occurrence, so a
 // nested worktree-in-worktree folds to its innermost parent — fine.
-const CLAUDE_WORKTREE_RE = /^(.+)\/\.claude\/worktrees\/[^/]+(?:\/|$)/;
+// Matched against a REAL recorded cwd, so it must accept the host's separator:
+// on native Windows those cwds are backslash-separated and the "/"-only form
+// never matched, silently disabling worktree folding everywhere
+// derivedWorkspaceParent is consumed (grouping, memberDirs, listSessions,
+// routes/bridge wait, routes/term). Platform-branched rather than a blanket
+// [\\/] because a backslash is a legal posix filename character — identity on
+// posix.
+const CLAUDE_WORKTREE_RE =
+  process.platform === 'win32'
+    ? /^(.+)[\\/]\.claude[\\/]worktrees[\\/][^\\/]+(?:[\\/]|$)/
+    : /^(.+)\/\.claude\/worktrees\/[^/]+(?:\/|$)/;
 // Exported: CodexProvider.scanProjects()/listSessions() do their own cwd->id grouping
 // (they don't route through computeRootScan above) and must apply the same fold so a
 // repo cwd resolves to the same project id regardless of which provider recorded it
@@ -411,7 +442,7 @@ async function computeRootScan(root: string, provider: ProviderId): Promise<Root
           const head = await readHead(newestFile.path, Math.floor(newestFile.mtime));
           if (head.cwd) {
             path = head.cwd;
-            name = head.cwd.split('/').filter(Boolean).pop() || decoded.name;
+            name = pathLeaf(head.cwd) || decoded.name;
             dirCwds.push({ dirPath, cwd: head.cwd });
           }
         }
@@ -472,7 +503,7 @@ async function computeRootScan(root: string, provider: ProviderId): Promise<Root
     out.map(async (p) => {
       if (p.isWorkspace) {
         p.id = encodeProjectId(p.path);
-        p.name = p.path.split('/').filter(Boolean).pop() || p.id;
+        p.name = pathLeaf(p.path) || p.id;
       }
       // Re-stat `missing` post-merge: a workspace-only parent (brand new repo,
       // no sessions yet outside the workspace) never got a real missing check.

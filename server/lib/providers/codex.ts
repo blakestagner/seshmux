@@ -37,7 +37,7 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { Lru } from '../store/lru';
-import { decodeProjectDir, derivedWorkspaceParent, encodeProjectId, storeBytes } from '../store/scan';
+import { decodeProjectDir, derivedWorkspaceParent, encodeProjectId, pathLeaf, storeBytes } from '../store/scan';
 import type { SearchHit, SearchOpts } from '../store/search';
 import { pricingFor, type UsageSummary } from '../store/usage';
 import type { Ctx, Msg, ToolCall } from '../store/transcript';
@@ -415,7 +415,7 @@ export class CodexProvider implements AgentProvider {
       // → "kantrail/ai", a path that doesn't exist → resume 400s in validateStart).
       const { name } = decodeProjectDir(id);
       const path = cwd || id;
-      const displayName = cwd ? cwd.split('/').filter(Boolean).pop() || name : name;
+      const displayName = cwd ? pathLeaf(cwd) || name : name;
       let missing = false;
       try {
         missing = !(await stat(path)).isDirectory();
