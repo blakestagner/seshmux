@@ -3,7 +3,7 @@
 // (server/lib/providers/claude.ts) supplies both `root` and `provider`. This file only
 // knows how to read a directory of dash-encoded project dirs each holding `<id>.jsonl`.
 
-import { open, readdir, stat } from 'node:fs/promises';
+import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { listAll as listAllWorkspaces } from '../workspaces';
 import { Lru } from './lru';
@@ -254,7 +254,29 @@ async function computeHead(filePath: string): Promise<HeadInfo> {
     }
   }
 
+  // win32: fold the recorded cwd to the SAME canonical form the workspaces store
+  // uses. workspaces.json's `project`/`dir` are realpath'd via node:fs/promises
+  // (the native flavor, which expands 8.3 short names: C:\Users\RUNNER~1\ ->
+  // runneradmin). A real Windows agent launched from an 8.3-spelled directory
+  // records the SHORT form via getcwd(), so its worktree would never fold into
+  // its parent (raw short cwd != canonical long record). Canonicalize here, at
+  // the single point cwd is extracted, so every reader (grouping, memberDirs,
+  // projectSessionDirs, SessionMeta.cwd) compares like-for-like. Cached by
+  // readHead's mtime key, so the realpath runs once per file change, not per scan.
+  // Identity on posix (getcwd() is already canonical there). Fallback to the raw
+  // path when it no longer exists (deleted repo — realpath ENOENTs).
+  if (cwd) cwd = await canonCwd(cwd);
+
   return { title, branch, startedAt, cwd, teamName, agentName };
+}
+
+async function canonCwd(cwd: string): Promise<string> {
+  if (process.platform !== 'win32') return cwd;
+  try {
+    return await realpath(cwd);
+  } catch {
+    return cwd;
+  }
 }
 
 // worktree dir -> parent repo absolute path (workspaces.json is the lookup —
@@ -311,6 +333,11 @@ export function derivedWorkspaceParent(cwd: string): string | null {
 // suffix to recover the parent's encoded id. Greedy `(.+)` = innermost fold wins.
 // ponytail: a repo literally named "*--claude-worktrees-*" would false-fold; encode is
 // lossy so this can't be told apart — acceptable, same ceiling as decodeProjectDir.
+// ponytail: win32 8.3 ceiling — this matches on the ENCODED DIRENT NAME, which watch.ts
+// events see (they have no cwd to realpath). A worktree whose recorded cwd is an 8.3
+// short path encodes to "*CLAUDE~1-WORKTR~1*", not "--claude-worktrees-", so it won't
+// fold here even though canonCwd folds it in the path-based scan. Rare (an agent hand-
+// launched from a short path) and unreachable from the cwd side — left as-is.
 const CLAUDE_WORKTREE_ID_RE = /^(.+)--claude-worktrees-.+$/;
 export function derivedWorkspaceParentId(encodedId: string): string | null {
   return CLAUDE_WORKTREE_ID_RE.exec(encodedId)?.[1] ?? null;
@@ -491,6 +518,15 @@ async function computeRootScan(root: string, provider: ProviderId): Promise<Root
         prev.id = p.id;
         prev.name = p.name;
         prev.isWorkspace = false;
+      } else if (!prev.isWorkspace && !p.isWorkspace && p.id < prev.id) {
+        // Two non-workspace dirents on the SAME canonical path (win32 only: the
+        // same repo recorded once short-form, once long-form, now folded by
+        // canonCwd). Neither is "the" own-dirent, so the tiebreak above never
+        // fires — pick the lexicographically smaller id so the winner is
+        // deterministic, not dependent on readdir order. No-op on posix (a
+        // canonical cwd yields exactly one dirent per path).
+        prev.id = p.id;
+        prev.name = p.name;
       }
     } else {
       byPath.set(p.path, { ...p });
