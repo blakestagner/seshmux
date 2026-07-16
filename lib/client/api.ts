@@ -8,6 +8,7 @@ import type {
   CustomizationItem,
   SubagentNode,
   SubagentDetail,
+  PrRef,
 } from './types';
 
 // Per-process auth token embedded in the served HTML (Task 6.5). Sent on every /api/*
@@ -148,7 +149,7 @@ export function startSession(opts: {
 
 // projectId = the OWNING project's id (a worktree PTY folds to its parent project) —
 // prefer it over matching project.path === cwd, which misses folded worktrees.
-export type LiveSession = { ptyId: string; cwd: string; tmuxName: string | null; projectId?: string; sessionId?: string };
+export type LiveSession = { ptyId: string; cwd: string; tmuxName: string | null; projectId?: string; sessionId?: string; branch?: string | null };
 
 export function getLive(): Promise<{ live: LiveSession[] }> {
   return req('/api/sessions/live');
@@ -229,6 +230,12 @@ export function getScratchpad(projectId: string): Promise<{ content: string }> {
 export function putScratchpad(projectId: string, content: string): Promise<{ ok: boolean; content: string }> {
   return req(`/api/scratchpad/${projectId}`, { method: 'PUT', body: JSON.stringify({ content }) });
 }
+// ── GitHub PRs ──────────────────────────────────────────────────────────────
+// PRs created during a session (extracted server-side from the transcript).
+export function getSessionPrs(projectId: string, sessionId: string): Promise<{ prs: PrRef[] }> {
+  return req(`/api/prs/${projectId}/${sessionId}`);
+}
+
 // ── Subagent viewer ─────────────────────────────────────────────────────────
 // GET the flat subagent node tree for a session (empty for codex / no subagents).
 export function getSubagents(project: string, session: string): Promise<{ nodes: SubagentNode[] }> {

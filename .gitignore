@@ -13,3 +13,8 @@ docs/local/
 # Claude Code scheduler runtime state (session id + pid) — regenerated per session,
 # never shared. Was committed by accident in the initial commit.
 .claude/scheduled_tasks.lock
+
+# Claude Code EnterWorktree nested checkouts — full working trees (with their own
+# node_modules) that must never be tracked OR counted in the parent repo diff. Was
+# only in .git/info/exclude locally, so other clones counted them (massive diffs).
+**/.claude/worktrees/

@@ -134,6 +134,7 @@ export async function startServer({ port = 4700, dev = false } = {}) {
   const rawCacheSize = bootConfig?.settings?.transcriptCacheSize;
   const transcriptCacheSize = typeof rawCacheSize === 'number' && rawCacheSize > 0 ? rawCacheSize : 10;
   await f.register((await import('./routes/transcript')).default, { cacheSize: transcriptCacheSize });
+  await f.register((await import('./routes/prs')).default);
   await f.register((await import('./routes/search')).default);
   await f.register((await import('./routes/env')).default);
   await f.register((await import('./routes/usage')).default);

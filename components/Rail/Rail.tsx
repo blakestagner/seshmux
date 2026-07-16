@@ -17,6 +17,7 @@ import type { RailSort, Tab } from '../../lib/client/store';
 import NewSessionModal, { type SessionMode } from '../NewSessionModal/NewSessionModal';
 import TeamModal, { teamsAllowed } from '../TeamModal/TeamModal';
 import FilterMenu from '../FilterMenu/FilterMenu';
+import { PrList } from '../PrLinks/PrLinks';
 import styles from './Rail.module.scss';
 
 
@@ -476,19 +477,26 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
       </div>
       <div className={styles.sessionsList}>
         {openTabs.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            className={`${styles.openTab} ${t.id === state.activeTab ? styles.selected : ''}`}
-            title={t.label}
-            onClick={() => handleOpenTab(t)}
-          >
-            <StatusDot status={tabDotStatus(t)} size={7} />
-            <span className={styles.openTabLabel}>{t.label}</span>
-            {showProvider && t.provider ? (
-              <span className={`${styles.sessAgent} ${styles[t.provider]}`}>{t.provider}</span>
-            ) : null}
-          </button>
+          <div key={t.id}>
+            <button
+              type="button"
+              className={`${styles.openTab} ${t.id === state.activeTab ? styles.selected : ''}`}
+              title={t.branch ? `${t.label} · ${t.branch}` : t.label}
+              onClick={() => handleOpenTab(t)}
+            >
+              <StatusDot status={tabDotStatus(t)} size={7} />
+              <span className={styles.openTabInfo}>
+                <span className={styles.openTabLabel}>{t.label}</span>
+                {t.branch ? <span className={styles.openTabBranch}>⎇ {t.branch}</span> : null}
+              </span>
+              {showProvider && t.provider ? (
+                <span className={`${styles.sessAgent} ${styles[t.provider]}`}>{t.provider}</span>
+              ) : null}
+            </button>
+            {/* PRs created in this session — same surface as the project list. Anchors
+                can't nest in the row <button>, so they render as a sibling below it. */}
+            {t.projectId && t.sessionId ? <PrList projectId={t.projectId} sessionId={t.sessionId} /> : null}
+          </div>
         ))}
       </div>
     </div>
@@ -659,8 +667,8 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                     </div>
                   ) : null}
                   {shown.map((s) => (
+                    <div key={s.id}>
                     <button
-                      key={s.id}
                       type="button"
                       className={`${styles.sess} ${s.id === activeSessionId ? styles.selected : ''}`}
                       onClick={() =>
@@ -702,6 +710,10 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                         </div>
                       </span>
                     </button>
+                    {/* PRs created in this session — fetch only while the
+                        project is expanded (rows stay mounted when collapsed). */}
+                    {open ? <PrList projectId={s.projectId} sessionId={s.id} /> : null}
+                    </div>
                   ))}
                   {filtered && !shown.length ? <div className={styles.noMatch}>no matching sessions</div> : null}
                   {!filtered && hasMore ? (

@@ -1,0 +1,66 @@
+@use '../../styles/typography' as *;
+
+// Surface + item visuals come from ui/Menu; this module only positions the
+// dropdown (statusbar sits at the pane bottom — open upward) and lays out
+// the rail's PR link list.
+
+.wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.menu {
+  top: auto;
+  bottom: calc(100% + 6px);
+  left: auto;
+  right: 0;
+  min-width: 200px;
+  max-width: 360px;
+}
+
+.menu button {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+.caret {
+  color: var(--text-dim);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 1px 8px 5px 26px; // indent under the session row's dot column
+}
+
+.link {
+  @include t-mono-micro;
+  color: var(--text-dim);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+// Show more / less toggle — a plain text button matching the link rows.
+.toggle {
+  @include t-mono-micro;
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.toggle:hover {
+  color: var(--accent);
+}
