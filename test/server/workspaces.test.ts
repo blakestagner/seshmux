@@ -208,6 +208,24 @@ describe('workspaces.remove', () => {
     expect(readFileSync(join(leftovers!, 'newfeature.ts'), 'utf8')).toBe('export const real = "work";');
   });
 
+  it('merge: preserves an untracked DIRECTORY (collapsed ?? dir/ entry) to leftovers', async () => {
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+    writeFileSync(join(dir, 'feature.txt'), 'new feature');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'add feature']);
+    // -unormal collapses a new untracked dir to one 'src/' entry; the whole dir
+    // is real never-staged work and must survive the post-merge force-remove.
+    mkdirSync(join(dir, 'newmod'));
+    writeFileSync(join(dir, 'newmod', 'index.ts'), 'export {};');
+
+    const { leftovers } = await ws.remove(dir, { mode: 'merge' });
+
+    expect(existsSync(dir)).toBe(false);
+    expect(leftovers).toBeTruthy();
+    expect(readFileSync(join(leftovers!, 'newmod', 'index.ts'), 'utf8')).toBe('export {};');
+  });
+
   it('merge: preserves a gitignored file with a non-ASCII name (porcelain quotepath)', async () => {
     const ws = await freshWorkspaces();
     const { dir } = await ws.create(repo);

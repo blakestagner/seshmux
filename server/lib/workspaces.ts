@@ -10,7 +10,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, readFile, readdir, writeFile, rename, realpath, stat, copyFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, writeFile, rename, realpath, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
@@ -144,11 +144,14 @@ async function preserveIgnoredFiles(project: string, dir: string, files: string[
       await rename(from, to);
     } catch {
       // rename fails across filesystems (the worktrees root can live on a different volume
-      // than the repo) — fall back to a copy. A file that BOTH paths fail on must abort the
-      // finish (fail closed, hard rule 7): the old swallow here reported the leftovers dir
-      // while the file was still in the worktree the caller was about to force-remove.
+      // than the repo) — fall back to a copy. cp(recursive), NOT copyFile: untracked
+      // DIRECTORIES are preserved too, and copyFile EISDIRs on them (cross-fs + untracked
+      // dir would then wedge a merge whose commits already landed). An entry that BOTH
+      // paths fail on must abort the finish (fail closed, hard rule 7): the old swallow
+      // here reported the leftovers dir while the file was still in the worktree the
+      // caller was about to force-remove.
       try {
-        await copyFile(from, to);
+        await cp(from, to, { recursive: true });
       } catch {
         failed.push(rel);
       }
