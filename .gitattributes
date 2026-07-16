@@ -1,0 +1,5 @@
+# Shell scripts must stay LF even on Windows checkouts — bin/seshmux.js and the
+# build run them through bash/Git Bash, and CRLF breaks the shebang + line parsing.
+# Without this, core.autocrlf=true rewrites them on checkout and produces phantom
+# "modified" diffs on Windows working trees.
+*.sh text eol=lf
