@@ -477,19 +477,23 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
       </div>
       <div className={styles.sessionsList}>
         {openTabs.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            className={`${styles.openTab} ${t.id === state.activeTab ? styles.selected : ''}`}
-            title={t.label}
-            onClick={() => handleOpenTab(t)}
-          >
-            <StatusDot status={tabDotStatus(t)} size={7} />
-            <span className={styles.openTabLabel}>{t.label}</span>
-            {showProvider && t.provider ? (
-              <span className={`${styles.sessAgent} ${styles[t.provider]}`}>{t.provider}</span>
-            ) : null}
-          </button>
+          <div key={t.id}>
+            <button
+              type="button"
+              className={`${styles.openTab} ${t.id === state.activeTab ? styles.selected : ''}`}
+              title={t.label}
+              onClick={() => handleOpenTab(t)}
+            >
+              <StatusDot status={tabDotStatus(t)} size={7} />
+              <span className={styles.openTabLabel}>{t.label}</span>
+              {showProvider && t.provider ? (
+                <span className={`${styles.sessAgent} ${styles[t.provider]}`}>{t.provider}</span>
+              ) : null}
+            </button>
+            {/* PRs created in this session — same surface as the project list. Anchors
+                can't nest in the row <button>, so they render as a sibling below it. */}
+            {t.projectId && t.sessionId ? <PrList projectId={t.projectId} sessionId={t.sessionId} /> : null}
+          </div>
         ))}
       </div>
     </div>
