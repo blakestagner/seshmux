@@ -453,7 +453,12 @@ function AppShell() {
     const next = waitingToasts[0];
     if (!next) return;
     const tab = state.tabs.find((t) => t.kind === 'term' && t.ptyId === next.ptyId);
-    if (tab) dispatch({ type: 'activateTab', id: tab.id });
+    if (tab) {
+      // Keep the user's last view (tabs or grid); agents view has no terminals,
+      // so fall back to tabs. activateTab itself closes settings if open.
+      if (state.view === 'agents') dispatch({ type: 'setView', view: 'tabs' });
+      dispatch({ type: 'activateTab', id: tab.id });
+    }
     setWaitingToasts((cur) => cur.filter((w) => w.ptyId !== next.ptyId));
   }
 
