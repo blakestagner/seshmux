@@ -435,10 +435,14 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
         ptyId,
         'esc to interrupt\n',
         () => {
+          // Condition on the PATTERN, not just the status: the PTY echo can split
+          // the marker across chunks, and a partial frame classifies 'working'
+          // with matchedPattern null (CI flake on the slow leg). Keep probing
+          // until a chunk carried the whole marker — that's the state asserted.
           const e = hub.getStatusExplain(ptyId);
-          return e?.status === 'working' ? e : null;
+          return e?.status === 'working' && e.evidence.matchedPattern ? e : null;
         },
-        "explain to reach 'working'",
+        "explain to reach 'working' with the matched pattern",
       );
       expect(explain.status).toBe('working');
       expect(explain.evidence.branch).toBe('working-activity');
