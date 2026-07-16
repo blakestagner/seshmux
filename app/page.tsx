@@ -450,15 +450,47 @@ function AppShell() {
   // Activate the OLDEST waiting session and pop it — the toast stays up with
   // the rest so repeated clicks chain through the queue. A vanished tab
   // (closed while waiting) just pops and the next click moves on.
-  function jumpToWaiting() {
+  async function jumpToWaiting() {
     const next = waitingToasts[0];
     if (!next) return;
+    // Agents view shows no terminals — always fall back to tabs so the jump lands.
+    if (state.view === 'agents') dispatch({ type: 'setView', view: 'tabs' });
     const tab = state.tabs.find((t) => t.kind === 'term' && t.ptyId === next.ptyId);
     if (tab) {
-      // Keep the user's last view (tabs or grid); agents view has no terminals,
-      // so fall back to tabs. activateTab itself closes settings if open.
-      if (state.view === 'agents') dispatch({ type: 'setView', view: 'tabs' });
-      dispatch({ type: 'activateTab', id: tab.id });
+      dispatch({ type: 'activateTab', id: tab.id }); // activateTab closes settings too
+    } else {
+      // No open TERMINAL for this waiting PTY — it was dismissed, is open only as a
+      // read-only transcript, or a tmux-tier daemon restart reassigned its ptyId. Open
+      // the live terminal from getLive() so Jump ALWAYS lands on what needs input,
+      // instead of silently doing nothing.
+      try {
+        const { live } = await getLive();
+        const s = live.find((l) => l.ptyId === next.ptyId);
+        if (s) {
+          // Un-dismiss so the reopened tab isn't immediately skipped on reload.
+          try {
+            const raw = localStorage.getItem('seshmux-dismissed-ptys');
+            const dismissed: string[] = raw ? JSON.parse(raw) : [];
+            if (dismissed.includes(next.ptyId)) {
+              localStorage.setItem('seshmux-dismissed-ptys', JSON.stringify(dismissed.filter((x) => x !== next.ptyId)));
+            }
+          } catch {
+            /* corrupt entry — ignore */
+          }
+          const proj = state.projects.find((p) => p.id === s.projectId || p.path === s.cwd);
+          dispatch({
+            type: 'openTerm',
+            ptyId: s.ptyId,
+            projectId: proj?.id ?? s.projectId ?? s.cwd,
+            label: next.repo !== 'A session' ? next.repo : proj?.name ?? s.cwd.split('/').filter(Boolean).pop() ?? 'session',
+            provider: proj?.provider,
+            sessionId: s.sessionId,
+            branch: s.branch ?? null,
+          });
+        }
+      } catch {
+        /* best-effort — worst case the toast just pops */
+      }
     }
     setWaitingToasts((cur) => cur.filter((w) => w.ptyId !== next.ptyId));
   }
