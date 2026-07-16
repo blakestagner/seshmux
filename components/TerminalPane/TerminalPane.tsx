@@ -37,6 +37,7 @@ import MeterBar from '../ui/MeterBar/MeterBar';
 import CtxBadge from '../ui/CtxBadge/CtxBadge';
 import Button from '../ui/Button/Button';
 import BridgeMenu from '../BridgeMenu/BridgeMenu';
+import { PrChip, useSessionPrs } from '../PrLinks/PrLinks';
 import WorkspaceFinishPrompt from '../WorkspaceFinishPrompt/WorkspaceFinishPrompt';
 import styles from './TerminalPane.module.scss';
 
@@ -531,6 +532,9 @@ export default function TerminalPane({
       clearInterval(timer);
     };
   }, [projectId, branch]);
+  // PRs created in this session (chip in the single-pane statusbar; grid tiles
+  // stay minimal). Only session-bearing panes can resolve PRs.
+  const prs = useSessionPrs(variant !== 'grid' ? projectId : undefined, sessionId);
   // Team chip: shown as soon as this tab is a team lead (isTeamLead resolves
   // synchronously on spawn — see store.ts), no fetch of its own. The member
   // count is best-effort — it only appears once the panel has been opened at
@@ -710,6 +714,13 @@ export default function TerminalPane({
                 <span className={styles.diffChip}>{stats}</span>
               );
             })()}
+          </>
+        ) : null}
+        {/* PRs created in this session: 1 = direct-open chip, >1 = dropdown. */}
+        {variant !== 'grid' && prs.length > 0 ? (
+          <>
+            <span className={styles.divider} aria-hidden="true" />
+            <PrChip prs={prs} />
           </>
         ) : null}
         {/* Bridge actions cluster on the right, before the tail. In grid the

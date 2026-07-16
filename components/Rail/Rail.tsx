@@ -17,6 +17,7 @@ import type { RailSort, Tab } from '../../lib/client/store';
 import NewSessionModal, { type SessionMode } from '../NewSessionModal/NewSessionModal';
 import TeamModal, { teamsAllowed } from '../TeamModal/TeamModal';
 import FilterMenu from '../FilterMenu/FilterMenu';
+import { PrList } from '../PrLinks/PrLinks';
 import styles from './Rail.module.scss';
 
 
@@ -659,8 +660,8 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                     </div>
                   ) : null}
                   {shown.map((s) => (
+                    <div key={s.id}>
                     <button
-                      key={s.id}
                       type="button"
                       className={`${styles.sess} ${s.id === activeSessionId ? styles.selected : ''}`}
                       onClick={() =>
@@ -702,6 +703,10 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                         </div>
                       </span>
                     </button>
+                    {/* PRs created in this session — fetch only while the
+                        project is expanded (rows stay mounted when collapsed). */}
+                    {open ? <PrList projectId={s.projectId} sessionId={s.id} /> : null}
+                    </div>
                   ))}
                   {filtered && !shown.length ? <div className={styles.noMatch}>no matching sessions</div> : null}
                   {!filtered && hasMore ? (

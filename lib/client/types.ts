@@ -45,6 +45,15 @@ export type Config = {
   gridNamedLayouts: Record<string, unknown>;
 };
 
+// Mirror of server/lib/store/prs.ts PrRef — client never imports server code.
+export type PrRef = {
+  url: string;
+  owner: string;
+  repo: string;
+  number: number;
+  title?: string;
+};
+
 // Mirror of server/lib/providers/types.ts SubagentNode/Detail — client never
 // imports server code (hard rule 3), re-declared here. NOTE: no `jsonlPath` — the
 // route strips that server-only absolute path before responding.
