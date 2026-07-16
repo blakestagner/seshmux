@@ -9,6 +9,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "postinstall": "node bin/postinstall.js",
     "predev": "node -e \"require('./daemon/ensure').ensureDaemon()\"",
     "dev": "PORT=${PORT:-4800} tsx watch --clear-screen=false server/index.ts",
     "build": "bash scripts/build-standalone.sh",
