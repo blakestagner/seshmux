@@ -18,6 +18,7 @@ const { randomBytes } = require('node:crypto');
 const path = require('node:path');
 const fs = require('node:fs');
 const { ensureDaemon, pidAlive, paths, configDir, daemonInfo, canSafelyRestartDaemon } = require('../daemon/ensure');
+const { cmdInvocation } = require('../daemon/win-args');
 
 // The daemon's pid, from the pidfile it writes in the config dir. null when it isn't running.
 function readDaemonPid() {
@@ -115,9 +116,18 @@ async function runUpdate(checkOnly) {
   console.log(`[seshmux] update available: v${current} -> v${latest}`);
   if (checkOnly) return;
 
+  // win32: npm is npm.cmd, which spawn can't start directly — route through the
+  // interpreter with args quoted (cmdInvocation), NOT shell:true, which would let
+  // cmd re-parse the version spec. `latest` is npm's own published version, but
+  // guard it as semver before it reaches a command line regardless.
+  if (!/^\d+\.\d+\.\d+[A-Za-z0-9.+-]*$/.test(latest)) {
+    console.error(`[seshmux] refusing to install unexpected version string "${latest}"`);
+    process.exit(1);
+  }
+  const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const [file, spawnArgs] = cmdInvocation(npmBin, ['i', '-g', `seshmux@${latest}`, '--prefer-online']);
   const code = await new Promise((resolve) => {
-    // shell:true on win32 only — npm is npm.cmd there, which spawn can't start directly.
-    const child = spawn('npm', ['i', '-g', `seshmux@${latest}`, '--prefer-online'], { stdio: 'inherit', shell: process.platform === 'win32' });
+    const child = spawn(file, spawnArgs, { stdio: 'inherit' });
     child.on('exit', (c) => resolve(c ?? 1));
     child.on('error', () => resolve(1));
   });

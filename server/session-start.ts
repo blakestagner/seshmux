@@ -119,7 +119,13 @@ export async function startSession(input: StartSessionInput): Promise<StartSessi
   // Only for a genuinely fresh session (new mode, no resumeId) on a provider that
   // implements freshPrompt; every other case (resume/continue/plan, or a provider that
   // doesn't support it) keeps the delayed-write fallback below.
-  const seedViaArgv = !!(firstPrompt && mode === 'new' && !resumeId && provider.commands.freshPrompt);
+  // win32: never seed a user firstPrompt as an argv element — the agent CLI is a
+  // .cmd there, so argv flows through cmd.exe, whose %VAR% expansion can't be safely
+  // escaped (win-args.ts). Fall through to the delayed-write path, which types the
+  // prompt into the PTY after spawn and never touches the command line.
+  const seedViaArgv =
+    !!(firstPrompt && mode === 'new' && !resumeId && provider.commands.freshPrompt) &&
+    process.platform !== 'win32';
   const args = seedViaArgv
     ? provider.commands.freshPrompt!(projectPath, firstPrompt!)
     : argvFor(provider, mode, projectPath, resumeId);

@@ -6,16 +6,21 @@
 
 import type { FastifyInstance } from 'fastify';
 import os from 'node:os';
-import { sep } from 'node:path';
 import { getProviders } from '../lib/providers/types';
 import type { Project, SessionMeta } from '../lib/providers/types';
 
 // Sessions run inside temp dirs (test daemons, scratch runs, throwaway clones)
 // pollute the rail with cwd-projects that aren't real projects. Filter them out
 // of the LIST only — their sessions stay on disk and remain searchable.
-const TMP_ROOTS = ['/tmp/', '/private/tmp/', '/private/var/folders/', '/var/folders/', os.tmpdir() + sep];
+// Compare on forward-slash-normalized paths: store cwds and os.tmpdir() can mix
+// separators on win32, so normalize both sides before the prefix test.
+function norm(p: string): string {
+  const s = p.replace(/\\/g, '/');
+  return s.endsWith('/') ? s : s + '/';
+}
+const TMP_ROOTS = ['/tmp/', '/private/tmp/', '/private/var/folders/', '/var/folders/', norm(os.tmpdir())];
 function isTmpProject(path: string): boolean {
-  const p = path.endsWith(sep) ? path : path + sep;
+  const p = norm(path);
   return TMP_ROOTS.some((root) => p.startsWith(root));
 }
 

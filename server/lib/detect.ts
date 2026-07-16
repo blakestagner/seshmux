@@ -5,7 +5,8 @@
 
 import { execFile } from 'node:child_process';
 import type { AgentProvider } from './providers/types';
-import { execArgs } from './which';
+import { whichBin, type Runner as WhichRunner } from './which';
+import { cmdInvocation } from './win-args';
 
 const TIMEOUT_MS = 2_000;
 
@@ -27,27 +28,16 @@ function defaultRun(cmd: string, args: string[]): Promise<{ stdout: string }> {
   });
 }
 
-async function which(run: Runner, bin: string): Promise<string | undefined> {
-  try {
-    // `which` is posix-only; `where` returns every PATH match (one per line),
-    // including npm's extensionless unix shim — prefer what CreateProcess can start.
-    const win = process.platform === 'win32';
-    const { stdout } = await run(win ? 'where' : 'which', [bin]);
-    const lines = stdout
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
-    if (!win) return lines[0] || undefined;
-    return lines.find((l) => /\.(exe|cmd|bat)$/i.test(l)) ?? lines[0] ?? undefined;
-  } catch {
-    return undefined;
-  }
+// Resolution heuristic (where.exe parsing, CWD-shadow drop, extension preference)
+// lives in which.ts — share it so detection and the spawn path never disagree.
+function which(run: Runner, bin: string): Promise<string | undefined> {
+  return whichBin(bin, run as WhichRunner);
 }
 
 async function version(run: Runner, bin: string, flag = '--version'): Promise<string | undefined> {
   try {
-    // execArgs: a resolved .cmd/.bat can't be execFile'd directly on win32.
-    const [file, args] = execArgs(bin, [flag]);
+    // cmdInvocation: a resolved .cmd/.bat can't be execFile'd directly on win32.
+    const [file, args] = cmdInvocation(bin, [flag]);
     const { stdout } = await run(file, args);
     return stdout.trim().split('\n')[0] || undefined;
   } catch {

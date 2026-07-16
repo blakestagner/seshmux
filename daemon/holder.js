@@ -38,6 +38,7 @@ const {
   encode,
   createDecoder,
 } = require('./protocol');
+const { cmdInvocation } = require('./win-args');
 
 // After the PTY exits we keep the socket up so a daemon that reconnects can
 // still learn the exit code. Long grace when nobody knew; short when a live
@@ -55,13 +56,9 @@ const { holderDir, ptyId, sock: sockPath, cwd, args, cols, rows, env } = spec;
 const jsonPath = path.join(holderDir, ptyId + '.json');
 
 // win32: CreateProcess can't run .cmd/.bat shims (npm installs agent CLIs as
-// exactly those) — route them through the command interpreter.
-let file = args[0];
-let rest = args.slice(1);
-if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(file)) {
-  rest = ['/c', file, ...rest];
-  file = process.env.ComSpec || 'cmd.exe';
-}
+// exactly those) — route them through the command interpreter, with args quoted
+// for both cmd.exe and the target's parser. Identity on posix.
+const [file, rest] = cmdInvocation(args[0], args.slice(1));
 
 const proc = pty.spawn(file, rest, {
   name: 'xterm-256color',
