@@ -87,12 +87,17 @@ export function PrChip({ prs }: { prs: PrRef[] }) {
   );
 }
 
+const PR_LIST_COLLAPSED = 2;
+
 export function PrList({ projectId, sessionId }: { projectId: string; sessionId: string }) {
   const prs = useSessionPrs(projectId, sessionId);
+  const [expanded, setExpanded] = useState(false);
   if (!prs.length) return null;
+  const collapsible = prs.length > PR_LIST_COLLAPSED;
+  const shown = collapsible && !expanded ? prs.slice(0, PR_LIST_COLLAPSED) : prs;
   return (
     <div className={styles.list}>
-      {prs.map((pr) => (
+      {shown.map((pr) => (
         <a
           key={pr.url}
           className={styles.link}
@@ -104,6 +109,11 @@ export function PrList({ projectId, sessionId }: { projectId: string; sessionId:
           ↗ {prLabel(pr)}
         </a>
       ))}
+      {collapsible ? (
+        <button type="button" className={styles.toggle} onClick={() => setExpanded((v) => !v)}>
+          {expanded ? 'Show less' : `Show ${prs.length - PR_LIST_COLLAPSED} more`}
+        </button>
+      ) : null}
     </div>
   );
 }

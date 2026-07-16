@@ -49,3 +49,18 @@
   color: var(--accent);
   text-decoration: underline;
 }
+
+// Show more / less toggle — a plain text button matching the link rows.
+.toggle {
+  @include t-mono-micro;
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.toggle:hover {
+  color: var(--accent);
+}
