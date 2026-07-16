@@ -6,6 +6,8 @@ import { constants } from 'node:fs';
 import { mkdir, open, realpath, lstat } from 'node:fs/promises';
 import { dirname, sep } from 'node:path';
 
+const WIN = process.platform === 'win32';
+
 export class FsGuardError extends Error {
   statusCode = 400;
   constructor(message: string) {
@@ -57,15 +59,35 @@ export async function writeWithinRepo(repoPath: string, target: string, content:
   // ponytail: an INTERMEDIATE dir swapped to a symlink post-walk is still open —
   // closing that needs openat()-style per-component descent, which Node doesn't
   // expose; revisit if seshmux ever serves non-local users.
+  //
+  // win32 has no O_NOFOLLOW: fs.constants.O_NOFOLLOW is `undefined` there, and
+  // `undefined | flags` coerces to 0 — the flag silently contributed NOTHING, so
+  // this whole layer was a no-op on Windows (ELOOP/EMLINK can never fire). Stand
+  // in for it with an explicit post-open leaf re-check, and open without O_TRUNC
+  // so a symlink swapped in at the last moment doesn't get its target truncated
+  // before we notice. This NARROWS the race; it can't close it (no openat()).
+  // Exploiting it on Windows already requires symlink-creation privilege
+  // (Developer Mode/admin) — an unprivileged junction, the one reparse point a
+  // normal user CAN make, is caught by the realpath walk above.
   let fh;
   try {
-    fh = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW);
+    fh = await open(
+      target,
+      WIN
+        ? constants.O_WRONLY | constants.O_CREAT
+        : constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
+    );
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ELOOP' || code === 'EMLINK') throw new FsGuardError('target escapes project');
     throw err;
   }
   try {
+    if (WIN) {
+      const post = await lstat(target).catch(() => null);
+      if (!post || post.isSymbolicLink()) throw new FsGuardError('target escapes project');
+      await fh.truncate(0); // O_TRUNC's job, deferred until the leaf is proven
+    }
     await fh.writeFile(content, 'utf8');
   } finally {
     await fh.close();
