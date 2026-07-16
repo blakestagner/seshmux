@@ -82,6 +82,14 @@ export class DaemonConnection {
     this.sock.setEncoding('utf8');
     this.sock.on('data', (chunk: string) => this.onData(chunk));
     this.sock.on('close', () => {
+      // Reject every in-flight RPC: a daemon that dies mid-call otherwise hangs
+      // its awaiter FOREVER (spawn/list/attach in session-start, bridge wait/
+      // peek, mcp read_terminal all bare-await rpc() — the Fastify request never
+      // responds and the pending entry leaks). A hang is not a rejection; make
+      // it one, here, where every caller routes.
+      const pending = [...this.pending.values()];
+      this.pending.clear();
+      for (const settle of pending) settle({ id: -1, error: { message: 'daemon connection closed' } });
       if (this.closeHandler) this.closeHandler();
     });
     // Swallow socket errors — callers observe failure via connect()/rpc rejection.
@@ -136,6 +144,12 @@ export class DaemonConnection {
   rpc(method: string, params?: unknown): Promise<unknown> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
+      // A destroyed socket's close event already flushed pending — an entry
+      // added now would never settle. Reject up front.
+      if (this.sock.destroyed) {
+        reject(new Error('daemon connection closed'));
+        return;
+      }
       this.pending.set(id, (r) => {
         if (r.error) reject(new Error(r.error.message));
         else resolve(r.result);

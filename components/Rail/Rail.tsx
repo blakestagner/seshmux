@@ -226,17 +226,27 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
     }
   }
 
+  // In-flight guard: the filter fan-out effects re-run per render (fresh
+  // `projects` array ref) and `loaded` only flips on completion, so every
+  // render during the fetch window re-fired a duplicate GET per project.
+  const firstPageInFlight = useRef(new Set<string>());
   async function loadFirstPage(projectId: string) {
-    const sessions = await getSessions(projectId, { limit: CHUNK });
-    setByProject((prev) => ({
-      ...prev,
-      [projectId]: {
-        sessions,
-        cursor: sessions.length ? sessions[sessions.length - 1].mtime : null,
-        hasMore: sessions.length === CHUNK,
-        loaded: true,
-      },
-    }));
+    if (firstPageInFlight.current.has(projectId)) return;
+    firstPageInFlight.current.add(projectId);
+    try {
+      const sessions = await getSessions(projectId, { limit: CHUNK });
+      setByProject((prev) => ({
+        ...prev,
+        [projectId]: {
+          sessions,
+          cursor: sessions.length ? sessions[sessions.length - 1].mtime : null,
+          hasMore: sessions.length === CHUNK,
+          loaded: true,
+        },
+      }));
+    } finally {
+      firstPageInFlight.current.delete(projectId);
+    }
   }
 
   async function loadMore(projectId: string) {

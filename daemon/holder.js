@@ -174,8 +174,11 @@ const server = net.createServer((s) => {
   }
   client = s;
   const decoder = createDecoder();
+  // setEncoding, not per-chunk toString: pasted unicode keystrokes can straddle
+  // a chunk boundary; StringDecoder buffers the partial sequence.
+  s.setEncoding('utf8');
   s.on('data', (chunk) => {
-    for (const m of decoder.push(chunk.toString('utf8'))) handle(m);
+    for (const m of decoder.push(chunk)) handle(m);
   });
   s.on('error', () => {
     if (client === s) client = null;

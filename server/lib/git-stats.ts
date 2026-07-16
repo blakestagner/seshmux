@@ -187,8 +187,14 @@ export async function fileDiff(
     // never an arbitrary path (see trust-boundary note above).
     const untracked = splitZ(await git(dir, ['ls-files', '-o', '--exclude-standard', '-z', '--', relPath]));
     if (untracked.length === 0) return empty;
+    // realpath, not just the lexical check above: an untracked SYMLINK inside
+    // the repo passes ls-files and the prefix check, but --no-index follows it
+    // and would read any file on disk. Same containment readWorkingFile uses.
+    const rootReal = await realpath(path.resolve(dir));
+    const absReal = await realpath(abs);
+    if (absReal !== rootReal && !absReal.startsWith(rootReal + path.sep)) return empty;
     try {
-      return truncateDiff(await git(dir, ['diff', '--no-index', '--', '/dev/null', abs]));
+      return truncateDiff(await git(dir, ['diff', '--no-index', '--', '/dev/null', absReal]));
     } catch (e) {
       // git diff --no-index exits 1 when files differ — that's the success path.
       const out = (e as { stdout?: string }).stdout;

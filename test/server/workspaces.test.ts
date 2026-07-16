@@ -191,6 +191,57 @@ describe('workspaces.remove', () => {
     expect(await ws.list(repo)).toHaveLength(0);
   });
 
+  it('merge: preserves UNTRACKED files to leftovers instead of destroying them (R5-1 other half)', async () => {
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+    writeFileSync(join(dir, 'feature.txt'), 'new feature');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'add feature']);
+    // Real work the agent wrote but never staged — a merge moves COMMITS, so this file
+    // is in none of them and the force-remove used to silently destroy it.
+    writeFileSync(join(dir, 'newfeature.ts'), 'export const real = "work";');
+
+    const { leftovers } = await ws.remove(dir, { mode: 'merge' });
+
+    expect(existsSync(dir)).toBe(false);
+    expect(leftovers).toBeTruthy();
+    expect(readFileSync(join(leftovers!, 'newfeature.ts'), 'utf8')).toBe('export const real = "work";');
+  });
+
+  it('merge: preserves an untracked DIRECTORY (collapsed ?? dir/ entry) to leftovers', async () => {
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+    writeFileSync(join(dir, 'feature.txt'), 'new feature');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'add feature']);
+    // -unormal collapses a new untracked dir to one 'src/' entry; the whole dir
+    // is real never-staged work and must survive the post-merge force-remove.
+    mkdirSync(join(dir, 'newmod'));
+    writeFileSync(join(dir, 'newmod', 'index.ts'), 'export {};');
+
+    const { leftovers } = await ws.remove(dir, { mode: 'merge' });
+
+    expect(existsSync(dir)).toBe(false);
+    expect(leftovers).toBeTruthy();
+    expect(readFileSync(join(leftovers!, 'newmod', 'index.ts'), 'utf8')).toBe('export {};');
+  });
+
+  it('merge: preserves a gitignored file with a non-ASCII name (porcelain quotepath)', async () => {
+    const ws = await freshWorkspaces();
+    const { dir } = await ws.create(repo);
+    writeFileSync(join(dir, '.gitignore'), '*.env\n');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'ignore env']);
+    // Default core.quotepath octal-escapes this in plain porcelain output; the quoted
+    // literal never resolved on disk and the file was silently destroyed. -z emits raw bytes.
+    writeFileSync(join(dir, 'café.env'), 'UNICODE_SECRET');
+
+    const { leftovers } = await ws.remove(dir, { mode: 'merge' });
+
+    expect(leftovers).toBeTruthy();
+    expect(readFileSync(join(leftovers!, 'café.env'), 'utf8')).toBe('UNICODE_SECRET');
+  });
+
   it('merge: preserves gitignored FILES instead of destroying them, and never refuses over them (R6-1/R7-1/R8)', async () => {
     const ws = await freshWorkspaces();
     const { dir } = await ws.create(repo);

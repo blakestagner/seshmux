@@ -123,8 +123,12 @@ class HolderClient {
       for (const frame of this._queue) s.write(frame);
       this._queue = [];
     });
+    // setEncoding, not per-chunk toString: this socket carries live PTY output
+    // (dense with multibyte — emoji, CJK, box-drawing); a chunk boundary inside
+    // a UTF-8 sequence otherwise corrupts the character to U+FFFD forever.
+    s.setEncoding('utf8');
     s.on('data', (chunk) => {
-      for (const m of decoder.push(chunk.toString('utf8'))) this._handle(m);
+      for (const m of decoder.push(chunk)) this._handle(m);
     });
     s.on('error', () => {});
     s.on('close', () => {
@@ -456,6 +460,7 @@ class PtyManager {
     const die = () => {
       entry.alive = false;
       entry.deadAt = Date.now();
+      entry.exitCode = exitCode; // kept for late attachers (see deadInfo)
       this._emit({ event: 'exit', ptyId: entry.ptyId, code: exitCode });
     };
     // An explicit kill()/killAll() means the caller wants this entry GONE — never
@@ -485,6 +490,11 @@ class PtyManager {
    * to every subscriber the revived PTY just keeps producing data on its ptyId.
    */
   async _reviveTmuxNow(entry) {
+    // Re-check at fire time, not just at schedule time: kill() can set noRevive
+    // during the RECONCILE_DELAY_MS window after the proc already exited (its
+    // proc.kill() is then a no-op, so no second exit event re-runs the gate) —
+    // without this the scheduled revive resurrected an explicitly-killed session.
+    if (entry.noRevive) return false;
     if (!entry.tmuxName) return false;
     if (!(await tmuxHasSession(entry.tmuxName))) return false;
     // Never claim a session stamped by a DIFFERENT config dir (foreign daemon).
@@ -681,6 +691,18 @@ class PtyManager {
     entry.rows = rows || entry.rows;
     entry.proc.resize(entry.cols, entry.rows);
     return { ok: true };
+  }
+
+  /**
+   * null while alive (or unknown id); {code} once the PTY died. Lets attach
+   * replay the exit to a subscriber who connected AFTER the death broadcast
+   * (dead entries linger for DEAD_GRACE_MS) — otherwise a reconnecting client
+   * got scrollback and showed the terminal live forever.
+   */
+  deadInfo(ptyId) {
+    const e = this._ptys.get(ptyId);
+    if (!e || e.alive) return null;
+    return { code: e.exitCode != null ? e.exitCode : -1 };
   }
 
   kill({ ptyId } = {}) {

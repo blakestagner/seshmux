@@ -82,8 +82,14 @@ async function startDaemon(opts = {}) {
   const server = net.createServer((sock) => {
     const decoder = createDecoder();
 
+    // setEncoding, NOT chunk.toString('utf8'): a socket chunk can split a
+    // multibyte UTF-8 sequence, and per-chunk toString mangles the straddling
+    // bytes to U+FFFD permanently. setEncoding routes through StringDecoder,
+    // which buffers the partial sequence across chunks. (daemon-client.ts and
+    // ensure.js already do this on their side.)
+    sock.setEncoding('utf8');
     sock.on('data', (chunk) => {
-      const messages = decoder.push(chunk.toString('utf8'));
+      const messages = decoder.push(chunk);
       for (const msg of messages) handleMessage(sock, msg);
     });
     sock.on('error', () => {
@@ -140,6 +146,12 @@ async function startDaemon(opts = {}) {
               sock.write(encode({ event: 'data', ptyId, data: scroll }));
             }
           }
+          // Dead-but-in-grace PTY: the exit broadcast went to the THEN-subscribers,
+          // so replay it to this late attacher (after the scrollback, mirroring
+          // holder.js) — otherwise the client renders the final screen and waits
+          // on a terminal that will never speak again.
+          const dead = ptyManager.deadInfo(ptyId);
+          if (dead) sock.write(encode({ event: 'exit', ptyId, code: dead.code }));
           reply(sock, id, { ptyId });
           return;
         }

@@ -65,9 +65,12 @@ export interface EventsClient {
 
 /**
  * Open the events WS. `onEvent` receives each decoded EventMessage. Reconnects
- * automatically (250ms→5s backoff) until close() is called.
+ * automatically (250ms→5s backoff) until close() is called. `onOpen` fires on
+ * every successful (re)connect — the reliable "server is back" signal: with
+ * zero live PTYs the reconnect replays no status events, so an event-based
+ * "restarting" reset would never fire and the banner stuck forever.
  */
-export function openEventsSocket(onEvent: (e: EventMessage) => void): EventsClient {
+export function openEventsSocket(onEvent: (e: EventMessage) => void, onOpen?: () => void): EventsClient {
   let ws: WebSocket | null = null;
   let closed = false;
   let backoff = 250;
@@ -80,6 +83,7 @@ export function openEventsSocket(onEvent: (e: EventMessage) => void): EventsClie
 
     ws.addEventListener('open', () => {
       backoff = 250; // reset on a successful connect
+      onOpen?.();
     });
     ws.addEventListener('message', (ev) => {
       let msg: EventMessage;
