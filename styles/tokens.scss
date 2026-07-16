@@ -1,0 +1,167 @@
+// seshmux design tokens — redesign palette ("Seshmux Redesign offline").
+// Ported from design-appframe.js T{}/AC{} + design-markup.html. Flattened to
+// data-theme selectors. Colors / radii / shadows / fonts ONLY.
+
+:root {
+  // Fonts wired to next/font/google variables (app/layout.tsx), with system
+  // fallback chains preserved.
+  --mono: var(--font-jetbrains-mono), "SF Mono", ui-monospace, Menlo, monospace;
+  --sans: var(--font-hanken-grotesk), -apple-system, "SF Pro Text", "Segoe UI", sans-serif;
+  --font-ui: var(--sans);
+  // Radii (design: app frame 14, cards 13–14, inputs/segmented 9, chips/small
+  // buttons 8, kbd 5). --radius-md is the 11px message-bubble/tile radius.
+  --radius: 14px;
+  --radius-md: 11px;
+  --radius-sm: 9px;
+  --radius-xs: 5px; // kbd chips, tiny pills (design kbd radius 5)
+  // Provider identity (design constants CL/CX). Light theme overrides below,
+  // hue-matched + darker for contrast on near-white bg.
+  --claude: #cf7a4b;
+  --codex: #8a8a93;
+  // Safety fallback: if data-accent is somehow unset (pre-paint script guarantees
+  // it isn't), default to iris-dark so nothing renders unstyled. The four
+  // [data-theme][data-accent] blocks below are the real source of --accent.
+  --accent: #9090f8;
+  --accent-contrast: #0a0a1a;
+  --accent-soft: rgba(144, 144, 248, 0.16);
+}
+
+// Accent is orthogonal to theme: theme (dark|light) picks the neutral palette,
+// accent (teal|iris) picks --accent/--accent-contrast/--accent-soft. Both attrs
+// are stamped pre-paint by layout.tsx. --accent-soft uses the design's exact
+// per-[theme][accent] alpha values (design AC{}.soft) — not a color-mix.
+:root[data-theme="dark"][data-accent="teal"] {
+  --accent: #3cc9a0;
+  --accent-contrast: #04140f;
+  --accent-soft: rgba(60, 201, 160, 0.14);
+}
+:root[data-theme="light"][data-accent="teal"] {
+  --accent: #0e8a67;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(14, 138, 103, 0.1);
+}
+:root[data-theme="dark"][data-accent="iris"] {
+  --accent: #9090f8;
+  --accent-contrast: #0a0a1a;
+  --accent-soft: rgba(144, 144, 248, 0.16);
+}
+:root[data-theme="light"][data-accent="iris"] {
+  --accent: #5656d6;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(86, 86, 214, 0.1);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f0f12;
+  --bg-panel: #17171b;
+  --bg-raised: #202027;
+  // No design value — nudged one step off --bg-raised toward --border for
+  // hover feedback within the #0f0f12 family.
+  --bg-hover: #26262e;
+  --border: rgba(255, 255, 255, 0.07);
+  --border-bright: rgba(255, 255, 255, 0.12);
+  --text: #e9e9ec;
+  --text-dim: #9a9aa3;
+  --text-faint: #63636b;
+  --live: #4bb87a; // design --ok
+  --waiting: #fbbf24; // design has no waiting sample — amber kept as-is
+  --done: #63636b; // design idle dot uses --faint
+  --hot: #d9705f; // design --bad
+  // Diff view row tints (changes panel): --live/--hot at whisper strength so
+  // full-width added/removed rows read as blocks without shouting.
+  --diff-add-bg: rgba(75, 184, 122, 0.12);
+  --diff-del-bg: rgba(217, 112, 95, 0.12);
+  --role-user: #79b8ff;
+  --shadow-dropdown: 0 12px 32px rgba(0, 0, 0, 0.35);
+  // Neutral-tinted terminal bg harmonized with the new #0f0f12 dark family
+  // (was blue-tinted #0a0d11).
+  --term-bg: #0c0c0f;
+  --term-text: #c9d3dc;
+  --term-user: #7cc0ff;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  // Modal chrome (NewSessionModal, WorkspaceFinishPrompt — 2 consumers, tokenized
+  // instead of duplicated rgba() literals per component).
+  --overlay-bg: rgba(0, 0, 0, 0.55);
+  --shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.4);
+  // Syntax highlighting (changes panel diff/full views). Hues sit in the
+  // muted VSCode-dark register; contrast tuned for #0f0f12 family bg.
+  --syn-keyword: #c792ea;
+  --syn-string: #9ece8c;
+  --syn-number: #f2b76e;
+  --syn-comment: #63636b; // = --text-faint
+  --syn-function: #82aaff;
+  --syn-type: #5fd0c7;
+  --syn-tag: #e06c75;
+  --syn-attr: #d8b56c;
+  --syn-punct: #9a9aa3; // = --text-dim
+  --syn-variable: #e9e9ec; // = --text
+  // Filetype identity (tree glyphs + name tints).
+  --ft-styles: #e26fa8;
+  --ft-script-ts: #6cb2f0;
+  --ft-script-js: #d8b56c;
+  --ft-test: #4bb87a; // = --live
+  --ft-config: #9a9aa3;
+  --ft-docs: #5fd0c7;
+  --ft-image: #b48ee8;
+  --ft-shell: #7fbf6a;
+  --ft-markup: #e0885f;
+  --ft-dim: #63636b; // lockfiles/generated
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  // Provider identity, darker + hue-matched for contrast on white:
+  // claude coral #cf7a4b → #b45f34; codex neutral gray #8a8a93 → #5c5c64.
+  --claude: #b45f34;
+  --codex: #5c5c64;
+  --bg: #edece7;
+  --bg-panel: #ffffff;
+  --bg-raised: #f4f3ef;
+  // No design value — nudged off --bg-raised toward --border for hover feedback.
+  --bg-hover: #e7e5df;
+  --border: rgba(0, 0, 0, 0.08);
+  --border-bright: rgba(0, 0, 0, 0.14);
+  --text: #1d1d21;
+  --text-dim: #6b6b73;
+  --text-faint: #9a9aa1;
+  --live: #2f9e63; // design --ok
+  --waiting: #b45309; // amber kept as-is (no design waiting sample)
+  --done: #9a9aa1; // design idle dot uses --faint
+  --hot: #c1584a; // design --bad
+  // Diff view row tints — slightly stronger than dark: pale tints wash out on white.
+  --diff-add-bg: rgba(47, 158, 99, 0.14);
+  --diff-del-bg: rgba(193, 88, 74, 0.14);
+  // ponytail: mockup uses #79b8ff for both themes, but it fails contrast on the
+  // light near-white bg — light gets the readable blue (matches --term-user light).
+  --role-user: #1e6fc4;
+  --shadow-dropdown: 0 12px 32px rgba(20, 35, 50, 0.18);
+  --term-bg: #ffffff;
+  --term-text: #2a3540;
+  --term-user: #1e6fc4;
+  --shadow: 0 8px 24px rgba(20, 35, 50, 0.1);
+  --overlay-bg: rgba(20, 20, 24, 0.4);
+  --shadow-modal: 0 20px 60px rgba(20, 35, 50, 0.25);
+  // Syntax highlighting — darkened for contrast on near-white bg.
+  --syn-keyword: #8f4bbf;
+  --syn-string: #3e7d3a;
+  --syn-number: #a25d0e;
+  --syn-comment: #9a9aa1; // = --text-faint
+  --syn-function: #2a5fb8;
+  --syn-type: #157f76;
+  --syn-tag: #b3403c;
+  --syn-attr: #8a6410;
+  --syn-punct: #6b6b73; // = --text-dim
+  --syn-variable: #1d1d21; // = --text
+  // Filetype identity.
+  --ft-styles: #b8437e;
+  --ft-script-ts: #2a6fb8;
+  --ft-script-js: #8a6410;
+  --ft-test: #2f9e63; // = --live
+  --ft-config: #6b6b73;
+  --ft-docs: #157f76;
+  --ft-image: #7a4fc0;
+  --ft-shell: #3e7d3a;
+  --ft-markup: #a25428;
+  --ft-dim: #9a9aa1;
+}

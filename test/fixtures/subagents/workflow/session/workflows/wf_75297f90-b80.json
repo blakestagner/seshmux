@@ -1,0 +1,255 @@
+{
+ "runId": "wf_75297f90-b80",
+ "timestamp": "2026-07-10T18:50:43.556Z",
+ "taskId": "w63s3vs4p",
+ "script": "export const meta = {\n  name: 'customizations-v1-build',\n  description: 'Execute docs/plans/2026-07-10-customizations-browser.md \u2014 sonnet implementers, opus overseers, task-by-task',\n  phases: [\n    { \u2026[redacted]",
+ "scriptPath": "/Users/blakestagner/.claude/projects/-Users-blakestagner-Desktop-seshmux/29f21cf3-dc07-4322-b1ad-291961a63be5/workflows/scripts/customizations-v1-build-wf_75297f90-b80.js",
+ "result": {
+  "results": [
+   {
+    "task": 1,
+    "approved": true,
+    "rounds": 1,
+    "files": [
+     "/Users/blakestagner/Desktop/seshmux/docs/plans/2026-07-10-codex-customizations-discovery.md"
+    ],
+    "summary": "APPROVED. Task 1 (Codex schema discovery, recon-only) is complete and accurate.\n\nVERIFICATION AGAINST REAL STORE \u2014 every claim in docs/plans/2026-07-10-codex-customizations-discovery.md confirmed against the live ~/.codex/ on this machine:\n- ~/.codex/prompts/ \u2014 MISSING (confirmed). Doc line 39 correct \u2192 omit agents scanner.\n- ~/.codex/hooks.json \u2014 MISSING (confirmed). Doc line 114 correct \u2192 omit hooks scanner.\n- ~/.codex/config.toml [mcp_servers.seshmux-bridge] with command=/opt/homebrew/.../node and args=[...seshmux.js, mcp-bridge] \u2014 confirmed byte-for-byte (grep line 38-40). Doc lines 148-151 exact.\n- ~/.codex/skills/ \u2014 exists, only .system/ populated (imagegen, openai-docs, plugin-creator, skill-creator, skill-installer). Confirmed .system/SKILL.md is MISSING, so Task 2's scanSkillsDir (readdir \u2192 probe <entry>/SKILL.md one level deep) hits ENOENT on .system and returns [] \u2014 the doc's \"no leak of bundled skills\" claim traces correctly against the actual Task 2 scanSkillsDir logic.\n\nTHREE PLAN-MANDATED QUESTIONS (plan line 50) \u2014 all answered with real evidence: prompts (NO), hooks.json (NO), config.toml MCP key ([mcp_servers.<name>], command/args). Doc goes further and correctly flags (a) AGENTS.md project-scope instructions and (b) the TOML line-parser must stop at the next [...] header to avoid misparsing [projects.*]/[plugins.*] as servers \u2014 both load-bearing for Task 3.\n\nCOMMIT HYGIENE: commit d91e973 contains ONLY docs/plans/2026-07-10-codex-customizations-discovery.md (200 insertions, 1 file), added by pathspec. No unrelated agent work swept in or damaged.\n\nGATES: lint:styles OK. tsc --noEmit clean (exit 0). npm test: 334/334 test assertions pass. The single failed suite (events-hub.test.ts) is an afterAll daemon-teardown hook timeout that fails identically in isolation (11/11 its still pass) \u2014 pre-existing flaky teardown, unrelated to this docs-only task which changed zero source files. Interfaces block (findings doc for Task 3 to consume) satisfied."
+   },
+   {
+    "task": 2,
+    "approved": true,
+    "rounds": 2,
+    "files": [
+     "/Users/blakestagner/Desktop/seshmux/server/lib/providers/claude.ts",
+     "/Users/blakestagner/Desktop/seshmux/server/lib/providers/types.ts",
+     "/Users/blakestagner/Desktop/seshmux/server/lib/providers/customizations.ts",
+     "/Users/blakestagner/Desktop/seshmux/test/customizations-scan.test.ts"
+    ],
+    "summary": "Task 2 APPROVED. Commit d5d23e6 (\"feat(customizations): shared scan types + claude scanners\") contains exactly the 4 required files (server/lib/providers/customizations.ts new, claude.ts + types.ts modified, test/customizations-scan.test.ts new) and nothing else. The blob-surgery redo correctly isolated Task 2: committed claude.ts imports resolve ONLY to node builtins + tracked ../store/* + ./types + the new ./customizations \u2014 grep-confirmed no references to ./manifest, ./status-hooks, StatusHookSupport, claudeWatchConfig, or loadNeedsInputPatterns (the other agent's untracked WIP), and the committed claude.ts retains the inline needsInputPatterns array. (Note: I did not tar-extract and compile the committed tree in isolation \u2014 I grep-verified the committed imports; working-tree green transfers because the committed state is the working tree minus purely-additive other-agent code.) Other agents' WIP (manifest.ts, status-hooks.ts untracked; codex.ts, watch.ts, needs-input.ts modified) is untouched and intact.\n\nInterfaces exact: all names/signatures the plan's Interfaces block promises Tasks 3-4 (CustomizationScope, CustomizationItem, CustomizationScanners, ScanDeps, itemId, parseFrontmatter, scanMarkdownDir, scanSkillsDir, scanInstructionFiles, scanHooksJson, scanMcpJson) are exported and match. Constructor change (positional root -> ClaudeProviderOpts with homeDir) is plan-authorized and breaks no callers \u2014 all other call sites use new ClaudeProvider() with no args.\n\nGates: customizations-scan.test.ts 11/11 pass; tsc --noEmit clean (exit 0); lint:styles clean. Test quality is honest \u2014 assertions cover title/meta/filePath/provider/scope/parseError and would fail on real regressions; the single-entry hooks fixture cannot catch an [i][j] grouping off-by-one, but that matches the plan's own prescribed test spec (acceptable, non-blocking).\n\nnpm test CAVEAT (does not block, per brief's \"judge only this task's changes\"): one suite failed \u2014 test/events-hub.test.ts \u2014 but it is UNTRACKED (the other agent's Spec-2 WIP, so unaffected by which commit is at HEAD), the failure is an afterAll teardown timeout in ptyManager.killAll() rather than any test assertion (\"Tests 345 passed (345)\"), and Task 2 touches zero daemon/PTY/events-hub code so there is no causal path from the customizations scanners to a PTY teardown timeout. All 345 assertions pass."
+   },
+   {
+    "task": 3,
+    "approved": true,
+    "rounds": 1,
+    "files": [
+     "/Users/blakestagner/Desktop/seshmux/server/lib/providers/codex.ts",
+     "/Users/blakestagner/Desktop/seshmux/test/customizations-scan.test.ts"
+    ],
+    "summary": "Task 3 (Codex scanners) APPROVED. All gates verified independently, not trusted from the report.\n\nGATES:\n- npx tsc --noEmit: clean (exit 0).\n- npm run lint:styles: OK (Task 3 touches no styles).\n- npm test: 352 tests pass. The ONE failed suite is test/events-hub.test.ts \u2014 all 11 of its tests PASS; only its afterAll teardown hook times out at 10s in daemon ptyManager.killAll() cleanup. This is provably NOT caused by Task 3: the commit (3e02099) contains exactly 2 files (server/lib/providers/codex.ts, test/customizations-scan.test.ts), neither touches daemon/PTY/events-hub, and codex scanners are pure fs reads with no PTY. The failure lives in other agents' uncommitted daemon work in this shared tree. test/customizations-scan.test.ts in isolation: 18/18 pass.\n\nIMPLEMENTATION matches Task 1 findings doc (2026-07-10-codex-customizations-discovery.md, committed) exactly:\n- skills: scanSkillsDir on ~/.codex/skills, global-only. Correctly excludes bundled .system/* skills (probe is one level deep; .system/<name>/SKILL.md is two deep \u2192 ENOENT-skipped). Test asserts this.\n- instructions: AGENTS.md, project-scope only; global returns [].\n- mcpServers: new line-regex TOML-subset parser for [mcp_servers.<name>] blocks in ~/.codex/config.toml, global-only. Correctly does NOT leak [projects.*]/[plugins.*] blocks (generic [.+] header flushes current to null). ponytail: comment names the ceiling.\n- agents + hooks: correctly OMITTED (both surfaces confirmed absent on real installs; plan's absent-surface=omit-key rule).\n\nINTERFACES contract satisfied: Task 4's route iterates SECTIONS and feature-tests p.customizations?.[section], so codex's omitted agents/hooks keys are skipped cleanly; CustomizationScanners has all keys optional (typechecks). Constructor extended to accept legacy positional root string OR {root?, homeDir?} \u2014 all 8 existing call sites (new CodexProvider() / new CodexProvider(root)) preserved; test/codex.test.ts still exercises positional-root session parsing and passes.\n\nTEST QUALITY: strong. Tests cover skills+.system-exclusion, agents/hooks absence, mcp parse (asserts exact ['seshmux-bridge'] so [projects.*] leak would fail it), mcp project-scope=[], instructions project/global, missing config.toml\u2192[]. Each fails if its logic breaks. One weak spot (non-blocking): the back-compat test only asserts p.id==='codex' (a hardcoded readonly field, passes regardless of constructor behavior) \u2014 but real back-compat is covered by test/codex.test.ts, so criterion 5 holds.\n\nNO DAMAGE: commit is exactly 2 files by pathspec; no unrelated files swept in. Task 2 deps (customizations.ts scanSkillsDir/scanInstructionFiles/itemId) are committed (d5d23e6) and present.\n\nKNOWN LIMITATION (on record, not a blocker): the TOML line-regex header ^\\[mcp_servers\\.([^\\]]+)\\]$ would MISPARSE an [mcp_servers.<name>.env] (or any [mcp_servers.foo.bar]) subtable as a phantom server titled 'foo.env' with empty command. env subtables are common in MCP configs generally. Compliant for now \u2014 the discovery doc confirmed the real config has no such subtable and the plan explicitly sanctioned the line-regex subset with a ponytail ceiling comment naming the upgrade path (real TOML parser if codex config grows). Flag for whoever hits a codex config with mcp_servers subtables."
+   },
+   {
+    "task": 4,
+    "approved": true,
+    "rounds": 1,
+    "files": [
+     "/Users/blakestagner/Desktop/seshmux/server/routes/customizations.ts",
+     "/Users/blakestagner/Desktop/seshmux/test/routes-customizations.test.ts",
+     "/Users/blakestagner/Desktop/seshmux/server/index.ts"
+    ],
+    "summary": "Task 4 (GET /api/customizations route) APPROVED. Independently ran all three gates: npx tsc --noEmit clean (exit 0), npm run lint:styles clean (exit 0), npm test = 356/356 individual tests pass, and the new test/routes-customizations.test.ts = 4/4 pass. The lone suite-level failure in test/events-hub.test.ts is a pre-existing afterAll teardown timeout at daemon.ptyManager.killAll() \u2014 verified independent of Task 4 by running events-hub in isolation (fails identically with no customizations code loaded, all 11 of its assertions passing); Task 4's files never touch daemon/PTY/events. Commit hygiene verified: commit eba12b9 contains exactly the 3 intended files, server/index.ts is a true +1-line register diff (809b9ab..6559c34) with no foreign agent work swept in, and the 78 files of other agents' uncommitted work remain intact in the working tree (index.ts working tree carries both the committed register line at :131 and the restored +46 foreign lines). Interface contract honored: defaultResolveRepo exported from bridge.ts:126, getProviders from types.ts:74, AgentProvider.customizations at types.ts:67; produced route shape {agents,skills,instructions,hooks,mcp} with the deliberate mcpServers\u2192mcp rename matches the plan's Task 6 payload contract exactly. All 4 tests are logic-sensitive (sort, scope resolution, 404, throw\u2192[] each fail if their logic breaks). Implementation matches the plan spec verbatim; TDD order confirmed. Minor non-blocking note: no test directly asserts the mcp key rename (tsc covers the shape and Task 6 will exercise it)."
+   },
+   {
+    "task": 5,
+    "approved": true,
+    "rounds": 1,
+    "files": [
+     "/Users/blakestagner/Desktop/seshmux/server/routes/config.ts",
+     "/Users/blakestagner/Desktop/seshmux/lib/client/store.ts",
+     "/Users/blakestagner/Desktop/seshmux/lib/client/types.ts",
+     "/Users/blakestagner/Desktop/seshmux/components/Rail.tsx",
+     "/Users/blakestagner/Desktop/seshmux/components/Rail.module.scss",
+     "/Users/blakestagner/Desktop/seshmux/components/FilterMenu.tsx",
+     "/Users/blakestagner/Desktop/seshmux/test/store.test.ts"
+    ],
+    "summary": "APPROVED. Task 5 (hidden projects \u2014 config + reducer + rail filter) is correct, complete, and matches the plan's Interfaces block exactly.\n\nWHAT WAS VERIFIED:\n- Config plumbing: server/routes/config.ts adds `hidden: string[]` to Config interface, `hidden: []` to DEFAULT_CONFIG, and an Array.isArray sanitize branch mirroring projectOrder. lib/client/types.ts mirrors `hidden: string[]` on the client Config. \u2713\n- Reducer: lib/client/store.ts adds `showHidden: boolean` state (default false, session-local/never persisted), `toggleHidden`/`setShowHidden` action types in the Action union, and reducer cases mirroring togglePin. Critically, `setConfig` (store.ts:339\u2013353) normalizes `hidden` to `[]` via Array.isArray over an initialState base, so `config.hidden` can NEVER be undefined \u2014 the Rail `.includes()` hot path cannot crash even against an older stateless server that omits the field. \u2713\n- Rail filter: components/Rail.tsx folds the hidden filter into the single `projects` derivation (`!p.missing && (state.showHidden || !config.hidden.includes(p.id))`) so counts/ordering/empty-states all respect it; per-row `styles.hidden` dim class applied only when the bypass reveals a hidden project. Rail.module.scss adds a layout-only `.proj.hidden { opacity: 0.5 }`. \u2713\n- FilterMenu: \"Show Hidden Projects\" role=menuitemcheckbox item added in the Show Recent/All section, dispatching setShowHidden. \u2713\n- Tests: test/store.test.ts `Hidden projects` describe covers toggleHidden add/remove and setShowHidden; both would fail if the reducer logic broke. \u2713\n- Interface contract for Task 7: Config.hidden, {type:'toggleHidden';id}, showHidden, {type:'setShowHidden';on} all present as later tasks consume. persistConfig() already exists in Rail.tsx (line 234) for Task 7 to wire toggleHidden persistence \u2014 Task 5 correctly defers the persist UI to Task 7 per the plan.\n\nGATES (ran all three myself, did not trust the report):\n- npx tsc --noEmit: CLEAN (exit 0).\n- npm run lint:styles: CLEAN.\n- npm test: 359/359 ASSERTIONS PASS. One suite technically non-green: test/events-hub.test.ts fails on an afterAll teardown timeout (killAll race) \u2014 NOT an assertion failure. Verified that file is UNTRACKED (another agent's WIP) and the Task 5 commit touches none of its deps (events-hub/daemon/pty). Isolated and pre-existing; the implementer's disclosure is accurate.\n\nSWEPT-IN CONTENT \u2014 does NOT trigger reject: The reject condition keys on unrelated FILES; all 7 committed files (9d857af) are within Task 5's legitimate scope (5 planned + types.ts and Rail.module.scss, both load-bearing to compile/lint). No out-of-scope file was committed. What got captured is co-located HUNKS from Spec 1 (workspace \u2295/createWorkspace, sessDotStatus) and Spec 3 (done-unviewed: unviewed flag, markUnviewed, shouldMarkUnviewed, clearUnviewed, grid viewFor) already sitting uncommitted inside Task 5's own files (Rail.tsx, store.ts, test/store.test.ts). This is the unavoidable result of the plan-mandated pathspec-by-file commit (Global Constraint 20) in a shared dirty tree. Verified as other agents' genuine in-flight work \u2014 not authored or damaged by this implementer \u2014 via the still-uncommitted supporting deps in the working tree: createWorkspace in api.ts, unviewed in StatusDot.tsx, onStartWorkspace in NewSessionModal.tsx. Nothing was damaged; the swept hunks compile (tsc clean) and their tests pass.\n\nTWO FACTS DOWNSTREAM MUST KNOW (flagged, non-blocking):\n1. Commit 9d857af is NOT self-contained: its Rail.tsx imports createWorkspace (uncommitted in api.ts) and relies on unviewed/onStartWorkspace (uncommitted elsewhere) \u2014 a clean checkout of this commit alone would not build until Spec 1/3 land. Inherent to the shared-tree model.\n2. npm test is technically non-green (events-hub teardown timeout on an untracked file), even though all 359 Task-5-relevant assertions pass.\n\nNo config route test file exists, so the plan's conditional \"extend the config route test if present\" is moot; the hidden sanitize branch trivially mirrors the already-uncovered projectOrder branch. No new coverage gap."
+   },
+   {
+    "task": 6,
+    "approved": true,
+    "rounds": 1,
+    "files": [
+     "/Users/blakestagner/Desktop/seshmux/components/CustomizationsModal.tsx",
+     "/Users/blakestagner/Desktop/seshmux/components/CustomizationsModal.module.scss",
+     "/Users/blakestagner/Desktop/seshmux/components/TopNav.tsx",
+     "/Users/blakestagner/Desktop/seshmux/app/page.tsx",
+     "/Users/blakestagner/Desktop/seshmux/lib/client/api.ts",
+     "/Users/blakestagner/Desktop/seshmux/lib/client/types.ts"
+    ],
+    "summary": "APPROVED. Task 6 (Modal shell + Overview + section list/detail views), commit 2dd2886, is correct, complete for its task boundary, and cleanly committed.\n\nGATES (all run fresh, not trusted from report):\n- npx tsc --noEmit \u2192 clean (exit 0).\n- npm run lint:styles \u2192 clean (\"no raw text properties in component modules\").\n- npm test \u2192 359/359 individual tests PASS. The one \"failed suite\" is test/events-hub.test.ts, which is an UNTRACKED file (git ls-files: not in repo; 0 references in commit 2dd2886) \u2014 pre-existing foreign-agent WIP whose afterAll teardown times out at 10s while all 11 of its own tests pass. Independently confirmed untracked and unrelated to Task 6, exactly as the report stated.\n\nSPEC/PLAN CONFORMANCE:\n- Overlay+centered panel using --overlay-bg/--shadow-modal (all 9 t-* mixins and all referenced tokens verified to exist); left nav (Overview/Agents/Skills/Instructions/Hooks/MCP Servers/Projects); Overview count cards + provider glyphs (generic \u2733/\u2b21, hard rule 5 respected); OptionRow list views; detail views with monospace filePath + markdown-vs-JSON branch; parse-error badges; scope-aware empty states; Esc + overlay-click close. Matches spec \u00a7UX and plan Task 6.\n- Interfaces match downstream contract EXACTLY: getCustomizations(scope, projectId?) and <CustomizationsModal open onClose projectId projectName />; client CustomizationItem mirror is field-for-field identical to the server type. OptionRow/IconButton prop signatures verified against their sources.\n- DRY done right: reused the already-exported renderMarkdown from Transcript.tsx (correct entity-escape + safe-link-renderer posture per spec) \u2014 Transcript.tsx correctly untouched and absent from the commit. Reused the existing req() fetch helper. Route dependency (Task 4) confirmed registered in server/index.ts:131.\n- Projects section body correctly left as a placeholder (Task 7 boundary), as the report claims.\n\nCOMMIT HYGIENE (the flagged hazard): Task 6's hunks in api.ts and page.tsx ARE in HEAD; foreign uncommitted WIP (getEnvCommands, status hooks, workspaces in api.ts; notifyOnDone/markUnviewed/grid-view/visibilitychange in page.tsx) remains intact and uncommitted. Verified via git show 2dd2886:<file>: ZERO foreign symbols leaked into the commit (0 matches for getEnvCommands/getHooksStatus/createWorkspace/notifyOnDone/markUnviewed/etc). Surgical staging succeeded.\n\nMINOR NON-BLOCKING BLEMISH: the committed page.tsx import line dragged in `shouldMarkUnviewed` (a foreign-work symbol co-located on the same import line as Task 6's CustomizationsModal import). In the isolated commit it is an unused import \u2014 but it does NOT break the build: the symbol is already exported from the committed store.ts (line 355) so the import resolves, and tsconfig has noUnusedLocals OFF so tsc passes. It becomes live the moment the foreign work commits. Not worth a re-commit given the shared-tree constraints; flagging for awareness only."
+   },
+   {
+    "task": 7,
+    "approved": true,
+    "rounds": 1,
+    "files": [
+     "/Users/blakestagner/Desktop/seshmux/components/CustomizationsModal.tsx",
+     "/Users/blakestagner/Desktop/seshmux/components/CustomizationsModal.module.scss",
+     "/Users/blakestagner/Desktop/seshmux/components/Rail.tsx",
+     "/Users/blakestagner/Desktop/seshmux/app/page.tsx"
+    ],
+    "summary": "Task 7 APPROVED. Deliverable is correct and complete.\n\nWHAT WAS VERIFIED\n- Projects section (CustomizationsModal.tsx): renders one row per `projects` prop with `<Toggle on={!isHidden} onChange={() => onToggleHidden?.(p.id)}/>`; empty-state fallback; renders from props (not `data`) so it works while another section's fetch is loading/failed \u2014 matches the plan's Task 7 intent. The dead `section === 'projects'` overview-placeholder branch from Task 6 was correctly removed.\n- Deviation (disclosed): project rows are plain `<div className={styles.projectRow}>`, NOT OptionRow. Justified \u2014 OptionRow renders a `<button>` root and nesting the Toggle `<button>` is invalid/inaccessible HTML. Documented in a SCSS comment. Legitimate call.\n- Rail.tsx: 5th hover-cluster IconButton (\u25a6, label \"Customizations\") wired to new `onOpenCustomizations?.({projectId, projectName})` prop with `e.stopPropagation()`. `revealOnHover` class exists.\n- app/page.tsx: `handleToggleHidden` is a faithful mirror of Rail's `handleTogglePin` \u2014 dispatch(toggleHidden) + recompute the array from the PRE-dispatch `state.config.hidden` + `putConfig`. The recompute-before-async pattern avoids the stale-state trap. Correct. Threads `projects`/`hidden`/`onToggleHidden` into the modal and `onOpenCustomizations={setCustOpen}` into Rail.\n- Interfaces/bindings all match consumers: `Project` shape (id/name/path) in lib/client/types.ts, `Toggle` props (on/onChange), `renderMarkdown` exported from Transcript, store `hidden` field + `toggleHidden` reducer + `setConfig` sanitize (Array.isArray guard) all present from Task 5.\n- No unrelated FILES were swept into the commit \u2014 61f8268 touches exactly the four Task-7 files (page.tsx, CustomizationsModal.tsx, CustomizationsModal.module.scss, Rail.tsx). The .scss add beyond the plan's literal pathspec line was disclosed and necessary (.projectRow/.optBody styles live there).\n\nGATES\n- `npx tsc --noEmit`: clean (exit 0).\n- `npm run lint:styles`: clean \u2014 no raw text props in component modules.\n- `npm test`: 359/359 individual assertions PASS, but the command exits 1. The sole failure is `test/events-hub.test.ts`, an UNTRACKED file (git `??`) from another agent, failing on an `afterAll` daemon `killAll()` teardown timeout \u2014 not an assertion, zero Task-7 nexus (Task 7 touches no server/test code). Its subject `server/events-hub.ts` is also uncommitted (`M`, another agent). Treated as pass-in-intent; the exit=1 is entirely a shared-tree artifact, not a Task-7 regression.\n\nPROVENANCE NOTE (benign, left intact deliberately)\n- Commit 61f8268 ALSO carries another plan's Spec-3 hunks inside app/page.tsx (notifyOnDoneRef/prevNIRef/activeTabRef, the shouldMarkUnviewed working\u2192idle markUnviewed+notify block, the visibilitychange handler, and the `state.view !== 'grid'` tab-strip gate). These belong to the agents-view/v1x-specs plan, not customizations-browser. This is unavoidable within-file entanglement: two agents edit the same page.tsx, `git add -p/-i` is banned in this environment, and the plan's own commit line names page.tsx \u2014 there is no non-destructive non-interactive way to commit only Task-7's hunks. The same entanglement already occurred at Task 6 (the shouldMarkUnviewed import landed in 2dd2886). The swept content is COMMITTED (not lost) and the build is green; un-committing would require ~4 fragile reset/amend operations on a file with another agent's live uncommitted work, risking real data loss to fix a benign provenance smudge. Left intact per that risk trade-off. The one thing the implementer did not disclose was this sweep \u2014 flagged here so provenance is traceable without a rebuild."
+   },
+   {
+    "task": 8,
+    "approved": true,
+    "rounds": 2,
+    "files": [
+     "/Users/blakestagner/Desktop/seshmux/server/events-hub.ts"
+    ],
+    "summary": "APPROVED. Task 8 (acceptance pass, round 2) is complete. The sole blocker from the prior rejection \u2014 `npm test` exiting 1 because test/events-hub.test.ts hung in afterAll \u2014 is correctly fixed.\n\nRoot-cause fix verified (commit b53019d, server/events-hub.ts, +9/-1, single file): hub.close() destroyed the daemon monitor connection, whose onClose handler treated the intentional close as a dropped connection and re-dialed a fresh monitor 500ms later that nothing ever closed. Across the 11 createEventsHub()/hub.close() cycles in the test, leaked sockets kept the daemon's server.close() callback from firing, hanging afterAll past vitest's hookTimeout. The fix adds a `closing` flag set at the top of close(), checked in (a) monitor.onClose() to skip the reconnect setTimeout, and (b) reattachAll() to skip if a reconnect was already in flight when close() landed. This is the correct single-guard-on-the-shared-path fix, not a symptom patch.\n\nThree gates run independently (not trusting the report):\n- npm test \u2192 40 files / 359 tests, exit 0. The previously-hanging events-hub suite now completes in ~6s with no hook timeout.\n- npm run lint:styles \u2192 exit 0.\n- npx tsc --noEmit \u2192 exit 0.\n\nTest-quality check: test/events-hub.test.ts creates a real daemon + real hub per test, calls hub.close() in finally, and daemon.close() in afterAll. Reverting the `closing` flag reintroduces the hang \u2014 it is a genuine regression guard, not a vacuous test.\n\nCleanliness: daemon/ is fully clean (git status --porcelain empty) \u2014 the debug probe the report mentioned was fully reverted, no residual change. Commit b53019d touches exactly server/events-hub.ts, no unrelated files swept in, no working-tree damage. The pre-existing docs/todo/2026-07-10-subagent-viewer.md was committed separately (e48daff), not folded into the fix. The spec doc docs/todo/2026-07-10-customizations-browser.md is already marked \"IMPLEMENTED 2026-07-10\" (Task 8 Step 3 satisfied via the earlier efcaac3 batch). All customizations feature files from Tasks 2-7 exist and their 22 tests pass.\n\nNot pushed (correct \u2014 awaits explicit go), no AI attribution on the commit."
+   }
+  ]
+ },
+ "agentCount": 20,
+ "logs": [
+  "Starting Task 1: Codex schema discovery",
+  "Starting Task 2: Shared types + scan helpers + claude scanners",
+  "Task 2 rejected round 1: REJECT \u2014 commit-hygiene defect (not a code defect). Task 2's actual deliverable is correct: server/lib/providers/customizations.ts matches the plan's Interfaces block exactly (CustomizationScope/Item/",
+  "Starting Task 3: Codex scanners (per Task 1 findings)",
+  "Starting Task 4: GET /api/customizations route",
+  "Starting Task 5: Hidden projects \u2014 config + reducer + rail filter",
+  "Starting Task 6: Modal shell + Overview + section views",
+  "Starting Task 7: Projects section + per-project entry point",
+  "Starting Task 8: Acceptance pass",
+  "Task 8 rejected round 1: Task 8 (Acceptance pass) is REJECTED \u2014 not because the customizations feature is wrong (it is verified complete and correct), but because the acceptance gate itself is red. Gate criterion #3 is litera"
+ ],
+ "durationMs": 7406769,
+ "summary": "Execute docs/plans/2026-07-10-customizations-browser.md \u2014 sonnet implementers, opus overseers, task-by-task",
+ "workflowName": "customizations-v1-build",
+ "status": "completed",
+ "startTime": 1783702036786,
+ "phases": [
+  {
+   "title": "Task 1: Codex discovery"
+  },
+  {
+   "title": "Task 2: Types + claude scanners"
+  },
+  {
+   "title": "Task 3: Codex scanners"
+  },
+  {
+   "title": "Task 4: Route"
+  },
+  {
+   "title": "Task 5: Hidden projects"
+  },
+  {
+   "title": "Task 6: Modal shell + sections"
+  },
+  {
+   "title": "Task 7: Projects section + entries"
+  },
+  {
+   "title": "Task 8: Acceptance"
+  }
+ ],
+ "defaultModel": "claude-fable-5",
+ "workflowProgress": [
+  {
+   "type": "workflow_phase",
+   "index": 1,
+   "title": "Task 1: Codex discovery"
+  },
+  {
+   "type": "workflow_phase",
+   "index": 2,
+   "title": "Task 2: Types + claude scanners"
+  },
+  {
+   "type": "workflow_phase",
+   "index": 3,
+   "title": "Task 3: Codex scanners"
+  },
+  {
+   "type": "workflow_phase",
+   "index": 4,
+   "title": "Task 4: Route"
+  },
+  {
+   "type": "workflow_phase",
+   "index": 5,
+   "title": "Task 5: Hidden projects"
+  },
+  {
+   "type": "workflow_phase",
+   "index": 6,
+   "title": "Task 6: Modal shell + sections"
+  },
+  {
+   "type": "workflow_phase",
+   "index": 7,
+   "title": "Task 7: Projects section + entries"
+  },
+  {
+   "type": "workflow_phase",
+   "index": 8,
+   "title": "Task 8: Acceptance"
+  },
+  {
+   "type": "workflow_agent",
+   "index": 1,
+   "label": "impl:t1:r1",
+   "phaseIndex": 1,
+   "phaseTitle": "Task 1: Codex discovery",
+   "agentId": "a15a679e3d250c5d6",
+   "model": "claude-sonnet-5",
+   "state": "done",
+   "startedAt": 1783702039865,
+   "queuedAt": 1783702036808,
+   "attempt": 1,
+   "lastToolName": "StructuredOutput",
+   "lastToolSummary": "Task 1 (Codex schema discovery, recon-only) complete. Inspe\u2026",
+   "promptPreview": "You are the SONNET IMPLEMENTER for \"Task 1: Codex schema discovery\" of the customizations-browser v1 plan.\n\nRead /Users/blakestagner/Desktop/seshmux/docs/plans/2026-07-10-customizations-browser.md in  \u2026[redacted]",
+   "lastProgressAt": 1783702256390,
+   "tokens": 77400,
+   "toolCalls": 19,
+   "durationMs": 216524,
+   "resultPreview": "{\"summary\":\"Task 1 (Codex schema discovery, recon-only) complete. Inspected the real ~/.codex/ on this machine and wrote findings to docs/plans/2026-07-10-codex-customizations-discovery.md, committed  \u2026[redacted]"
+  },
+  {
+   "type": "workflow_agent",
+   "index": 2,
+   "label": "oversee:t1:r1",
+   "phaseIndex": 1,
+   "phaseTitle": "Task 1: Codex discovery",
+   "agentId": "ad65e05851b59c758",
+   "model": "claude-opus-4-8[1m]",
+   "state": "done",
+   "startedAt": 1783702260144,
+   "queuedAt": 1783702258579,
+   "attempt": 1,
+   "lastToolName": "StructuredOutput",
+   "lastToolSummary": "APPROVED. Task 1 (Codex schema discovery, recon-only) is co\u2026",
+   "promptPreview": "You are the OPUS OVERSEER for \"Task 1: Codex schema discovery\" of the customizations-browser v1 plan (round 1).\n\nImplementer report: {\"summary\":\"Task 1 (Codex schema discovery, recon-only) complete. I \u2026[redacted]",
+   "lastProgressAt": 1783702358753,
+   "tokens": 66559,
+   "toolCalls": 10,
+   "durationMs": 98608,
+   "resultPreview": "{\"approved\":true,\"summary\":\"APPROVED. Task 1 (Codex schema discovery, recon-only) is complete and accurate.\\n\\nVERIFICATION AGAINST REAL STORE \u2014 every claim in docs/plans/2026-07-10-codex-customizatio \u2026[redacted]"
+  },
+  {
+   "type": "workflow_agent",
+   "index": 3,
+   "label": "impl:t2:r1",
+   "phaseIndex": 2,
+   "phaseTitle": "Task 2: Types + claude scanners",
+   "agentId": "ad869033e7dd17092",
+   "model": "claude-sonnet-5",
+   "state": "done",
+   "startedAt": 1783702368561,
+   "queuedAt": 1783702363311,
+   "attempt": 1,
+   "lastToolName": "StructuredOutput",
+   "lastToolSummary": "Task 2 (Shared types + scan helpers + claude scanners) impl\u2026",
+   "promptPreview": "You are the SONNET IMPLEMENTER for \"Task 2: Shared types + scan helpers + claude scanners\" of the customizations-browser v1 plan.\n\nRead /Users/blakestagner/Desktop/seshmux/docs/plans/2026-07-10-custom \u2026[redacted]",
+   "lastProgressAt": 1783702661617,
+   "tokens": 85462,
+   "toolCalls": 23,
+   "durationMs": 293056,
+   "resultPreview": "{\"summary\":\"Task 2 (Shared types + scan helpers + claude scanners) implemented per spec, TDD-first, committed at cac9c34. Created server/lib/providers/customizations.ts (CustomizationScope/Item/Scanne \u2026[redacted]"
+  }
+ ],
+ "totalTokens": 1899041,
+ "totalToolCalls": 691
+}

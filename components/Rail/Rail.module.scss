@@ -1,0 +1,414 @@
+@use '../../styles/typography' as *;
+
+// Rail — redesign (__af_html.txt lines 47-94): flush 288px sidebar, --panel bg,
+// right border, no radius/shadow. (Replaces the aperture floating-card treatment.)
+
+.rail {
+  width: 288px;
+  flex: 0 0 288px;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.head {
+  padding: 18px 18px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.head h2 {
+  @include t-section;
+  margin: 0;
+}
+
+.scan {
+  @include t-meta;
+}
+
+.provFilter {
+  margin: 0 18px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  // Single-provider machine: the chips are gone (see provFilterOptions), so keep
+  // the filter/visibility buttons pinned right where the flex:1 chips used to
+  // push them. No-op when the chips are present.
+  justify-content: flex-end;
+}
+
+// Sidebar-wide session filter (mock lines 61-63), above the project list.
+.railFilter {
+  padding: 0 18px 10px;
+}
+
+// Provider filter pills (design-markup L52-58): loose text pills, gap 6, then
+// the filter/sort icon button pinned right. Not the boxed Segmented.
+.provChips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.chip {
+  @include t-rail-pill;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm); // 8px chip
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.chip:hover {
+  color: var(--text);
+}
+
+.chipActive {
+  @include t-rail-pill-active;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2px 10px 18px;
+}
+
+.empty {
+  @include t-body;
+  color: var(--text-faint);
+  padding: 24px 16px;
+  text-align: center;
+}
+
+.proj {
+  border-bottom: none;
+  position: relative;
+}
+
+.proj::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+.proj:last-child::after {
+  display: none;
+}
+
+.proj.dragging {
+  opacity: 0.45;
+}
+
+// Rendered only when the FilterMenu "Show Hidden Projects" bypass is on.
+.proj.hidden {
+  opacity: 0.5;
+}
+
+.proj.dragOver {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.projHead {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 11px 8px 6px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.headRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.projHead:hover {
+  background: var(--bg-hover);
+}
+
+.projHead:hover .revealOnHover {
+  opacity: 1;
+}
+
+.caret {
+  @include t-caret;
+  color: var(--text-faint);
+  width: 10px;
+  transition: transform 0.15s;
+  display: inline-block;
+}
+
+.caretOpen {
+  transform: rotate(90deg);
+}
+
+.name {
+  @include t-item-title;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.count {
+  @include t-meta;
+  min-width: 14px;
+  text-align: right;
+}
+
+.revealOnHover {
+  opacity: 0;
+}
+
+// Project actions get their OWN line under the name (hover-revealed) so the
+// name row never gets squeezed by inline buttons.
+.actionsRow {
+  display: none;
+  align-items: center;
+  justify-content: space-around;
+  padding: 3px 0 0 17px; // indent past the caret so buttons align with the name
+}
+
+.projHead:hover .actionsRow {
+  display: flex;
+}
+
+// Pinned pin stays visible (accent via IconButton active) so pinned projects
+// read at a glance.
+.pinnedAlways {
+  opacity: 1;
+}
+
+.sessions {
+  display: none;
+}
+
+.sessions.open {
+  display: block;
+}
+
+.filterWrap {
+  padding: 2px 8px 4px;
+}
+
+.sess {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 10px;
+  text-align: left;
+  border-radius: 9px;
+}
+
+.sess:hover {
+  background: var(--bg-hover);
+}
+
+// Active/selected row — accent-soft rounded fill (mock line 76: it.bg).
+.sess.selected {
+  background: var(--accent-soft);
+}
+
+.sessDot {
+  margin-top: 5px;
+}
+
+.sessInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+// Title row: title ellipsis + provider tag pinned upper-right (design L78-81).
+.sessTop {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.sessTitle {
+  @include t-row;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sessAgent {
+  @include t-rail-agent;
+  flex: 0 0 auto;
+}
+
+// Workspace session marker (Spec 1) — accent tint, never a status color.
+.workspaceMark {
+  @include t-mono-micro-strong;
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+// Provider identity color (design CL/CX) — identity, never status.
+.claude {
+  color: var(--claude);
+}
+
+.codex {
+  color: var(--codex);
+}
+
+// Second line: mono "branch · time" (design L82).
+.sessSub {
+  @include t-mono-micro;
+  color: var(--text-faint);
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.noMatch {
+  @include t-sub;
+  padding: 8px 10px 8px 27px;
+  font-style: italic;
+}
+
+.loadMore {
+  @include t-mono-micro;
+  display: block;
+  margin: 0;
+  padding: 8px 10px 2px 27px;
+  color: var(--text-faint);
+  text-align: left;
+  background: transparent;
+  border: none;
+}
+
+.loadMore:hover {
+  color: var(--accent);
+}
+
+// Open-sessions panel (VS Code Outline-style) pinned under the project list.
+// Height is inline (drag-resized); the project list above keeps flex:1 +
+// overflow-y so it stays fully scrollable however tall this gets.
+.openSessions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  position: relative;
+}
+
+// Border sits on the edge facing the project list (dock-side aware).
+.dockBottom {
+  border-top: 1px solid var(--border);
+}
+
+.dockTop {
+  border-bottom: 1px solid var(--border);
+}
+
+// The resize handle straddles whichever edge faces the project list.
+.sessionsHandle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 7px;
+  cursor: row-resize;
+  z-index: 1;
+}
+
+.handleTop {
+  top: -3px;
+}
+
+.handleBottom {
+  bottom: -3px;
+}
+
+// Wrapper so the whole projects half (head + filters + list) is ONE drop
+// zone — per-element highlights read as patchy padding/borders.
+.projectsSection {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+// Section drag drop-zone — mirrors GridView's .zone treatment.
+.sectionDropZone {
+  background: var(--accent-soft);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.sessionsHandle:hover {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.sessionsHead {
+  padding: 10px 18px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: grab;
+}
+
+.sessionsHead h2 {
+  @include t-section;
+  margin: 0;
+}
+
+.sessionsList {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 10px 10px;
+}
+
+.openTab {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  text-align: left;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.openTab:hover {
+  background: var(--bg-hover);
+}
+
+.openTab.selected {
+  background: var(--accent-soft);
+}
+
+.openTabLabel {
+  @include t-row;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

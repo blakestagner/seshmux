@@ -1,0 +1,190 @@
+// styles/typography.scss — the ONLY place text is styled.
+// 12 text-role mixins, values verbatim from plan Task 8.5. Component modules
+// `@use 'typography' as *;` and `@include t-*;` — never hand-write
+// font-size/font-weight/letter-spacing/text-transform in a component module.
+
+@mixin t-page-title { font-size: 18px; font-weight: 650; } // settings h1
+
+@mixin t-section {
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--text-faint);
+} // PROJECTS, ENVIRONMENT, rail head
+
+@mixin t-item-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+} // project names, transcript h1 scales up via t-heading
+
+@mixin t-heading { font-size: 16px; font-weight: 600; } // transcript title
+
+@mixin t-body {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+} // transcript messages, settings labels
+
+@mixin t-row { font-size: 12px; color: var(--text); } // session titles, tab labels
+
+@mixin t-sub { font-size: 11px; color: var(--text-faint); } // settings sublabels
+
+@mixin t-meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-faint);
+} // time/duration, counts, paths
+
+@mixin t-mono-data {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+} // ok-checks, tmux prefix
+
+@mixin t-mono-micro { font-family: var(--mono); font-size: 10.5px; } // ctx badge, load-more, rail meta
+@mixin t-mono-micro-strong { @include t-mono-micro; font-weight: 600; } // active raised-segment (rail provider filter)
+
+// kbd hint chip (design .search ⌘K chip, markup L25): mono 11px. Distinct from
+// t-meta (10px) — the chip reads a touch larger inside the search field.
+@mixin t-kbd { font-family: var(--mono); font-size: 11px; }
+
+// Terminal frame text — redesign (__af_html.txt lines 103, 160). Scoped to the
+// live-terminal frame so bumping them here can't drift the sidebar/badges that
+// share t-row / t-mono-micro. Tab weight flips 500→600 on the active tab.
+@mixin t-tab { font-size: 12.5px; font-weight: 500; } // inactive terminal tab
+@mixin t-tab-active { font-size: 12.5px; font-weight: 600; } // active terminal tab
+@mixin t-mono-statusbar { font-family: var(--mono); font-size: 11.5px; } // terminal bottom status bar
+@mixin t-mono-statusbar-strong { @include t-mono-statusbar; font-weight: 600; } // provider name segment
+
+@mixin t-stat {
+  font-size: 20px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+} // usage tiles
+
+@mixin t-role-tag {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+} // USER/ASSISTANT, NEEDS INPUT
+
+@mixin t-chip {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+} // link-chip (⇄ handoff / ⊙ review / ⚖ plan-off), mockup .link-chip
+
+// Card note (mockup .set-note): sits inside a t-section title but reverts
+// the uppercase/weight/tracking treatment. Not one of the 12 named roles —
+// a small reset paired with t-section — kept here so components never
+// hand-write these properties themselves.
+@mixin t-section-note {
+  @include t-sub;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+// Button primary variant (mockup .btn.primary) bolds its label.
+@mixin t-button-primary {
+  font-weight: 600;
+}
+
+// Logo wordmark + its square mark (redesign design-markup.html L18-19):
+// wordmark in SANS (Hanken) 15px/600 tight; mark glyph "s" 15px/700.
+@mixin t-logo {
+  font-family: var(--sans);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+@mixin t-logo-mark {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+// Disclosure caret (mockup .proj-caret, ~291). Decorative glyph, not prose —
+// still gated through a mixin per hard rule 1.
+@mixin t-caret {
+  font-size: 9px;
+}
+
+// Settings redesign (design-markup L216-256). Larger than the base roles —
+// scoped names so bumping them can't drift the rail/transcript that share
+// t-page-title / t-stat / t-body.
+@mixin t-settings-title { font-size: 23px; font-weight: 600; letter-spacing: -0.01em; } // Settings H1
+@mixin t-settings-row-name { font-size: 13.5px; font-weight: 500; color: var(--text); } // env row name
+@mixin t-settings-row-sub {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+} // env row sub (mono path/detail)
+@mixin t-settings-status { font-family: var(--mono); font-size: 12px; } // env right-status (color set in module)
+@mixin t-settings-stat { font-size: 24px; font-weight: 600; letter-spacing: -0.01em; } // usage stat value
+@mixin t-settings-stat-label { font-size: 11.5px; color: var(--text-dim); } // usage stat label
+@mixin t-settings-bar-name { font-size: 12.5px; color: var(--text); } // usage bar row label
+@mixin t-settings-bar-pct {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+} // usage bar right pct
+
+// Rail provider-filter pills (design-markup L52-55): sans 12px, 500 inactive /
+// 600 active. Loose text pills, not the boxed Segmented — color set in module.
+@mixin t-rail-pill { font-size: 12px; font-weight: 500; }
+@mixin t-rail-pill-active { font-size: 12px; font-weight: 600; }
+
+// Top-nav search magnifier glyph — decorative, sized independently of the
+// input text (user-requested 24px).
+@mixin t-search-glyph {
+  font-size: 24px;
+}
+
+// Rail session provider label (design-markup L80): the CLAUDE/CODEX tag in the
+// session title's upper-right — sans 8.5px/600 uppercase, letterspaced. Color
+// (--claude/--codex) set in the module.
+@mixin t-rail-agent {
+  font-size: 8.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+// Rendered-markdown blocks (customizations detail). Caps browser-default
+// heading scale — marked parses a frontmatter `---` fence as a setext h2,
+// which would otherwise render the whole block at 1.5em+.
+@mixin t-markdown {
+  @include t-body;
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 12px 0 6px;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  p {
+    margin: 6px 0;
+  }
+}
+
+// Modal-header glyph button (customizations ×) — larger than t-heading so the
+// close target reads clearly at the modal's top-right (user-requested 24px).
+@mixin t-glyph-lg {
+  font-size: 24px;
+}

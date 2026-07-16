@@ -1,0 +1,38 @@
+@use '../../styles/typography' as *;
+
+// Floating filter/sort menu (image ref). Anchored to the tab-row filter button,
+// drops down and to the LEFT so it stays inside the pane at the row's right end.
+
+.wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+// Surface + item visuals come from ui/Menu; this module only positions
+// (drops down and left-hugging the row's right end).
+.menu {
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 240px;
+}
+
+.itemLabel {
+  @include t-row;
+  flex: 1;
+  color: inherit;
+}
+
+.check {
+  @include t-row;
+  width: 14px;
+  flex: 0 0 14px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.chevron {
+  @include t-row;
+  color: var(--text-faint);
+}

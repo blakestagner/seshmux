@@ -1,0 +1,15 @@
+node_modules/
+.next/
+next-env.d.ts
+CLAUDE.local.md
+.seshmux/
+*.log
+.DS_Store
+*.tgz
+tsconfig.tsbuildinfo
+.playwright-mcp/
+docs/local/
+
+# Claude Code scheduler runtime state (session id + pid) — regenerated per session,
+# never shared. Was committed by accident in the initial commit.
+.claude/scheduled_tasks.lock

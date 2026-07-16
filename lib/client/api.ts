@@ -1,0 +1,532 @@
+// Thin typed fetch helpers for the REST API (Task 7). Relative paths only —
+// server and client share an origin, so no base URL config needed.
+import type {
+  Project,
+  SessionMeta,
+  Config,
+  ProviderId,
+  CustomizationItem,
+  SubagentNode,
+  SubagentDetail,
+} from './types';
+
+// Per-process auth token embedded in the served HTML (Task 6.5). Sent on every /api/*
+// call; the server 401s without it. WS clients read the same global for their query param.
+declare global {
+  interface Window {
+    __SESHMUX_TOKEN?: string;
+  }
+}
+
+function authToken(): string {
+  return typeof window !== 'undefined' ? window.__SESHMUX_TOKEN ?? '' : '';
+}
+
+async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    ...init,
+    headers: {
+      // Only claim a JSON body when one exists — Fastify 400s an
+      // application/json request whose body is empty (body-less POSTs).
+      ...(init?.body ? { 'content-type': 'application/json' } : {}),
+      'x-seshmux-token': authToken(),
+      ...init?.headers,
+    },
+  });
+  if (!res.ok) {
+    // Surface the server's {error} message when present — callers show it to the user.
+    const body = await res.json().catch(() => null);
+    const msg = body && typeof body.error === 'string' ? body.error : `${path} -> ${res.status}`;
+    throw new Error(msg);
+  }
+  return res.json() as Promise<T>;
+}
+
+export { authToken };
+
+export function getProjects(): Promise<Project[]> {
+  return req('/api/projects');
+}
+
+/** Deep width-correct scrollback for a live PTY (tmux capture-pane via the
+ *  daemon's additive history RPC). A daemon predating the method answers
+ *  200 + { supported: false } (not an error — see routes/term.ts); callers
+ *  degrade to the ring buffer. Throws only on real failures. */
+export function getTermHistory(ptyId: string, lines = 2000): Promise<{ supported: boolean; data: string }> {
+  return req(`/api/term/${encodeURIComponent(ptyId)}/history?lines=${lines}`);
+}
+
+export function getSessions(
+  projectId: string,
+  opts?: { before?: number; limit?: number; q?: string },
+): Promise<SessionMeta[]> {
+  const qs = new URLSearchParams();
+  if (opts?.before != null) qs.set('before', String(opts.before));
+  if (opts?.limit != null) qs.set('limit', String(opts.limit));
+  if (opts?.q) qs.set('q', opts.q);
+  const suffix = qs.toString() ? `?${qs}` : '';
+  return req(`/api/projects/${projectId}/sessions${suffix}`);
+}
+
+export type Msg = { role: 'user' | 'assistant'; text: string; tools: { name: string; input: string; output: string }[]; ts: number };
+export type Ctx = { tokens: number; window: number; pct: number; model: string } | null;
+
+// The route returns `meta` (the owning SessionMeta) alongside msgs/ctx — the URL
+// carries no provider, so the server resolves it and hands back the full meta
+// for the transcript header (title/branch/provider chips).
+export function getTranscript(
+  projectId: string,
+  sessionId: string,
+): Promise<{ msgs: Msg[]; ctx: Ctx; meta: SessionMeta; truncated?: boolean }> {
+  return req(`/api/transcript/${projectId}/${sessionId}`);
+}
+
+export type SearchHit = { project: string; provider: ProviderId; sessionId: string; title: string; snippet: string; ts: number };
+
+export function search(q: string): Promise<SearchHit[]> {
+  return req(`/api/search?q=${encodeURIComponent(q)}`);
+}
+
+export function getEnv(): Promise<unknown> {
+  return req('/api/env');
+}
+
+// Per-provider argv preview + capability flag for the New-session modal (hard rule 3 — the
+// UI never hardcodes binary names/flags; the server derives this from provider.commands).
+// Separate typed getter (rather than tightening getEnv's return) so the two existing
+// getEnv() call sites — each casting to their OWN narrower local EnvResponse shape — don't
+// have to widen their casts for a field they don't use.
+export type CommandPreview = { fresh: string; continue: string; plan?: string; hasPlan: boolean };
+
+export function getEnvCommands(): Promise<Record<ProviderId, CommandPreview>> {
+  return req('/api/env').then((e) => (e as { commands?: Record<ProviderId, CommandPreview> }).commands ?? ({} as Record<ProviderId, CommandPreview>));
+}
+
+// Task 5 Step 1b: per-provider claude-swarm teammate backend — the Teams entry
+// points gate on this (only 'tmux'/'iterm2' produce attachable member jsonls).
+export function getEnvTeams(): Promise<Partial<Record<ProviderId, { teammateMode: string | null }>>> {
+  return req('/api/env').then(
+    (e) => (e as { teams?: Partial<Record<ProviderId, { teammateMode: string | null }>> }).teams ?? {},
+  );
+}
+
+export function getUsage(days = 30): Promise<unknown> {
+  return req(`/api/usage?days=${days}`);
+}
+
+export function getConfig(): Promise<Config> {
+  return req('/api/config');
+}
+
+export function putConfig(cfg: Config): Promise<Config> {
+  return req('/api/config', { method: 'PUT', body: JSON.stringify(cfg) });
+}
+
+// ── Terminal sessions (Task 13/14) ──────────────────────────────────────────
+export type SessionMode = 'new' | 'continue' | 'plan';
+
+export type TabMeta = {
+  ptyId: string;
+  provider: ProviderId;
+  projectPath: string;
+  mode: string;
+  tmux: boolean;
+  linked?: boolean;
+  linkedKind?: 'handoff' | 'review';
+  linkSrc?: string;
+};
+
+export function startSession(opts: {
+  projectPath: string;
+  provider: ProviderId;
+  mode: SessionMode;
+  resumeId?: string;
+  firstPrompt?: string;
+}): Promise<{ ptyId: string; tabMeta: TabMeta }> {
+  return req('/api/sessions/start', { method: 'POST', body: JSON.stringify(opts) });
+}
+
+// projectId = the OWNING project's id (a worktree PTY folds to its parent project) —
+// prefer it over matching project.path === cwd, which misses folded worktrees.
+export type LiveSession = { ptyId: string; cwd: string; tmuxName: string | null; projectId?: string; sessionId?: string };
+
+export function getLive(): Promise<{ live: LiveSession[] }> {
+  return req('/api/sessions/live');
+}
+
+// ── Agent bridge (Task 16.5 handoff/review, 16.8 plan-off) ──────────────────
+// Signatures per lead-data's route contracts (server/routes/bridge.ts). Both
+// handoff/review spawn the opposite-provider session seeded with a brief/diff.
+export type BridgeStart = { ptyId: string; tabMeta: TabMeta; provider: ProviderId };
+
+export function bridgeHandoff(projectId: string, sessionId: string): Promise<BridgeStart> {
+  return req('/api/bridge/handoff', { method: 'POST', body: JSON.stringify({ projectId, sessionId }) });
+}
+
+export function bridgeReview(projectId: string, sessionId: string): Promise<BridgeStart> {
+  return req('/api/bridge/review', { method: 'POST', body: JSON.stringify({ projectId, sessionId }) });
+}
+
+// PlanResult/PlanoffResult mirror server/lib/bridge/planoff.ts.
+export type PlanResult = { provider: ProviderId; ok: boolean; plan: string; error?: string; durationMs: number };
+export type PlanoffResult = { claude: PlanResult; codex: PlanResult };
+
+// sessionId is optional: with one, the server runs plan-off in that session's own
+// cwd (a folded worktree); without, it runs at the project repo root.
+export function bridgePlanoff(projectId: string, task: string, sessionId?: string): Promise<PlanoffResult> {
+  return req('/api/bridge/planoff', { method: 'POST', body: JSON.stringify({ projectId, sessionId, task }) });
+}
+
+export function bridgePlanoffPick(
+  projectId: string,
+  provider: ProviderId,
+  task: string,
+  planoff: PlanoffResult,
+  sessionId?: string,
+): Promise<BridgeStart> {
+  return req('/api/bridge/planoff/pick', {
+    method: 'POST',
+    body: JSON.stringify({ projectId, sessionId, provider, task, planoff }),
+  });
+}
+
+// MCP bridge registration (Task 16.7 — Settings "Agent bridge" card Register button).
+// /api/env returns bridge:{ claude:{registered}, codex:{registered} }; this POST writes
+// the agent config (explicit, never silent).
+export function registerBridge(): Promise<{ claude: boolean; codex: boolean }> {
+  return req('/api/bridge/register', { method: 'POST' });
+}
+
+// ── Status hooks (Spec 2 — Settings "Deep agent integration" toggle) ────────
+export interface HooksInstallState {
+  available: boolean;
+  installed: boolean;
+  upToDate: boolean;
+  version: number | null;
+}
+export function getHooksStatus(): Promise<Record<ProviderId, HooksInstallState>> {
+  return req('/api/hooks/status');
+}
+export function installStatusHooks(provider: ProviderId): Promise<HooksInstallState> {
+  return req('/api/hooks/install', { method: 'POST', body: JSON.stringify({ provider }) });
+}
+export function uninstallStatusHooks(provider: ProviderId): Promise<HooksInstallState> {
+  return req('/api/hooks/uninstall', { method: 'POST', body: JSON.stringify({ provider }) });
+}
+
+// Approve/deny a pending MCP bridge cross-agent call (Task 16.7). Canonical path
+// is /api/bridge/approval/:requestId. 404 = the request already timed out (server
+// auto-denied) → the UI treats it as "too late, dismiss".
+export function resolveApproval(requestId: string, approved: boolean): Promise<void> {
+  return req(`/api/bridge/approval/${requestId}`, { method: 'POST', body: JSON.stringify({ approved }) });
+}
+
+// ── Shared scratchpad (Task 16.6) ───────────────────────────────────────────
+export function getScratchpad(projectId: string): Promise<{ content: string }> {
+  return req(`/api/scratchpad/${projectId}`);
+}
+
+export function putScratchpad(projectId: string, content: string): Promise<{ ok: boolean; content: string }> {
+  return req(`/api/scratchpad/${projectId}`, { method: 'PUT', body: JSON.stringify({ content }) });
+}
+// ── Subagent viewer ─────────────────────────────────────────────────────────
+// GET the flat subagent node tree for a session (empty for codex / no subagents).
+export function getSubagents(project: string, session: string): Promise<{ nodes: SubagentNode[] }> {
+  const qs = new URLSearchParams({ project, session });
+  return req(`/api/subagents?${qs}`);
+}
+
+// GET one subagent's transcript detail (prompt/activity/outcome). Throws (404) if unknown.
+export function getSubagentDetail(
+  project: string,
+  session: string,
+  agent: string,
+): Promise<SubagentDetail> {
+  const qs = new URLSearchParams({ project, session, agent });
+  return req(`/api/subagents/detail?${qs}`);
+}
+
+// ── macOS notification (Task 15) ────────────────────────────────────────────
+// Server fires osascript when platform is darwin + config allows; returns
+// delivered:false (never errors) otherwise. Injection-safe server-side, so pass
+// raw title/body. Call unconditionally when a session goes waiting + doc hidden.
+export function notify(title: string, body: string): Promise<{ ok: boolean; delivered: boolean; reason?: string }> {
+  return req('/api/notify', { method: 'POST', body: JSON.stringify({ title, body }) });
+}
+
+// ── Self-update (Task 18) ───────────────────────────────────────────────────
+export function checkUpdate(): Promise<{
+  current: string;
+  latest: string;
+  updateAvailable: boolean;
+  installMethod: 'global' | 'npx' | 'local';
+}> {
+  return req('/api/update/check');
+}
+
+export function applyUpdate(): Promise<{ ok: boolean; log: string; previous: string }> {
+  return req('/api/update/apply', { method: 'POST' });
+}
+
+// ── Workspaces (v1.x Spec 1) ─────────────────────────────────────────────────
+// One-click isolated git worktree + branch per session. Create reuses the
+// SAME startSession result shape (ptyId/tabMeta) — server-side it flows
+// through the shared startSession(), never a second spawn path.
+export type WorkspaceRecord = { dir: string; branch: string; project: string; createdAt: number; filesChanged: number };
+
+export function createWorkspace(
+  projectId: string,
+  provider?: ProviderId,
+  mode?: SessionMode,
+): Promise<{ ptyId: string; tabMeta: TabMeta; workspace: { dir: string; branch: string; project: string } }> {
+  return req('/api/workspaces', { method: 'POST', body: JSON.stringify({ projectId, provider, mode }) });
+}
+
+export function listWorkspaces(projectId: string): Promise<WorkspaceRecord[]> {
+  return req(`/api/workspaces?project=${encodeURIComponent(projectId)}`);
+}
+
+export type WorkspaceFinishMode = 'merge' | 'keep' | 'discard';
+
+// force is discard-only — set true after the caller's own typed "discard"
+// confirm. The server independently refuses a dirty discard without it.
+export function finishWorkspace(dir: string, mode: WorkspaceFinishMode, force = false): Promise<{ ok: boolean }> {
+  return req('/api/workspaces', { method: 'DELETE', body: JSON.stringify({ dir, mode, force }) });
+}
+
+// ── Customizations browser (v1) ─────────────────────────────────────────────
+export interface CustomizationsPayload {
+  agents: CustomizationItem[];
+  skills: CustomizationItem[];
+  instructions: CustomizationItem[];
+  hooks: CustomizationItem[];
+  mcp: CustomizationItem[];
+}
+
+export function getCustomizations(scope: 'global' | 'project', projectId?: string): Promise<CustomizationsPayload> {
+  const q = scope === 'project' ? `?scope=project&project=${encodeURIComponent(projectId!)}` : '?scope=global';
+  return req(`/api/customizations${q}`);
+}
+
+// Create/overwrite one agent or skill file (Task 4 editor pane). Claude-only —
+// the server enforces the name regex ([a-z0-9-]{1,64}) too, but the client
+// gates Save on the same pattern so bad names never round-trip.
+export function putCustomizationItem(body: {
+  projectId: string;
+  provider: ProviderId;
+  section: 'agents' | 'skills';
+  name: string;
+  content: string;
+}): Promise<{ ok: true; filePath: string }> {
+  return req('/api/customizations/item', { method: 'PUT', body: JSON.stringify(body) });
+}
+
+// AI-polish a draft agent/skill body via the given provider's CLI (Task 3 route).
+export function assistCustomization(body: {
+  projectId: string;
+  provider: ProviderId;
+  section: 'agents' | 'skills';
+  name: string;
+  draft: string;
+}): Promise<{ text: string }> {
+  return req('/api/customizations/assist', { method: 'POST', body: JSON.stringify(body) });
+}
+
+// ── Marketplace (Task 5 — community browse/install + claude plugin marketplace) ──
+export type MarketplaceItem = { path: string; name: string; description: string; section: 'agents' | 'skills' };
+export type MarketplaceFile = { path: string; content: string };
+// Mirrors server/lib/marketplace-scan.ts ScanWarning — advisory static-scan hits.
+export type MarketplaceWarning = { path: string; line: number; rule: string; excerpt: string };
+export type MarketplaceSource = { source: string; curated: boolean };
+// Raw entries from `claude plugin list --available --json` / `marketplace list --json`
+// (see server/routes/marketplace.ts) — shape beyond `name` is not our contract to own.
+export type MarketplacePlugin = { pluginId?: string; name: string; description?: string; [k: string]: unknown };
+export type MarketplaceInfo = { name?: string; [k: string]: unknown };
+// One entry of `claude plugin list --available --json`'s `installed` array.
+export type InstalledMarketplacePlugin = {
+  id: string;
+  version?: string;
+  scope?: string;
+  enabled?: boolean;
+  installPath?: string;
+  installedAt?: string;
+  lastUpdated?: string;
+  [k: string]: unknown;
+};
+
+export function getMarketplaceSources(): Promise<{ sources: MarketplaceSource[] }> {
+  return req('/api/marketplace/sources');
+}
+
+// Read-modify-write settings.marketplaceSources through the existing config PUT
+// (mirrors Settings.tsx's persistSetting — no dedicated marketplace-sources route).
+export function addMarketplaceSource(cfg: Config, source: string): Promise<Config> {
+  const settings = cfg.settings ?? {};
+  const existing = Array.isArray(settings.marketplaceSources)
+    ? (settings.marketplaceSources as string[])
+    : [];
+  const next: Config = { ...cfg, settings: { ...settings, marketplaceSources: [...new Set([...existing, source])] } };
+  return putConfig(next);
+}
+
+export function browseMarketplace(source: string): Promise<{ items: MarketplaceItem[]; sha: string; curated: boolean }> {
+  return req(`/api/marketplace/browse?source=${encodeURIComponent(source)}`);
+}
+
+// sha pins to the exact commit browse resolved (Task 1) — a stale-sha 502 means
+// the source moved since browse; caller's error copy should suggest re-browsing.
+export function getMarketplaceItem(
+  source: string,
+  path: string,
+  sha: string,
+): Promise<{ files: MarketplaceFile[]; warnings: MarketplaceWarning[] }> {
+  return req(
+    `/api/marketplace/item?source=${encodeURIComponent(source)}&path=${encodeURIComponent(path)}&sha=${encodeURIComponent(sha)}`,
+  );
+}
+
+export function installMarketplaceItem(body: {
+  // Optional: user-scope installs are project-independent (global modal).
+  projectId?: string;
+  source: string;
+  path: string;
+  section: 'agents' | 'skills';
+  name: string;
+  target?: 'project' | 'user';
+  sha: string;
+}): Promise<{ ok: true; filePaths: string[] }> {
+  return req('/api/marketplace/install', { method: 'POST', body: JSON.stringify(body) });
+}
+
+// Opt-in Layer 3 AI review of a sha-pinned item (Task 4 route). Verdict is
+// cached server-side (sha-pinned content is immutable) — `cached: true` means
+// no fresh CLI run happened. Strictly click-triggered from the UI; never call
+// this automatically (it spends provider tokens).
+export function runSafetyCheck(body: {
+  source: string;
+  sha: string;
+  path: string;
+  provider: ProviderId;
+  projectId: string;
+}): Promise<{ verdict: 'ok' | 'caution' | 'danger'; concerns: string[]; cached: boolean }> {
+  return req('/api/marketplace/safety-check', { method: 'POST', body: JSON.stringify(body) });
+}
+
+export function getMarketplacePlugins(
+  projectId?: string,
+): Promise<{
+  supported: boolean;
+  plugins?: MarketplacePlugin[];
+  marketplaces?: MarketplaceInfo[];
+  installed?: InstalledMarketplacePlugin[];
+}> {
+  const q = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+  return req(`/api/marketplace/plugins${q}`);
+}
+
+export function installMarketplacePlugin(body: {
+  // Optional: user-scope installs are project-independent (global modal).
+  projectId?: string;
+  plugin: string;
+  scope: 'user' | 'project';
+}): Promise<{ ok: true; output: string }> {
+  return req('/api/marketplace/plugins/install', { method: 'POST', body: JSON.stringify(body) });
+}
+
+export function uninstallMarketplacePlugin(body: {
+  // Optional: user-scope uninstalls are project-independent (global modal).
+  projectId?: string;
+  plugin: string;
+  scope: 'user' | 'project';
+}): Promise<{ ok: true; output: string }> {
+  return req('/api/marketplace/plugins/uninstall', { method: 'POST', body: JSON.stringify(body) });
+}
+
+// ── Teams (v1, Task 5) ───────────────────────────────────────────────────────
+export type TeamMemberTemplate = { name: string; role: string; model?: 'opus' | 'sonnet' | 'haiku' };
+export type TeamTemplate = { name: string; members: TeamMemberTemplate[]; createdAt: number };
+export type TeamDef = { name: string; members: TeamMemberTemplate[] };
+
+export function getTeamTemplates(): Promise<TeamTemplate[]> {
+  return req('/api/teams');
+}
+
+export type TeamStartPayload = {
+  projectId: string;
+  template?: TeamDef;
+  inline?: TeamDef;
+  task: string;
+  saveTemplate?: boolean;
+};
+
+export function startTeam(payload: TeamStartPayload): Promise<{ tabMeta: TabMeta }> {
+  return req('/api/teams/start', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+// Mirror of server/lib/store/teams-store.ts TeamMemberInfo/TeamInfo — client never
+// imports server code (hard rule 3), re-declared here same as Project/SessionMeta.
+// NOTE: no token/usage field exists on TeamMemberInfo server-side (Task 6 finding) —
+// the roster shows "—" for token count rather than inventing a number or adding a
+// heavy new per-member parse.
+export type TeamMemberInfo = {
+  name: string;
+  agentType?: string;
+  model?: string;
+  color?: string;
+  role?: string;
+  backendType?: 'tmux' | 'in-process';
+  isActive?: boolean;
+  joinedAt: number;
+  sessionId: string | null;
+};
+
+export type TeamInfo = {
+  teamName: string;
+  leadSessionId: string;
+  createdAt: number;
+  members: TeamMemberInfo[];
+};
+
+// GET /api/teams/members?leadSession=<id> — resolves + arms the live roster watch
+// (Task 4) on first call for this team. Resolves to null when the session isn't a
+// team lead (or its team dir is gone). That's the normal answer for nearly every
+// session — it's a probe, not a resource fetch — so the server answers 200 + null
+// rather than 404, which used to log a failed request on every page load.
+export function getTeamMembers(leadSessionId: string): Promise<TeamInfo | null> {
+  return req(`/api/teams/members?leadSession=${encodeURIComponent(leadSessionId)}`);
+}
+
+// approx: the count is a capped lower bound (huge untracked file).
+export type FileChange = { path: string; added: number; removed: number; status: string; approx?: boolean };
+// degraded: git failed server-side — a zeros payload; keep your last good value.
+export type GitChanges = { added: number; removed: number; files: FileChange[]; tree?: string[]; degraded?: boolean };
+
+// Branch line stats vs the repo's default branch (committed + dirty + untracked).
+// tree=true adds the full tracked file list for the changes panel.
+export function getGitChanges(projectId: string, branch?: string | null, tree?: boolean): Promise<GitChanges> {
+  const params = new URLSearchParams({ project: projectId });
+  if (branch) params.set('branch', branch);
+  if (tree) params.set('tree', '1');
+  return req(`/api/git/changes?${params}`);
+}
+
+// Unified diff for one changed file — the changes panel's click-through view.
+export function getGitFileDiff(
+  projectId: string,
+  branch: string | null | undefined,
+  path: string,
+): Promise<{ diff: string; truncated?: boolean }> {
+  const params = new URLSearchParams({ project: projectId, path });
+  if (branch) params.set('branch', branch);
+  return req(`/api/git/changes/file?${params}`);
+}
+
+export function getGitFile(
+  projectId: string,
+  branch: string | null | undefined,
+  path: string,
+): Promise<{ content?: string; truncated?: boolean; binary?: boolean }> {
+  const params = new URLSearchParams({ project: projectId, path });
+  if (branch) params.set('branch', branch);
+  return req(`/api/git/file?${params}`);
+}

@@ -1,0 +1,11 @@
+{
+  "provider": "claude",
+  "version": 1,
+  "waiting": [
+    "1\\.\\s*Yes",
+    "Do you want to \\w+",
+    "Esc to cancel",
+    "Waiting for your input"
+  ],
+  "notes": "strings are RegExp sources, compiled with the 'i' flag at load. 'waiting' maps to AgentProvider.needsInputPatterns (see server/lib/needs-input.ts — 'working' detection is provider-agnostic and lives there, not here)."
+}

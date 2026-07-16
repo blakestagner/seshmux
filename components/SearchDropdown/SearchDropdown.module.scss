@@ -1,0 +1,61 @@
+@use '../../styles/typography' as *;
+
+// SearchDropdown — mockup .search-results / .sr-group / .sr-item (~179-199).
+
+.results {
+  display: none;
+  position: absolute;
+  top: 34px;
+  left: 0;
+  width: 560px;
+  max-height: 420px;
+  overflow-y: auto;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-dropdown), var(--shadow);
+  z-index: 200;
+}
+
+.open {
+  display: block;
+}
+
+.group {
+  @include t-section;
+  padding: 8px 12px 4px;
+}
+
+.item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 0;
+}
+
+.item:hover {
+  background: var(--bg-hover);
+}
+
+.title {
+  @include t-row;
+  margin-bottom: 2px;
+}
+
+.title mark {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.meta {
+  @include t-meta;
+}
+
+.empty {
+  @include t-body;
+  padding: 14px 12px;
+  color: var(--text-faint);
+}

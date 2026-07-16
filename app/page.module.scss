@@ -1,0 +1,189 @@
+@use '../styles/typography' as *;
+
+// App shell — redesign (__af_html.txt lines 16-45): flush layout, no floating
+// cards. Topbar + sidebar + main sit edge-to-edge separated by borders, not
+// gaps. (Replaces the earlier aperture floating-card gap/padding treatment.)
+
+.shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+// Honest, no-frills notice while the server auto-restarts (BUG-3) — no
+// progress bar, no timer guess, just says what's happening. Top strip so it
+// never collides with the bottom-right Toast.
+.restartBanner {
+  @include t-row;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 500;
+  text-align: center;
+  padding: 6px 12px;
+  background: var(--waiting);
+  color: var(--accent-contrast);
+}
+
+.app {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+// Sits between Rail and main as its own flex item — Rail has overflow:hidden
+// so an absolutely-positioned handle inside it would get clipped.
+.railHandle {
+  flex: 0 0 6px;
+  cursor: col-resize;
+  position: relative;
+  z-index: 5;
+  background: transparent;
+}
+
+.railHandle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--border-bright);
+}
+
+.railHandle:hover {
+  background: var(--accent-soft);
+}
+
+.railHandle:hover::before {
+  background: var(--accent);
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+}
+
+.pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+// Linked-pair split (tabs view): two panes side by side, 50/50, full height.
+// Row (not column like .pane) — the accent top border echoes the linked-pair
+// accent bar carried by the tab strip.
+.split {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  border-top: 2px solid var(--accent);
+}
+
+.splitSide {
+  flex: 1 1 0;
+  min-width: 0; // load-bearing: without it xterm content blows out the 50/50
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.splitSideRight {
+  border-left: 1px solid var(--border);
+}
+
+// A term tab renders inside .split even with no viewer (so opening the viewer never
+// remounts the terminal). Solo = no viewer → drop the accent divider so a plain
+// terminal reads normally; the bar returns when the viewer pane mounts.
+.splitSolo {
+  border-top: none;
+}
+
+// Term↔viewer drag handle (Task 2) — analogous to .railHandle. Only rendered
+// when the viewer pane is open; sits between the two .splitSides.
+.splitHandle {
+  flex: 0 0 6px;
+  cursor: col-resize;
+  position: relative;
+  z-index: 5;
+  background: transparent;
+}
+
+.splitHandle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--border-bright);
+}
+
+.splitHandle:hover {
+  background: var(--accent-soft);
+}
+
+.splitHandle:hover::before {
+  background: var(--accent);
+}
+
+.paneEmpty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mainPlaceholder {
+  @include t-body;
+  color: var(--text-faint);
+}
+
+// Setup gate — no mockup precedent (Task 9 explicit deliverable, not a port).
+.setupWrap {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.setupCard {
+  max-width: 480px;
+  width: 100%;
+}
+
+.setupBody {
+  padding: 4px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.setupIntro {
+  @include t-body;
+}
+
+.installBlock {
+  @include t-mono-data;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  white-space: pre-wrap;
+}
+
+.setupActions {
+  display: flex;
+  justify-content: flex-end;
+}

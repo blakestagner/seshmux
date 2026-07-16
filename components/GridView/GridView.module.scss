@@ -1,0 +1,345 @@
+@use '../../styles/typography' as *;
+
+// View-level wrapper: toolbar row + the tiled workspace below it.
+.view {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.toolbar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 40px;
+    padding: 0 14px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+}
+
+.toolbarInfo {
+    @include t-mono-micro;
+    color: var(--text-faint);
+}
+
+.toolbarActions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.layoutsWrap {
+    position: relative;
+}
+
+.layoutsMenu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    z-index: 20;
+    min-width: 180px;
+    padding: 4px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-bright);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-dropdown);
+}
+
+.layoutRow {
+    display: flex;
+    align-items: center;
+}
+
+.layoutApply {
+    @include t-body;
+    flex: 1;
+    text-align: left;
+    padding: 6px 8px;
+    border-radius: var(--radius-xs);
+
+    &:hover {
+        background: var(--bg-hover);
+    }
+}
+
+.layoutDel {
+    @include t-mono-micro;
+    color: var(--text-faint);
+    padding: 4px 8px;
+
+    &:hover {
+        color: var(--hot);
+    }
+}
+
+.layoutSave {
+    @include t-meta;
+    width: 100%;
+    text-align: left;
+    padding: 6px 8px;
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+
+    &:hover {
+        background: var(--bg-hover);
+    }
+}
+
+// Collapsed (not just transparent) when idle — a reserved-width ghost reads
+// as a hole between the needs-input flag and the provider icon.
+.headBtns {
+    display: none;
+
+    .panel:hover & {
+        display: inline-flex;
+    }
+}
+
+// Tiled workspace (design-3): fixed viewport, absolutely positioned panels
+// computed from the split tree. No scrolling — everything always visible.
+.workspace {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    background: var(--bg);
+    overflow: hidden;
+}
+
+.panel {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    overflow: hidden;
+    transition:
+        left 0.17s ease-out,
+        top 0.17s ease-out,
+        width 0.17s ease-out,
+        height 0.17s ease-out,
+        border-color 0.15s;
+
+    &:hover {
+        border-color: var(--accent);
+    }
+}
+
+// Panels being actively dragged/resized must track the pointer with zero lag.
+.noAnim {
+    transition: border-color 0.15s;
+}
+
+.selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.bridged {
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--border-bright));
+    box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.waiting {
+    border-color: var(--waiting);
+    animation: tile-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tile-pulse {
+    0%,
+    100% {
+        box-shadow: 0 0 0 0 color-mix(in srgb, var(--waiting) 35%, transparent);
+    }
+    50% {
+        box-shadow: 0 0 0 6px transparent;
+    }
+}
+
+// Single-row header, 40px: grip + dot + name left, ctx cluster right. This is
+// the drag handle (Task 6) and the select control.
+.head {
+    flex: 0 0 auto;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 40px;
+    height: 40px;
+    padding: 0 12px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    cursor: grab;
+    user-select: none;
+
+    &:active {
+        cursor: grabbing;
+    }
+}
+
+.repo {
+    @include t-item-title;
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.flag {
+    @include t-role-tag;
+    color: var(--waiting);
+}
+
+.from {
+    @include t-meta;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.ctx {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+}
+
+.ctxText {
+    @include t-mono-micro;
+    color: var(--text-faint);
+}
+
+.meterSlot {
+    display: inline-flex;
+    width: 46px;
+}
+
+.pct {
+    @include t-mono-micro;
+    color: var(--text-dim);
+}
+
+.body {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+// Seam between sibling panels: the 10px gutter is the hit area, a 2px accent
+// line fades in centered on hover (Task 5 adds cursor + drag).
+.seam {
+    position: absolute;
+    z-index: 2;
+
+    &::before {
+        content: '';
+        position: absolute;
+        background: var(--accent);
+        opacity: 0;
+        transition: opacity 0.15s;
+    }
+
+    &:hover::before,
+    &.seamActive::before {
+        opacity: 1;
+    }
+}
+
+.seamH {
+    cursor: col-resize;
+
+    &::before {
+        left: 4px;
+        top: 0;
+        width: 2px;
+        height: 100%;
+    }
+}
+
+.seamV {
+    cursor: row-resize;
+
+    &::before {
+        top: 4px;
+        left: 0;
+        height: 2px;
+        width: 100%;
+    }
+}
+
+// Drop-zone highlight while dragging a header.
+.zone {
+    position: absolute;
+    z-index: 5;
+    background: var(--accent-soft);
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+    pointer-events: none;
+    transition:
+        left 0.12s ease-out,
+        top 0.12s ease-out,
+        width 0.12s ease-out,
+        height 0.12s ease-out;
+}
+
+// Compact floating label following the pointer (the "lifted panel"). A
+// cloned live xterm canvas can't be dragged as a ghost image, so this title
+// chip is the deliberate stand-in.
+// ponytail: no full-panel drag ghost — xterm canvases aren't clonable, and a
+// title chip is enough signal for what's being dropped.
+.dragGhost {
+    @include t-item-title;
+    position: absolute;
+    z-index: 6;
+    transform: translate(-50%, -130%);
+    padding: 6px 12px;
+    background: var(--bg-raised);
+    border: 1px solid var(--accent);
+    box-shadow: var(--shadow);
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+// Source panel while its ghost is being dragged.
+.ghosted {
+    opacity: 0.35;
+}
+
+.hint {
+    @include t-mono-micro;
+    position: absolute;
+    z-index: 6;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 5px 12px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-bright);
+    color: var(--text-dim);
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+.empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: var(--text-faint);
+    @include t-body;
+}
+
+.mark {
+    // Decorative glyph. Sizing via transform (not font-size) keeps text styling
+    // in typography.scss per the three-layer rule; there is no 30px mono t-* role.
+    @include t-mono-data;
+    transform: scale(2.5);
+    transform-origin: center;
+    color: var(--border-bright);
+}

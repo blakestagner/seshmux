@@ -1,0 +1,2031 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>seshmux — mission control</title>
+<style>
+  :root {
+    --mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
+    --sans: -apple-system, "SF Pro Text", "Segoe UI", sans-serif;
+    --font-ui: var(--sans);
+    --radius: 8px;
+    --radius-sm: 6px;
+    --accent-soft: color-mix(in srgb, var(--accent) 13%, transparent);
+    --claude: #e8825a;
+    --codex: #6cb8f0;
+    --shadow: 0 1px 2px rgba(0,0,0,0.25);
+  }
+
+  /* ============ VARIANT: LEDGER — cool graphite + teal ============ */
+  :root[data-variant="ledger"] { --radius: 8px; --radius-sm: 6px; }
+  :root[data-variant="ledger"][data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0c0f13; --bg-panel: #10141a; --bg-raised: #151b23; --bg-hover: #1a212b;
+    --border: #1f2833; --border-bright: #2b3644;
+    --text: #dce3ea; --text-dim: #8b98a5; --text-faint: #566270;
+    --accent: #2dd4bf; --accent-contrast: #06211d;
+    --live: #34d399; --waiting: #fbbf24; --done: #4b5865;
+    --term-bg: #0a0d11; --term-text: #c9d3dc; --term-user: #7cc0ff;
+    --shadow: 0 1px 3px rgba(0,0,0,0.4);
+  }
+  :root[data-variant="ledger"][data-theme="light"] {
+    color-scheme: light;
+    --bg: #f4f6f8; --bg-panel: #fbfcfd; --bg-raised: #ffffff; --bg-hover: #eaeef2;
+    --border: #dde4ea; --border-bright: #c8d2db;
+    --text: #1a232c; --text-dim: #55636f; --text-faint: #8494a1;
+    --accent: #0d9488; --accent-contrast: #ffffff;
+    --live: #059669; --waiting: #b45309; --done: #9aa7b2;
+    --term-bg: #ffffff; --term-text: #2a3540; --term-user: #1e6fc4;
+    --shadow: 0 1px 3px rgba(20,35,50,0.08);
+  }
+
+  /* ============ VARIANT: APERTURE — floating glass workspace, cobalt ============ */
+  :root[data-variant="aperture"] { --radius: 16px; --radius-sm: 10px; }
+  :root[data-variant="aperture"][data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #090b0e; --bg-panel: #10141a; --bg-raised: #151b23; --bg-hover: #1a212b;
+    --border: #1f2833; --border-bright: #2b3644;
+    --text: #dce3ea; --text-dim: #8b98a5; --text-faint: #566270;
+    --accent: #2dd4bf; --accent-contrast: #06211d;
+    --live: #34d399; --waiting: #fbbf24; --done: #4b5865;
+    --term-bg: #0a0d11; --term-text: #c9d3dc; --term-user: #7cc0ff;
+    --shadow: 0 8px 24px rgba(0,0,0,0.35);
+  }
+  :root[data-variant="aperture"][data-theme="light"] {
+    color-scheme: light;
+    --claude: #c75f34;
+    --codex: #1e6fc4;
+    --bg: #eef1f4; --bg-panel: #fbfcfd; --bg-raised: #ffffff; --bg-hover: #eaeef2;
+    --border: #dde4ea; --border-bright: #c8d2db;
+    --text: #1a232c; --text-dim: #55636f; --text-faint: #8494a1;
+    --accent: #0d9488; --accent-contrast: #ffffff;
+    --live: #059669; --waiting: #b45309; --done: #9aa7b2;
+    --term-bg: #ffffff; --term-text: #2a3540; --term-user: #1e6fc4;
+    --shadow: 0 8px 24px rgba(20,35,50,0.10);
+  }
+
+  /* ============ VARIANT: BASELINE — editorial ink & paper, saffron ============ */
+  :root[data-variant="baseline"] { --radius: 2px; --radius-sm: 2px; }
+  :root[data-variant="baseline"][data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #101010; --bg-panel: #101010; --bg-raised: #181818; --bg-hover: #1c1c1c;
+    --border: #262626; --border-bright: #3a3a3a;
+    --text: #ececec; --text-dim: #9a9a9a; --text-faint: #616161;
+    --accent: #ffb224; --accent-contrast: #171204;
+    --live: #43c463; --waiting: #d99a2b; --done: #4a4a4a;
+    --term-bg: #141414; --term-text: #d6d6d6; --term-user: #7fb2f0;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4);
+  }
+  :root[data-variant="baseline"][data-theme="light"] {
+    color-scheme: light;
+    --bg: #fcfcfa; --bg-panel: #fcfcfa; --bg-raised: #ffffff; --bg-hover: #f1f1ec;
+    --border: #e4e4dd; --border-bright: #cfcfc5;
+    --text: #191917; --text-dim: #6b6b64; --text-faint: #9d9d94;
+    --accent: #a16207; --accent-contrast: #ffffff;
+    --live: #15803d; --waiting: #a16207; --done: #b9b9ae;
+    --term-bg: #f6f6f2; --term-text: #33332e; --term-user: #1e5fc4;
+    --shadow: 0 1px 2px rgba(40,40,30,0.06);
+  }
+
+  /* ============ VARIANT: MERIDIAN — dense carbon console, magenta ============ */
+  :root[data-variant="meridian"] { --radius: 4px; --radius-sm: 4px; }
+  :root[data-variant="meridian"][data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0b0b0e; --bg-panel: #101017; --bg-raised: #16161f; --bg-hover: #1c1c28;
+    --border: #23232f; --border-bright: #33334a;
+    --text: #e2e2ea; --text-dim: #8f8fa3; --text-faint: #5b5b70;
+    --accent: #f0439c; --accent-contrast: #ffffff;
+    --live: #2fd07f; --waiting: #f5b83d; --done: #4b4b60;
+    --term-bg: #09090c; --term-text: #cbcbd8; --term-user: #6db3f2;
+    --shadow: 0 1px 3px rgba(0,0,0,0.45);
+  }
+  :root[data-variant="meridian"][data-theme="light"] {
+    color-scheme: light;
+    --bg: #f2f2f5; --bg-panel: #fafafc; --bg-raised: #ffffff; --bg-hover: #e9e9ef;
+    --border: #dedee6; --border-bright: #c6c6d4;
+    --text: #1c1c26; --text-dim: #5b5b6e; --text-faint: #8f8f9f;
+    --accent: #c81e7a; --accent-contrast: #ffffff;
+    --live: #0f9d58; --waiting: #a3720e; --done: #a6a6b8;
+    --term-bg: #ffffff; --term-text: #2c2c3a; --term-user: #1d6fbd;
+    --shadow: 0 1px 3px rgba(30,30,50,0.08);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg);
+    transition: background-color 0.2s ease, color 0.2s ease;
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+  }
+  button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+
+  /* ============ TOP NAV ============ */
+  .topnav {
+    height: 46px;
+    flex: 0 0 46px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 0 14px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .logo {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.5px;
+    display: flex; align-items: center; gap: 8px;
+    user-select: none;
+  }
+  .logo .mark {
+    width: 20px; height: 20px; border-radius: var(--radius-sm);
+    background: var(--accent);
+    color: var(--accent-contrast);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 800;
+  }
+  .search-wrap { position: relative; flex: 0 1 420px; }
+  .search {
+    width: 100%;
+    height: 28px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 0 28px;
+    outline: none;
+  }
+  .search:focus { border-color: var(--accent); }
+  .search::placeholder { color: var(--text-faint); }
+  .search-icon {
+    position: absolute; left: 9px; top: 7px;
+    color: var(--text-faint); font-size: 12px; pointer-events: none;
+  }
+  .search-kbd {
+    position: absolute; right: 8px; top: 6px;
+    font-family: var(--mono); font-size: 10px;
+    color: var(--text-faint);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 1px 4px; pointer-events: none;
+  }
+  .search-results {
+    display: none;
+    position: absolute; top: 34px; left: 0; width: 560px;
+    max-height: 420px; overflow-y: auto;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-bright);
+    border-radius: var(--radius);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.35), var(--shadow);
+    z-index: 200;
+  }
+  .search-results.open { display: block; }
+  .sr-group {
+    padding: 8px 12px 4px;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px;
+    color: var(--text-faint);
+  }
+  .sr-item { display: block; width: 100%; text-align: left; padding: 8px 12px; border-radius: 0; }
+  .sr-item:hover { background: var(--bg-hover); }
+  .sr-item .sr-title { font-size: 12.5px; color: var(--text); margin-bottom: 2px; }
+  .sr-item .sr-title mark { background: var(--accent-soft); color: var(--accent); border-radius: 2px; padding: 0 1px; }
+  .sr-item .sr-meta { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); }
+  .topnav .spacer { flex: 1; }
+
+  .view-toggle {
+    display: flex; align-items: center;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+  .view-toggle button {
+    padding: 5px 12px;
+    font-size: 12px;
+    color: var(--text-dim);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .view-toggle button.active { background: var(--accent-soft); color: var(--accent); }
+  .live-badge {
+    display: flex; align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 11.5px;
+    color: var(--text-dim);
+    padding: 4px 10px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--bg);
+  }
+  .live-badge .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--live); }
+  .live-badge .dot.pulse { background: var(--waiting); animation: pulse 1.4s ease-in-out infinite; }
+  .gear { font-size: 15px; color: var(--text-dim); padding: 4px 6px; border-radius: var(--radius-sm); }
+  .gear:hover { background: var(--bg-hover); color: var(--text); }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 color-mix(in srgb, var(--waiting) 50%, transparent); }
+    50% { opacity: 0.6; box-shadow: 0 0 0 5px transparent; }
+  }
+
+  /* ============ LAYOUT ============ */
+  .app { flex: 1; display: flex; min-height: 0; }
+
+  /* ============ SIDE RAIL ============ */
+  .rail {
+    width: 300px; flex: 0 0 300px;
+    background: var(--bg-panel);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    min-height: 0;
+  }
+  .rail-head {
+    padding: 12px 14px 8px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .rail-head h2 {
+    font-size: 10.5px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.8px;
+    color: var(--text-faint);
+  }
+  .rail-scan {
+    font-family: var(--mono); font-size: 10px; color: var(--text-faint);
+  }
+  .rail-provfilter {
+    display: flex; gap: 2px;
+    margin: 0 14px 8px;
+    padding: 2px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .rail-provfilter button {
+    flex: 1;
+    padding: 4px 0;
+    font-family: var(--mono); font-size: 10.5px;
+    color: var(--text-faint);
+    border-radius: calc(var(--radius-sm) - 3px);
+  }
+  .rail-provfilter button:hover { color: var(--text); }
+  .rail-provfilter button.active {
+    background: var(--bg-raised);
+    color: var(--text);
+    font-weight: 600;
+    box-shadow: 0 0 0 1px var(--border-bright), var(--shadow);
+  }
+  .rail-body { flex: 1; overflow-y: auto; padding-bottom: 20px; }
+  .rail-body::-webkit-scrollbar { width: 8px; }
+  .rail-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .proj { border-bottom: 1px solid rgba(38,38,47,0.5); }
+  .proj-head {
+    width: 100%;
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 14px;
+    text-align: left;
+  }
+  .proj-head:hover { background: var(--bg-hover); }
+  .proj-caret { color: var(--text-faint); font-size: 9px; width: 10px; transition: transform 0.15s; }
+  .proj.open .proj-caret { transform: rotate(90deg); }
+  .proj-name { font-weight: 600; font-size: 12.5px; flex: 1; }
+  .proj-count {
+    font-family: var(--mono); font-size: 10px; color: var(--text-faint);
+    min-width: 14px; text-align: right;
+  }
+  .proj-add {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px;
+    font-size: 14px; line-height: 1;
+    color: var(--text-faint);
+    border-radius: var(--radius-sm);
+    opacity: 0; transition: opacity 0.12s;
+    cursor: pointer;
+  }
+  .proj-head:hover .proj-add { opacity: 1; }
+  .proj-add:hover { color: var(--accent); background: var(--accent-soft); }
+  .proj-live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--live); }
+  .pin {
+    display: inline-flex; align-items: center;
+    color: var(--text-faint);
+    opacity: 0; transition: opacity 0.12s;
+    cursor: pointer; padding: 2px;
+  }
+  .proj-head:hover .pin { opacity: 1; }
+  .pin:hover { color: var(--text); }
+  .pin.pinned { opacity: 1; color: var(--accent); }
+  .tab.dragging, .proj.dragging { opacity: 0.45; }
+  .tab.drag-over { box-shadow: inset 2px 0 0 var(--accent); }
+  .proj.drag-over { box-shadow: inset 0 2px 0 var(--accent); }
+  .proj-live-dot.waiting { background: var(--waiting); animation: pulse 1.4s infinite; }
+  .proj-path {
+    font-family: var(--mono); font-size: 10px; color: var(--text-faint);
+    padding: 0 14px 6px 32px; display: none;
+  }
+  .proj.open .proj-path { display: block; }
+  .proj-sessions { display: none; }
+  .proj.open .proj-sessions { display: block; }
+
+  .sess {
+    width: 100%;
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 7px 14px 7px 20px;
+    text-align: left;
+    border-left: 2px solid transparent;
+  }
+  .sess:hover { background: var(--bg-hover); }
+  .sess.selected { background: var(--accent-soft); border-left-color: var(--accent); }
+  .sess-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 4px; flex: 0 0 8px; }
+  .sess-dot.live { background: var(--live); }
+  .sess-dot.waiting { background: var(--waiting); animation: pulse 1.4s infinite; }
+  .sess-dot.done { background: transparent; border: 1.5px solid var(--done); }
+  .sess-info { flex: 1; min-width: 0; }
+  .sess-title {
+    font-size: 12px; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .sess-meta {
+    display: flex; align-items: center; gap: 6px; margin-top: 3px;
+    font-family: var(--mono); font-size: 10px; color: var(--text-faint);
+  }
+  .sess-meta2 { justify-content: space-between; margin-top: 2px; }
+  .branch-chip {
+    display: inline-flex; align-items: center; gap: 3px;
+    color: var(--text-dim); max-width: 130px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .proj-filter-wrap { padding: 2px 14px 4px 20px; }
+  .proj-filter {
+    width: 100%;
+    height: 22px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: var(--mono); font-size: 11px;
+    padding: 0 8px;
+    outline: none;
+  }
+  .proj-filter:hover, .proj-filter:focus { background: var(--bg-hover); }
+  .proj-filter::placeholder { color: var(--text-faint); }
+  .load-more {
+    display: block;
+    margin: 2px 14px 6px 20px;
+    padding: 3px 8px 3px 0;
+    font-family: var(--mono); font-size: 10.5px;
+    color: var(--text-faint);
+    text-align: left;
+    background: transparent;
+    border: none;
+  }
+  .load-more:hover { color: var(--accent); }
+  .sb-actions { margin-left: auto; display: inline-flex; gap: 12px; }
+  .sb-act { font-family: var(--mono); font-size: 10.5px; color: var(--text-dim); }
+  .sb-act:hover { color: var(--accent); }
+  .sb-tail { color: var(--text-faint); }
+  .scratch-entry {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    background: var(--bg-panel);
+  }
+  .scratch-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .scratch-time { font-family: var(--mono); font-size: 10px; color: var(--text-faint); margin-left: auto; }
+  .scratch-note { font-size: 11.5px; color: var(--text-faint); font-style: italic; margin-top: 16px; }
+  .prov {
+    font-family: var(--mono); font-size: 9.5px;
+    display: inline-flex; align-items: center; gap: 3px;
+    flex: 0 0 auto;
+    padding: 1px 6px; border-radius: 999px;
+  }
+  .prov-claude { color: var(--claude); background: color-mix(in srgb, var(--claude) 12%, transparent); }
+  .prov-codex { color: var(--codex); background: color-mix(in srgb, var(--codex) 12%, transparent); }
+  .tab .prov { font-size: 10px; }
+  .term-statusbar .prov { font-size: 10.5px; }
+  .tr-meta .prov { font-size: 11px; }
+  .m-provider { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; margin-bottom: 14px; }
+  .m-provider button { padding: 6px 14px; font-size: 12px; color: var(--text-dim); }
+  .m-provider button.active { background: var(--accent-soft); color: var(--accent); }
+  .usage-bar.split span { background: var(--accent); }
+  .ctx { color: var(--live); font-family: var(--mono); }
+  .ctx.warm { color: var(--waiting); }
+  .ctx.hot { color: #e5484d; }
+  .sb-ctx { display: inline-flex; align-items: center; gap: 6px; }
+  .ctx-bar {
+    width: 46px; height: 4px; border-radius: 2px;
+    background: var(--border); overflow: hidden; display: inline-block;
+  }
+  .ctx-fill { display: block; height: 100%; border-radius: 2px; background: var(--live); }
+  .ctx-fill.warm { background: var(--waiting); }
+  .ctx-fill.hot { background: #e5484d; }
+  .no-match {
+    padding: 8px 14px 8px 20px;
+    font-size: 11.5px; color: var(--text-faint); font-style: italic;
+  }
+  .new-sess {
+    width: calc(100% - 34px);
+    margin: 4px 14px 10px 20px;
+    padding: 5px 10px;
+    font-size: 11.5px; color: var(--text-dim);
+    border: 1px dashed var(--border-bright);
+    border-radius: var(--radius-sm);
+    text-align: left;
+  }
+  .new-sess:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+  /* ============ MAIN ============ */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+  /* tab bar */
+  .tabbar {
+    height: 36px; flex: 0 0 36px;
+    display: flex; align-items: stretch;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  .tabbar::-webkit-scrollbar { height: 0; }
+  .tab {
+    display: flex; align-items: center; gap: 7px;
+    padding: 0 12px;
+    border-right: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 12px;
+    white-space: nowrap;
+    max-width: 220px;
+  }
+  .tab:hover { background: var(--bg-hover); }
+  .tab.active { background: var(--bg); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
+  .tab .t-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; }
+  .tab .t-dot.live { background: var(--live); }
+  .tab .t-dot.waiting { background: var(--waiting); animation: pulse 1.4s infinite; }
+  .tab .t-dot.neutral { background: var(--text-faint); opacity: 0.6; }
+  .tab .t-label { overflow: hidden; text-overflow: ellipsis; }
+  .tab .t-close { color: var(--text-faint); font-size: 13px; padding: 0 2px; border-radius: 3px; }
+  .tab .t-close:hover { color: var(--text); background: var(--bg-hover); }
+
+  .panes { flex: 1; position: relative; min-height: 0; background: var(--bg); }
+  .pane { position: absolute; inset: 0; display: none; flex-direction: column; min-height: 0; }
+  .pane.active { display: flex; }
+
+  /* ---- fake terminal ---- */
+  .term {
+    flex: 1; overflow-y: auto;
+    background: var(--term-bg);
+    font-family: var(--mono); font-size: 12px; line-height: 1.65;
+    padding: 14px 18px;
+    color: var(--term-text);
+    white-space: pre-wrap;
+  }
+  .term::-webkit-scrollbar { width: 8px; }
+  .term::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  .term .dim { color: var(--text-faint); }
+  .term .acc { color: var(--accent); }
+  .term .grn { color: var(--live); }
+  .term .yel { color: var(--waiting); }
+  .term .usr { color: var(--term-user); }
+  .term .promptbox {
+    margin-top: 10px;
+    border: 1px solid var(--border-bright);
+    border-radius: var(--radius-sm);
+    padding: 7px 10px;
+    color: var(--text-dim);
+  }
+  .cursor {
+    display: inline-block; width: 7px; height: 14px;
+    background: var(--accent); vertical-align: text-bottom;
+    animation: blink 1.1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .term-statusbar {
+    flex: 0 0 26px;
+    display: flex; align-items: center; gap: 14px;
+    padding: 0 14px;
+    font-family: var(--mono); font-size: 10.5px;
+    color: var(--text-faint);
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
+  }
+  .term-statusbar .sb-live { color: var(--live); }
+  .term-statusbar .sb-wait { color: var(--waiting); }
+
+  /* ---- transcript viewer ---- */
+  .transcript { flex: 1; overflow-y: auto; padding: 40px 0 60px; }
+  .transcript::-webkit-scrollbar { width: 8px; }
+  .transcript::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  .tr-inner { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+  .tr-header {
+    padding-bottom: 14px; margin-bottom: 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tr-header h1 { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+  .tr-header .tr-meta {
+    display: flex; gap: 12px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 11px; color: var(--text-faint);
+  }
+  .tr-actions { margin-top: 10px; display: flex; gap: 8px; }
+  .btn {
+    padding: 5px 12px; border-radius: var(--radius-sm); font-size: 12px;
+    border: 1px solid var(--border-bright); color: var(--text-dim);
+  }
+  .btn:hover { background: var(--bg-hover); color: var(--text); }
+  .btn.primary { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.1); }
+
+  .msg { margin-bottom: 16px; }
+  .msg-role {
+    font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.7px;
+    margin-bottom: 5px;
+  }
+  .msg.user .msg-role { color: #79b8ff; }
+  .msg.assistant .msg-role { color: var(--accent); }
+  .msg-body {
+    font-size: 13px; line-height: 1.6; color: var(--text);
+  }
+  .msg.user .msg-body {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px 14px;
+  }
+  .msg-body code {
+    font-family: var(--mono); font-size: 11.5px;
+    background: var(--bg-raised); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px;
+  }
+  .toolcall {
+    margin: 8px 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+  .toolcall-head {
+    width: 100%;
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px;
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-dim);
+    background: var(--bg-panel);
+    text-align: left;
+  }
+  .toolcall-head:hover { background: var(--bg-hover); }
+  .toolcall-head .tc-caret { font-size: 9px; color: var(--text-faint); transition: transform 0.15s; }
+  .toolcall.open .tc-caret { transform: rotate(90deg); }
+  .toolcall-head .tc-name { color: var(--accent); font-weight: 600; }
+  .toolcall-body {
+    display: none;
+    padding: 10px 12px;
+    font-family: var(--mono); font-size: 11px; line-height: 1.6;
+    color: var(--text-dim);
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    white-space: pre-wrap;
+    max-height: 260px; overflow-y: auto;
+  }
+  .toolcall.open .toolcall-body { display: block; }
+
+  /* ---- grid mode ---- */
+  .grid-view {
+    position: absolute; inset: 0;
+    display: none;
+    padding: 14px;
+    gap: 14px;
+    background: var(--bg);
+    overflow-y: auto;
+  }
+  .grid-view.active {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+    grid-auto-rows: minmax(260px, 1fr);
+  }
+  .grid-tile {
+    display: flex; flex-direction: column;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-bright);
+    border-radius: var(--radius);
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.1s;
+    min-height: 0;
+    text-align: left;
+  }
+  .grid-tile:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .grid-tile.waiting { border-color: var(--waiting); animation: tile-pulse 1.6s ease-in-out infinite; }
+  @keyframes tile-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--waiting) 35%, transparent); }
+    50% { box-shadow: 0 0 0 6px transparent; }
+  }
+  .grid-tile.bridged { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-bright)); box-shadow: inset 0 2px 0 var(--accent); }
+  .gt-from { font-family: var(--mono); font-size: 9.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .grid-tile.highlight { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .grid-tile.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  .gt-head {
+    flex: 0 0 auto;
+    display: flex; flex-direction: column; gap: 4px;
+    padding: 8px 12px;
+    background: var(--bg-raised);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .gt-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .gt-row .gt-flag { margin-left: auto; }
+  .gt-row2 .ctx { margin-left: auto; font-size: 10px; }
+  .gt-row .gt-repo { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gt-head .t-dot { width: 7px; height: 7px; border-radius: 50%; }
+  .gt-head .gt-repo { font-weight: 600; }
+  .gt-head .gt-branch { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
+  .gt-head .gt-flag {
+    margin-left: auto;
+    font-size: 10px; font-weight: 700;
+    color: var(--waiting);
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .gt-term {
+    flex: 1; overflow: hidden;
+    font-family: var(--mono); font-size: 10.5px; line-height: 1.6;
+    padding: 10px 12px;
+    color: var(--text-dim);
+    white-space: pre-wrap;
+    mask-image: linear-gradient(to bottom, black 75%, transparent);
+    -webkit-mask-image: linear-gradient(to bottom, black 75%, transparent);
+  }
+
+  /* ---- empty state ---- */
+  .empty {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; color: var(--text-faint);
+  }
+  .empty .mark { font-family: var(--mono); font-size: 30px; color: var(--border-bright); }
+
+  /* ============ MODAL ============ */
+  .overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    display: none; align-items: center; justify-content: center;
+    z-index: 300;
+  }
+  .overlay.open { display: flex; }
+  .modal {
+    width: 440px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-bright);
+    border-radius: var(--radius);
+    padding: 20px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.4), var(--shadow);
+  }
+  .modal h3 { font-size: 14px; margin-bottom: 4px; }
+  .modal .m-path { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-bottom: 16px; }
+  .m-option {
+    width: 100%;
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 8px;
+    text-align: left;
+  }
+  .m-option:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .m-option .mo-icon { font-family: var(--mono); font-size: 16px; color: var(--accent); }
+  .m-option .mo-title { font-size: 13px; font-weight: 600; }
+  .m-option .mo-desc { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+  .m-cancel { margin-top: 6px; width: 100%; text-align: center; color: var(--text-faint); font-size: 12px; padding: 6px; }
+  .m-cancel:hover { color: var(--text); }
+
+  /* ============ TOAST ============ */
+  .toast {
+    position: fixed; bottom: 20px; right: 20px;
+    display: flex; align-items: center; gap: 12px;
+    background: var(--bg-raised);
+    border: 1px solid var(--waiting);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.4), var(--shadow);
+    z-index: 400;
+    transform: translateY(120px); opacity: 0;
+    transition: transform 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.2), opacity 0.3s;
+  }
+  .toast.show { transform: translateY(0); opacity: 1; }
+  .toast .to-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--waiting); animation: pulse 1.4s infinite; }
+  .toast .to-text { font-size: 12.5px; }
+  .toast .to-text strong { color: var(--waiting); }
+  .toast .to-jump {
+    padding: 4px 12px;
+    background: var(--waiting); color: var(--accent-contrast);
+    border-radius: var(--radius-sm); font-size: 12px; font-weight: 600;
+  }
+  .toast .to-x { color: var(--text-faint); font-size: 14px; padding: 2px 4px; }
+
+  /* ============ SETTINGS ============ */
+  .settings { flex: 1; overflow-y: auto; }
+  .set-inner { max-width: 720px; margin: 0 auto; padding: 44px 24px 80px; }
+  .set-h1 { font-size: 18px; font-weight: 650; margin-bottom: 18px; }
+  .set-section {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .set-title {
+    padding: 12px 16px 10px;
+    font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.7px;
+    color: var(--text-faint);
+  }
+  .set-note { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text-faint); margin-left: 6px; }
+  .set-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 11px 16px;
+    border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+    font-size: 13px;
+  }
+  .set-label { display: flex; flex-direction: column; gap: 2px; }
+  .set-sub { font-size: 11px; color: var(--text-faint); }
+  .set-mono { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+  .ok { color: var(--live); font-family: var(--mono); font-size: 12px; }
+  .toggle {
+    width: 34px; height: 20px; border-radius: 10px;
+    background: var(--border-bright);
+    position: relative; cursor: pointer; flex: 0 0 34px;
+    transition: background 0.15s;
+  }
+  .toggle::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #fff;
+    transition: transform 0.15s;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+  }
+  .toggle.on { background: var(--accent); }
+  .toggle.on::after { transform: translateX(14px); }
+  .set-select {
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    font: inherit; font-size: 12px; padding: 4px 8px; outline: none;
+  }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+  .seg button { padding: 4px 12px; font-size: 12px; color: var(--text-dim); }
+  .seg button:hover { background: var(--bg-hover); color: var(--text); }
+  .set-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; padding: 0 16px 12px; }
+  .stat { text-align: left; }
+  .stat-n { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .stat-l { font-size: 11px; color: var(--text-faint); margin-top: 2px; }
+  .usage-row { padding-top: 7px; padding-bottom: 7px; }
+  .usage-row .set-label { flex: 0 0 160px; font-size: 12px; }
+  .usage-bar {
+    flex: 1; height: 5px; border-radius: 3px;
+    background: color-mix(in srgb, var(--border) 70%, transparent);
+    overflow: hidden;
+  }
+  .usage-bar span { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+  .usage-pct { font-family: var(--mono); font-size: 11px; color: var(--text-faint); flex: 0 0 34px; text-align: right; }
+
+  /* ==================================================================
+     STRUCTURAL REDESIGNS PER VARIANT (cascade: later wins)
+  ================================================================== */
+
+  /* ---- APERTURE: floating cards, pill tabs ---- */
+  [data-variant="aperture"] .app { gap: 12px; padding: 12px; }
+  [data-variant="aperture"] .rail {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  [data-variant="aperture"] .main {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    background: var(--bg-panel);
+  }
+  [data-variant="aperture"] .topnav { border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg-panel) 82%, transparent); backdrop-filter: blur(14px); }
+  [data-variant="aperture"] .tabbar { height: 42px; flex: 0 0 42px; padding: 8px 8px 0; gap: 2px; align-items: stretch; border-bottom: 1px solid var(--border); }
+  [data-variant="aperture"] .tab {
+    border-right: none;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    padding: 0 12px;
+    border: 1px solid transparent;
+    border-bottom: none;
+    margin-bottom: -1px;
+    position: relative;
+  }
+  [data-variant="aperture"] .tab.active {
+    box-shadow: none;
+    background: var(--bg);
+    border-color: var(--border);
+    color: var(--text);
+    z-index: 2;
+  }
+  [data-variant="aperture"] .tab:not(:first-child)::before {
+    content: ''; position: absolute; left: -2px; top: 50%; transform: translateY(-50%);
+    width: 1px; height: 14px;
+    background: color-mix(in srgb, var(--border-bright) 60%, transparent);
+  }
+  [data-variant="aperture"] .tab.active::before,
+  [data-variant="aperture"] .tab.active + .tab::before { display: none; }
+  [data-variant="aperture"] .tab.group-end { margin-left: 16px; }
+  [data-variant="aperture"] .tab.group-end::before {
+    content: '⇄'; display: block !important;
+    width: auto; height: auto; background: none;
+    left: -13px;
+    color: var(--accent); font-size: 10px; font-family: var(--mono);
+  }
+  /* shared accent bar spanning the pair (chrome tab-group style) */
+  [data-variant="aperture"] .tab.group-start,
+  [data-variant="aperture"] .tab.group-end {
+    box-shadow: inset 0 2px 0 var(--accent);
+    border-top-color: var(--accent);
+  }
+  [data-variant="aperture"] .tab.group-start.active,
+  [data-variant="aperture"] .tab.group-end.active {
+    box-shadow: inset 0 2px 0 var(--accent);
+  }
+  .link-chip {
+    font-family: var(--mono); font-size: 9px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    padding: 1px 6px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent);
+    flex: 0 0 auto;
+  }
+  .link-chip.review { background: color-mix(in srgb, var(--waiting) 15%, transparent); color: var(--waiting); }
+  .link-chip.planoff { background: color-mix(in srgb, var(--text-dim) 14%, transparent); color: var(--text-dim); }
+  .planoff-inner { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+  .planoff-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: stretch; }
+  .plan-col {
+    display: flex; flex-direction: column;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+  }
+  .plan-col:hover { border-color: var(--border-bright); }
+  .plan-col-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .plan-meta { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
+  .plan-angle { font-size: 12px; color: var(--text-dim); font-style: italic; margin-bottom: 10px; }
+  .plan-steps { margin: 0 0 16px 18px; display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; line-height: 1.5; }
+  .plan-steps code { font-family: var(--mono); font-size: 11px; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+  .plan-pick { margin-top: auto; width: 100%; }
+  [data-variant="aperture"] .proj { border-bottom: none; position: relative; }
+  [data-variant="aperture"] .proj::after {
+    content: ''; position: absolute; left: 14px; right: 14px; bottom: 0; height: 1px;
+    background: color-mix(in srgb, var(--border) 55%, transparent);
+  }
+  [data-variant="aperture"] .proj:last-child::after { display: none; }
+  [data-variant="aperture"] .search { border-radius: 999px; }
+  [data-variant="aperture"] .view-toggle { border-radius: 999px; }
+  [data-variant="aperture"] .view-toggle button { padding: 5px 14px; }
+  [data-variant="aperture"] .live-badge { border-radius: 999px; }
+  [data-variant="aperture"] .grid-tile { box-shadow: var(--shadow); }
+  [data-variant="aperture"] .sess.selected { border-left-color: transparent; border-radius: var(--radius-sm); margin: 0 6px; padding-left: 14px; width: calc(100% - 12px); }
+
+  /* ---- BASELINE: borderless editorial, underline tabs, serif display ---- */
+  [data-variant="baseline"] .topnav { background: var(--bg); }
+  [data-variant="baseline"] .rail { background: var(--bg); }
+  [data-variant="baseline"] .tabbar { background: var(--bg); height: 40px; flex: 0 0 40px; }
+  [data-variant="baseline"] .tab { border-right: none; padding: 0 14px; }
+  [data-variant="baseline"] .tab.active {
+    background: transparent;
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+  [data-variant="baseline"] .logo { font-family: Georgia, "Times New Roman", serif; font-style: italic; font-size: 17px; letter-spacing: 0; }
+  [data-variant="baseline"] .logo .mark { background: transparent; color: var(--accent); border: 1.5px solid var(--accent); border-radius: 50%; font-style: normal; }
+  [data-variant="baseline"] .search { background: transparent; border: none; border-bottom: 1px solid var(--border); border-radius: 0; padding-left: 24px; }
+  [data-variant="baseline"] .search:focus { border-bottom-color: var(--accent); }
+  [data-variant="baseline"] .search-kbd { border: none; }
+  [data-variant="baseline"] .view-toggle { background: transparent; border: none; }
+  [data-variant="baseline"] .view-toggle button.active { background: transparent; box-shadow: inset 0 -2px 0 var(--accent); color: var(--text); border-radius: 0; }
+  [data-variant="baseline"] .live-badge { border: none; background: transparent; }
+  [data-variant="baseline"] .proj { border-bottom: 1px solid var(--border); }
+  [data-variant="baseline"] .proj-head { padding: 12px 14px; }
+  [data-variant="baseline"] .proj-name { font-family: Georgia, "Times New Roman", serif; font-size: 14px; font-weight: 500; }
+  [data-variant="baseline"] .proj-count { border: none; background: transparent; }
+  [data-variant="baseline"] .sess.selected { background: transparent; }
+  [data-variant="baseline"] .branch-chip { border: none; background: transparent; padding: 0; }
+  [data-variant="baseline"] .tr-header h1 { font-family: Georgia, "Times New Roman", serif; font-size: 24px; font-weight: 500; }
+  [data-variant="baseline"] .msg.user .msg-body { background: transparent; border: none; border-left: 2px solid var(--border-bright); border-radius: 0; padding: 2px 0 2px 14px; }
+  [data-variant="baseline"] .term-statusbar { background: var(--bg); }
+  [data-variant="baseline"] .grid-tile { box-shadow: none; }
+
+  /* ---- MERIDIAN: dense console, status stripes, micro-labels ---- */
+  [data-variant="meridian"] body { font-size: 12px; }
+  [data-variant="meridian"] .topnav { height: 40px; flex: 0 0 40px; }
+  [data-variant="meridian"] .tabbar { height: 30px; flex: 0 0 30px; }
+  [data-variant="meridian"] .tab { font-size: 11px; padding: 0 10px; gap: 6px; }
+  [data-variant="meridian"] .tab .t-dot { width: 6px; height: 6px; }
+  [data-variant="meridian"] .rail { width: 272px; flex-basis: 272px; }
+  [data-variant="meridian"] .rail-head { padding: 10px 14px 6px; }
+  [data-variant="meridian"] .proj-head { padding: 7px 14px; }
+  [data-variant="meridian"] .proj-name { text-transform: uppercase; font-size: 11px; letter-spacing: 0.6px; font-family: var(--mono); }
+  [data-variant="meridian"] .sess { padding: 5px 14px 5px 13px; border-left-width: 3px; border-left-color: var(--done); }
+  [data-variant="meridian"] .sess:has(.sess-dot.live) { border-left-color: var(--live); }
+  [data-variant="meridian"] .sess:has(.sess-dot.waiting) { border-left-color: var(--waiting); }
+  [data-variant="meridian"] .sess.selected { border-left-color: var(--accent); }
+  [data-variant="meridian"] .sess-dot { display: none; }
+  [data-variant="meridian"] .sess-title { font-size: 11.5px; }
+  [data-variant="meridian"] .sess-meta { margin-top: 2px; font-size: 9.5px; }
+  [data-variant="meridian"] .search { font-size: 11px; height: 26px; }
+  [data-variant="meridian"] .gt-head { flex-basis: 28px; font-size: 11px; }
+  [data-variant="meridian"] .gt-head .gt-repo { font-family: var(--mono); text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.5px; }
+  [data-variant="meridian"] .grid-view { gap: 8px; padding: 8px; }
+  [data-variant="meridian"] .grid-tile.waiting { border-left: 3px solid var(--waiting); }
+  [data-variant="meridian"] .msg-role { font-family: var(--mono); }
+  [data-variant="meridian"] .term { font-size: 11.5px; }
+  [data-variant="meridian"] .new-sess, [data-variant="meridian"] .load-more { font-size: 10.5px; padding: 4px 8px; }
+</style>
+</head>
+<body>
+
+<!-- ============ TOP NAV ============ -->
+<nav class="topnav">
+  <div class="logo"><span class="mark">s</span>seshmux</div>
+  <div class="search-wrap">
+    <span class="search-icon">⌕</span>
+    <input class="search" id="search" placeholder="search all transcripts…" autocomplete="off">
+    <span class="search-kbd">⌘K</span>
+    <div class="search-results" id="searchResults"></div>
+  </div>
+  <div class="spacer"></div>
+  <div class="view-toggle">
+    <button id="btnTabs" class="active" onclick="setView('tabs')">▤ Tabs</button>
+    <button id="btnGrid" onclick="setView('grid')">▦ Grid</button>
+  </div>
+  <div class="live-badge" id="liveBadge"><span class="dot pulse"></span><span id="liveCount">4 live · 1 waiting</span></div>
+  <button class="gear" id="themeBtn" title="Toggle light / dark" onclick="toggleTheme()">☾</button>
+  <button class="gear" title="Settings" onclick="openSettings()">⚙</button>
+</nav>
+
+<div class="app">
+  <!-- ============ SIDE RAIL ============ -->
+  <aside class="rail">
+    <div class="rail-head">
+      <h2>Projects</h2>
+      <span class="rail-scan">~/.claude/projects · 27</span>
+    </div>
+    <div class="rail-provfilter" id="railProvFilter">
+      <button class="active" data-f="all" onclick="setProvFilter('all')">All</button>
+      <button data-f="claude" onclick="setProvFilter('claude')">✳ claude</button>
+      <button data-f="codex" onclick="setProvFilter('codex')">⬡ codex</button>
+    </div>
+    <div class="rail-body" id="railBody"></div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <main class="main">
+    <div class="tabbar" id="tabbar"></div>
+    <div class="panes" id="panes">
+      <div class="grid-view" id="gridView"></div>
+    </div>
+  </main>
+</div>
+
+<!-- ============ NEW SESSION MODAL ============ -->
+<div class="overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <h3 id="modalTitle">New session</h3>
+    <div class="m-path" id="modalPath"></div>
+    <div class="m-provider seg" id="modalProviderSeg">
+      <button class="active" data-p="claude" onclick="setModalProvider('claude')">✳ Claude Code</button>
+      <button data-p="codex" onclick="setModalProvider('codex')">⬡ Codex</button>
+      <button data-p="both" onclick="setModalProvider('both')">✳⬡ Both</button>
+    </div>
+    <button class="m-option" id="modalNewOption" onclick="modalStart('new')">
+      <span class="mo-icon">❯</span>
+      <span><span class="mo-title">Fresh session</span><div class="mo-desc" id="modalDescNew">claude — new conversation in this repo</div></span>
+    </button>
+    <button class="m-option" id="modalContinueOption" onclick="modalStart('continue')">
+      <span class="mo-icon">↻</span>
+      <span><span class="mo-title">Continue last</span><div class="mo-desc" id="modalDescContinue">claude --continue — pick up most recent session</div></span>
+    </button>
+    <button class="m-option" id="modalPlanOption" onclick="modalStart('plan')">
+      <span class="mo-icon">▤</span>
+      <span><span class="mo-title">Plan mode</span><div class="mo-desc">claude --permission-mode plan — read-only planning</div></span>
+    </button>
+    <button class="m-option" id="modalPlanoffOption" style="display:none" onclick="modalStart('planoff')">
+      <span class="mo-icon">⚖</span>
+      <span><span class="mo-title">Plan-off — parallel planning</span><div class="mo-desc">✳ and ⬡ each draft a plan read-only · compare side by side · winner executes</div></span>
+    </button>
+    <button class="m-cancel" onclick="closeModal()">Cancel</button>
+  </div>
+</div>
+
+<!-- ============ TOAST ============ -->
+<div class="toast" id="toast">
+  <span class="to-dot"></span>
+  <span class="to-text"><strong>sleepapnea-wp</strong> needs your input — permission prompt</span>
+  <button class="to-jump" onclick="jumpToWaiting()">Jump to it</button>
+  <button class="to-x" onclick="hideToast()">✕</button>
+</div>
+
+<script>
+/* ==================================================================
+   THEME + VARIANT — user preference default, persisted
+================================================================== */
+const root = document.documentElement;
+function applyTheme(t) {
+  root.dataset.theme = t;
+  localStorage.setItem('seshmux-theme', t);
+  const b = document.getElementById('themeBtn');
+  if (b) b.textContent = t === 'dark' ? '☾' : '☀';
+}
+function toggleTheme() { applyTheme(root.dataset.theme === 'dark' ? 'light' : 'dark'); }
+function setVariant(v) {
+  root.dataset.variant = v;
+  localStorage.setItem('seshmux-variant', v);
+  document.querySelectorAll('#variantPicker button').forEach(b => b.classList.toggle('active', b.dataset.v === v));
+}
+applyTheme(localStorage.getItem('seshmux-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+setVariant('aperture'); // design locked — Aperture w/ Ledger colors
+// follow OS changes unless user explicitly toggled this session
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+  if (!localStorage.getItem('seshmux-theme-locked')) applyTheme(e.matches ? 'dark' : 'light');
+});
+const _origToggle = toggleTheme;
+toggleTheme = function() { localStorage.setItem('seshmux-theme-locked', '1'); _origToggle(); };
+
+/* ==================================================================
+   FAKE DATA — modeled on real ~/.claude/projects/ contents
+================================================================== */
+const projects = [
+  {
+    id: 'sf', name: 'sleepfoundation-wp', path: '~/github/wp-sleepfoundation-org',
+    sessions: [
+      { id: 'sf-1', title: 'Fix nav z-index overlapping hero on mobile', branch: 'fix/nav-zindex', time: 'live now', duration: '42m', status: 'live', ctx: 61 },
+      { id: 'sf-2', title: 'Create PR for pick-for-you block updates', branch: 'feat/pick-for-you', time: '2h ago', duration: '1h 12m', status: 'done' },
+      { id: 'sf-3', title: 'Audit schema markup on mattress reviews', branch: 'main', time: 'yesterday', duration: '38m', status: 'done' },
+      { id: 'sf-4', title: 'Refactor SCSS breakpoint mixins', branch: 'chore/scss-cleanup', time: '3d ago', duration: '2h 04m', status: 'done' },
+      { id: 'sf-5', title: 'Hero image lazy-loading + LCP fix', branch: 'perf/lcp', time: '9d ago', duration: '1h 30m', status: 'done', old: true },
+      { id: 'sf-6', title: 'Migrate author bio block to ACF', branch: 'feat/author-acf', time: '2w ago', duration: '2h 10m', status: 'done', old: true },
+      { id: 'sf-7', title: 'Debug WP cron overlap on staging', branch: 'main', time: '2w ago', duration: '45m', status: 'done', old: true },
+      { id: 'sf-8', title: 'Newsletter signup form validation', branch: 'feat/newsletter', time: '3w ago', duration: '1h 05m', status: 'done', old: true },
+      { id: 'sf-9', title: 'Breadcrumb schema on category pages', branch: 'feat/breadcrumbs', time: '3w ago', duration: '50m', status: 'done', old: true },
+      { id: 'sf-10', title: 'Fix footer layout shift on mobile', branch: 'fix/footer-cls', time: '1mo ago', duration: '35m', status: 'done', old: true },
+      { id: 'sf-11', title: 'Bulk update internal links to https', branch: 'chore/https-links', time: '1mo ago', duration: '1h 55m', status: 'done', old: true },
+      { id: 'sf-12', title: 'A/B test variant for quiz CTA', branch: 'exp/quiz-cta', time: '5w ago', duration: '2h 20m', status: 'done', old: true },
+      { id: 'sf-13', title: 'Remove jQuery dependency from nav', branch: 'chore/no-jquery', time: '6w ago', duration: '3h 00m', status: 'done', old: true },
+      { id: 'sf-14', title: 'Content freshness audit script', branch: 'main', time: '2mo ago', duration: '1h 15m', status: 'done', old: true },
+    ]
+  },
+  {
+    id: 'sa', name: 'sleepapnea-wp', path: '~/github/wp-sleepapnea-org',
+    sessions: [
+      { id: 'sa-1', title: 'Port pick-for-you block from sleepfoundation', branch: 'feat/pick-for-you-port', time: 'live now', duration: '28m', status: 'waiting', ctx: 43 },
+      { id: 'sa-2', title: 'Fix Twig template escaping in provider cards', branch: 'fix/twig-escaping', time: '5h ago', duration: '55m', status: 'done' },
+      { id: 'sa-3', title: 'Update CLAUDE.md with build step docs', branch: 'main', time: '2d ago', duration: '15m', status: 'done' },
+      { id: 'sa-4', title: 'Provider directory pagination bug', branch: 'fix/pagination', time: '10d ago', duration: '1h 20m', status: 'done', old: true },
+      { id: 'sa-5', title: 'CPAP guide table of contents component', branch: 'feat/toc', time: '2w ago', duration: '2h 05m', status: 'done', old: true },
+      { id: 'sa-6', title: 'Fix sticky sidebar overlap at 1024px', branch: 'fix/sidebar-sticky', time: '3w ago', duration: '40m', status: 'done', old: true },
+      { id: 'sa-7', title: 'Yoast breadcrumb filter for quiz pages', branch: 'feat/quiz-breadcrumbs', time: '1mo ago', duration: '55m', status: 'done', old: true },
+    ]
+  },
+  {
+    id: 'sdnl', name: 'sd-next-library', path: '~/github/sd-next-library',
+    sessions: [
+      { id: 'sdnl-1', title: 'Build mattress comparison table component', branch: 'feat/comparison-table', time: 'live now', duration: '1h 20m', status: 'live', ctx: 88 },
+      { id: 'sdnl-2', title: 'Storybook setup for shared UI package', branch: 'chore/storybook', time: 'yesterday', duration: '2h 30m', status: 'done' },
+      { id: 'sdnl-3', title: 'Type-safe theme tokens export for consumers', branch: 'feat/token-types', time: '3d ago', duration: '1h 10m', status: 'done', provider: 'codex' },
+    ]
+  },
+  {
+    id: 'kt', name: 'kantrail-ai', path: '~/Downloads/kantrail-ai',
+    sessions: [
+      { id: 'kt-1', title: 'Debug websocket reconnect loop in agent runner', branch: 'main', time: 'live now', duration: '18m', status: 'live', ctx: 22, provider: 'codex' },
+      { id: 'kt-2', title: 'Add streaming responses to chat endpoint', branch: 'feat/streaming', time: '4d ago', duration: '3h 15m', status: 'done' },
+      { id: 'kt-3', title: 'Refactor agent config loader to zod schema', branch: 'chore/config-zod', time: '2d ago', duration: '48m', status: 'done', provider: 'codex' },
+    ]
+  },
+  {
+    id: 'bdr', name: 'bdr-dashboard', path: '~/github/bdr-dashboard',
+    sessions: [
+      { id: 'bdr-1', title: 'Wire up Firebase auth to reporting views', branch: 'feat/firebase-auth', time: '6h ago', duration: '1h 45m', status: 'done' },
+      { id: 'bdr-2', title: 'Chart rendering perf — memoize datasets', branch: 'perf/charts', time: '1w ago', duration: '50m', status: 'done' },
+    ]
+  },
+  {
+    id: 'shp', name: 'shopify-sleepdoctor', path: '~/github/shopify-sleepdoctor-theme',
+    sessions: [
+      { id: 'shp-1', title: 'PDP bundle upsell section liquid template', branch: 'feat/bundle-upsell', time: '2d ago', duration: '1h 05m', status: 'done' },
+    ]
+  },
+];
+
+/* Live terminal fake content per session id */
+const termContent = {
+  'sf-1': `<span class="dim">╭──────────────────────────────────────────╮</span>
+<span class="dim">│</span> <span class="acc">✳ Claude Code</span> <span class="dim">v2.1.9 · sleepfoundation-wp │</span>
+<span class="dim">╰──────────────────────────────────────────╯</span>
+
+<span class="usr">❯ fix the nav z-index issue where the dropdown hides behind the hero on mobile</span>
+
+<span class="acc">●</span> Inspecting live DOM first per your debugging rules — checking stacking context on <span class="grn">.site-header</span>…
+
+<span class="dim">  ⎿ Bash(grep -rn "z-index" wp-content/themes/onecaremedia-child/scss/…)</span>
+<span class="dim">  ⎿ Read(scss/components/_navigation.scss)</span>
+
+<span class="acc">●</span> Root cause: <span class="grn">.hero-banner</span> creates stacking context with <span class="grn">transform: translateZ(0)</span> at <span class="grn">_hero.scss:48</span>, and nav dropdown z-index 10 sits inside header's own context. Fix: raise <span class="grn">.site-header</span> to z-index 100 — one line.
+
+<span class="dim">  ⎿ Edit(scss/components/_navigation.scss)</span>
+<span class="grn">  ⎿ ✓ Compiled successfully (npm run build:css)</span>
+<span class="dim">  ⎿ ask_codex("Any conflict with your PDP overlay work if header goes to z-index 100?")</span>
+<span class="dim">  ⎿ ⬡ codex → "No conflict — PDP overlay renders in isolated layer (z 40)."</span>
+
+<span class="acc">●</span> Verifying in browser at mobile breakpoint…<span class="cursor"></span>
+
+<div class="promptbox">❯ <span class="dim">…</span></div>`,
+
+  'sa-1': `<span class="dim">╭──────────────────────────────────────────╮</span>
+<span class="dim">│</span> <span class="acc">✳ Claude Code</span> <span class="dim">v2.1.9 · sleepapnea-wp     │</span>
+<span class="dim">╰──────────────────────────────────────────╯</span>
+
+<span class="usr">❯ port the pick-for-you block from sleepfoundation, adapt to sa child theme</span>
+
+<span class="acc">●</span> Copied block partials, adapting Twig template names to sa conventions…
+
+<span class="dim">  ⎿ Write(templates/partials/blocks/pick-for-you.twig)</span>
+<span class="dim">  ⎿ Write(scss/blocks/_pick-for-you.scss)</span>
+
+<span class="yel">⚠ Permission required</span>
+
+<span class="yel">  Bash command: npm run build:css</span>
+<span class="dim">  Compile SCSS to verify block styles</span>
+
+<span class="yel">  ❯ 1. Yes</span>
+<span class="dim">    2. Yes, and don't ask again for npm run build:css</span>
+<span class="dim">    3. No, and tell Claude what to do differently (esc)</span>
+
+<span class="yel">Waiting for your input…</span><span class="cursor"></span>`,
+
+  'sdnl-1': `<span class="dim">╭──────────────────────────────────────────╮</span>
+<span class="dim">│</span> <span class="acc">✳ Claude Code</span> <span class="dim">v2.1.9 · sd-next-library   │</span>
+<span class="dim">╰──────────────────────────────────────────╯</span>
+
+<span class="usr">❯ build the mattress comparison table component per the figma frame</span>
+
+<span class="acc">●</span> Reading Figma frame, extracting tokens…
+
+<span class="dim">  ⎿ figma agent → design tokens extracted (spacing, type scale)</span>
+<span class="dim">  ⎿ Write(packages/ui/src/ComparisonTable/ComparisonTable.tsx)</span>
+<span class="dim">  ⎿ Write(packages/ui/src/ComparisonTable/comparison-table.module.scss)</span>
+
+<span class="acc">●</span> Desktop breakpoint matches. Now checking mobile — Figma shows stacked cards under 768px, implementing swap…
+
+<span class="dim">  ⎿ Edit(comparison-table.module.scss)</span>
+<span class="grn">  ⎿ ✓ Storybook hot-reloaded</span>
+
+<span class="acc">●</span> Taking mobile screenshot to verify against Figma…<span class="cursor"></span>
+
+<div class="promptbox">❯ <span class="dim">…</span></div>`,
+
+  'kt-1': `<span class="dim">╭──────────────────────────────────────────╮</span>
+<span class="dim">│</span> <span class="acc">⬡ Codex</span> <span class="dim">v0.34 · gpt-5.3-codex · kantrail-ai │</span>
+<span class="dim">╰──────────────────────────────────────────╯</span>
+
+<span class="usr">› the agent runner websocket keeps reconnecting in a loop, find out why</span>
+
+<span class="acc">•</span> Investigating reconnect behavior — reproducing first.
+
+<span class="dim">  └ exec  node runner.js --verbose 2>&1 | head -50</span>
+<span class="dim">  └ read  src/ws/reconnect.ts</span>
+
+<span class="acc">•</span> Found it: server sends <span class="grn">pong</span> every 35s but client timeout is 30s — client kills healthy connection, reconnects, repeat. Client timeout is config; one-line fix.
+
+<span class="dim">  └ edit  src/ws/config.ts (+1 -1)</span>
+
+<span class="acc">•</span> Re-running to confirm loop is gone…<span class="cursor"></span>
+
+<div class="promptbox">› <span class="dim">…</span></div>`};
+
+/* Transcript fake content per session id */
+const transcripts = {
+  'sf-2': {
+    title: 'Create PR for pick-for-you block updates',
+    meta: ['sleepfoundation-wp', 'feat/pick-for-you', '2h ago · 1h 12m', '48 messages', 'uuid 106e2f53…'],
+    msgs: [
+      { role: 'user', body: 'Can you create a PR for me? The pick-for-you block changes are ready.' },
+      { role: 'assistant', body: 'Running build and lint first, then reviewing the diff before committing.', tools: [
+        { name: 'Bash', arg: 'npm run build:css', out: '✓ compiled 42 files in 3.2s\n0 errors, 0 warnings' },
+        { name: 'Bash', arg: 'git diff --stat', out: ' templates/partials/blocks/pick-for-you.twig | 84 ++++++---\n scss/blocks/_pick-for-you.scss              | 112 +++++++++----\n 2 files changed, 141 insertions(+), 55 deletions(-)' },
+      ]},
+      { role: 'assistant', body: 'Build passes. Diff is two files — the Twig template and its SCSS. Committing on <code>feat/pick-for-you</code> and opening the PR. Per your rules: committing locally, will ask before pushing.', tools: [
+        { name: 'Bash', arg: 'git add -A && git commit -m "feat(blocks): responsive pick-for-you card grid"', out: '[feat/pick-for-you 3a41f92] feat(blocks): responsive pick-for-you card grid\n 2 files changed, 141 insertions(+), 55 deletions(-)' },
+      ]},
+      { role: 'user', body: 'push it' },
+      { role: 'assistant', body: 'Pushed and PR opened: <code>github.com/…/pull/482</code>. Preview deploy will comment on the PR when ready.', tools: [
+        { name: 'Bash', arg: 'git push -u origin feat/pick-for-you && gh pr create --fill', out: 'https://github.com/onecaremedia/wp-sleepfoundation-org/pull/482' },
+      ]},
+    ]
+  },
+  'sa-2': {
+    title: 'Fix Twig template escaping in provider cards',
+    meta: ['sleepapnea-wp', 'fix/twig-escaping', '5h ago · 55m', '31 messages', 'uuid 8bd20c11…'],
+    msgs: [
+      { role: 'user', body: 'Provider card descriptions are showing raw HTML entities on the directory page.' },
+      { role: 'assistant', body: 'Double-escaping. The description runs through <code>esc_html()</code> in PHP and then <code>|e</code> in Twig. Fix belongs in the Twig layer — removing the redundant filter since PHP already sanitizes at the source.', tools: [
+        { name: 'Grep', arg: 'esc_html.*description', out: 'inc/providers/class-provider-card.php:74:  $data[\'description\'] = esc_html( $raw_description );' },
+        { name: 'Edit', arg: 'templates/partials/provider-card.twig', out: '- {{ provider.description|e }}\n+ {{ provider.description }}' },
+      ]},
+      { role: 'user', body: 'verified on staging, looks good' },
+    ]
+  },
+  'sf-3': {
+    title: 'Audit schema markup on mattress reviews',
+    meta: ['sleepfoundation-wp', 'main', 'yesterday · 38m', '22 messages', 'uuid 55d91669…'],
+    msgs: [
+      { role: 'user', body: 'Run a schema audit on the mattress review post type.' },
+      { role: 'assistant', body: 'Audit complete: 14 review posts checked. 12 valid <code>Product</code> + <code>Review</code> pairs. Two issues — missing <code>aggregateRating</code> on 2 posts where Yoast fallback fires, and <code>priceValidUntil</code> hardcoded to 2024 in the review block template.', tools: [
+        { name: 'Bash', arg: 'wp post list --post_type=mattress-review --format=count', out: '14' },
+      ]},
+    ]
+  },
+};
+
+/* ==================================================================
+   STATE
+================================================================== */
+let openTabs = [];      // { id, kind: 'term'|'transcript', sessId, label, repo, status }
+let activeTab = null;
+let view = 'tabs';
+let modalProject = null;
+let newSessCounter = 0;
+
+const $ = id => document.getElementById(id);
+const PROV = { claude: { glyph: '\u2733', name: 'Claude Code' }, codex: { glyph: '\u2B21', name: 'Codex CLI' } };
+const provOf = s => s.provider || 'claude';
+const provBadge = (s, withName) => {
+  const p = provOf(typeof s === 'string' ? { provider: s } : s);
+  return `<span class="prov prov-${p}" title="${PROV[p].name}">${PROV[p].glyph}${withName ? ' ' + p : ''}</span>`;
+};
+const ctxBadge = s => (s.ctx == null) ? '' :
+  `<span class="ctx ${s.ctx >= 80 ? 'hot' : s.ctx >= 60 ? 'warm' : ''}" title="context window ${s.ctx}% full">${Math.round(s.ctx*2)}k/200k · ${s.ctx}%</span>`;
+const findSess = sid => {
+  for (const p of projects) { const s = p.sessions.find(x => x.id === sid); if (s) return { p, s }; }
+  return null;
+};
+
+/* ==================================================================
+   SIDE RAIL
+================================================================== */
+const LOAD_CHUNK = 5;
+let provFilter = 'all';
+function setProvFilter(f) {
+  provFilter = f;
+  document.querySelectorAll('#railProvFilter button').forEach(b => b.classList.toggle('active', b.dataset.f === f));
+  renderRail();
+}
+
+function visibleSessions(p) {
+  let list = provFilter === 'all' ? p.sessions : p.sessions.filter(x => provOf(x) === provFilter);
+  if (p.filter) {
+    const q = p.filter.toLowerCase();
+    return { shown: list.filter(s => s.title.toLowerCase().includes(q) || s.branch.toLowerCase().includes(q)), hidden: 0, filtered: true };
+  }
+  const recent = list.filter(s => !s.old);            // last week
+  const older = list.filter(s => s.old);
+  const extra = older.slice(0, p.loaded || 0);        // loaded via button
+  return { shown: recent.concat(extra), hidden: older.length - extra.length, filtered: false };
+}
+
+const PIN_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg>`;
+
+function sortedProjects() {
+  return [...projects].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)); // stable: keeps manual order within groups
+}
+
+function renderRail() {
+  $('railBody').innerHTML = sortedProjects().filter(p => provFilter === 'all' || p.sessions.some(x => provOf(x) === provFilter)).map(p => {
+    const liveS = p.sessions.find(s => s.status === 'waiting') || p.sessions.find(s => s.status === 'live');
+    const dot = liveS ? `<span class="proj-live-dot ${liveS.status === 'waiting' ? 'waiting' : ''}"></span>` : '';
+    const { shown, hidden, filtered } = visibleSessions(p);
+    return `
+    <div class="proj ${p.open ? 'open' : ''}" id="proj-${p.id}"
+         ondragover="projDragOver(event,'${p.id}')" ondrop="projDrop(event,'${p.id}')" ondragleave="dragLeave(event)">
+      <button class="proj-head" draggable="true" onclick="toggleProj('${p.id}')" title="${p.path}"
+              ondragstart="projDragStart(event,'${p.id}')" ondragend="dragEnd(event)">
+        <span class="proj-caret">▶</span>
+        <span class="proj-name">${p.name}</span>
+        <span class="pin ${p.pinned ? 'pinned' : ''}" title="${p.pinned ? 'Unpin' : 'Pin to top'}" onclick="togglePin(event,'${p.id}')">${PIN_SVG}</span>
+        <span class="proj-add" title="Shared scratchpad (.seshmux/handoff.md)" onclick="event.stopPropagation(); openScratchpad('${p.id}')">≡</span>
+        <span class="proj-add" title="New session" onclick="event.stopPropagation(); openModal('${p.id}')">+</span>
+        ${dot}
+        <span class="proj-count">${p.sessions.length}</span>
+      </button>
+      <div class="proj-sessions">
+        ${(p.filter || p.sessions.length > 6) ? `<div class="proj-filter-wrap">
+          <input class="proj-filter" id="filter-${p.id}" placeholder="filter…" value="${p.filter || ''}"
+                 oninput="setProjFilter('${p.id}', this.value)">
+        </div>` : ''}
+        ${shown.map(s => `
+          <button class="sess ${activeSessId() === s.id ? 'selected' : ''}" onclick="openSession('${s.id}')">
+            <span class="sess-dot ${s.status}"></span>
+            <span class="sess-info">
+              <div class="sess-title">${s.title}</div>
+              <div class="sess-meta">
+                ${provBadge(s)}
+                <span class="branch-chip">⎇ ${s.branch}</span>
+              </div>
+              <div class="sess-meta sess-meta2">
+                <span>${s.time}${s.status === 'done' ? ' · ' + s.duration : ''}</span>
+                ${ctxBadge(s)}
+              </div>
+            </span>
+          </button>`).join('')}
+        ${filtered && !shown.length ? '<div class="no-match">no matching sessions</div>' : ''}
+        ${!filtered && hidden > 0 ? `<button class="load-more" onclick="loadMore('${p.id}')">${hidden} older…</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function setProjFilter(pid, val) {
+  const p = projects.find(x => x.id === pid);
+  p.filter = val;
+  renderRail();
+  const inp = $('filter-' + pid);
+  if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+}
+
+function loadMore(pid) {
+  const p = projects.find(x => x.id === pid);
+  p.loaded = (p.loaded || 0) + LOAD_CHUNK;
+  renderRail();
+}
+function activeSessId() {
+  const t = openTabs.find(t => t.id === activeTab);
+  return t ? t.sessId : null;
+}
+function toggleProj(pid) {
+  const p = projects.find(x => x.id === pid);
+  p.open = !p.open;
+  if (!p.open) { p.loaded = 0; p.filter = ''; } // collapse = evict older window + filter (memory policy analog)
+  renderRail();
+}
+
+/* ==================================================================
+   TABS + PANES
+================================================================== */
+function openSession(sid) {
+  const found = findSess(sid);
+  if (!found) return;
+  const { p, s } = found;
+  const kind = (s.status === 'live' || s.status === 'waiting') ? 'term' : 'transcript';
+  let tab = openTabs.find(t => t.sessId === sid);
+  if (!tab) {
+    tab = { id: 'tab-' + sid, kind, sessId: sid, label: kind === 'term' ? p.name : s.title, repo: p.name, status: s.status };
+    openTabs.push(tab);
+  }
+  activeTab = tab.id;
+  if (view === 'grid' && kind === 'term') {
+    // stay in grid: select + scroll to the tile
+    renderAll();
+    gridTileClick(sid);
+    const tile = document.querySelector(`.grid-tile[data-sess="${sid}"]`);
+    if (tile) tile.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    return;
+  }
+  if (view === 'grid') setView('tabs'); else renderAll();
+}
+
+function closeTab(tid, ev) {
+  ev.stopPropagation();
+  const i = openTabs.findIndex(t => t.id === tid);
+  openTabs.splice(i, 1);
+  if (activeTab === tid) activeTab = openTabs.length ? openTabs[Math.max(0, i - 1)].id : null;
+  renderAll();
+}
+
+function renderTabs() {
+  $('tabbar').innerHTML = openTabs.map((t, i) => {
+    const dotCls = (t.kind === 'transcript' || t.kind === 'settings' || t.kind === 'scratchpad' || t.kind === 'planoff') ? 'neutral' : (t.status === 'waiting' ? 'waiting' : 'live');
+    const next = openTabs[i + 1];
+    const isGroupStart = next && next.linked && next.linkSrc === t.sessId;
+    const isGroupEnd = t.linked && i > 0 && openTabs[i - 1].sessId === t.linkSrc;
+    const kindChip = t.linked ? `<span class="link-chip ${t.linkedKind}">${t.linkedKind === 'review' ? '⊙ review' : '⇄ handoff'}</span>` : (t.kind === 'planoff' ? '<span class="link-chip planoff">⚖ plan-off</span>' : '');
+    return `<button class="tab ${t.id === activeTab ? 'active' : ''} ${t.linked ? 'linked' : ''} ${isGroupStart ? 'group-start' : ''} ${isGroupEnd ? 'group-end' : ''}" draggable="true" onclick="activateTab('${t.id}')"
+      ondragstart="tabDragStart(event,'${t.id}')" ondragover="tabDragOver(event,'${t.id}')"
+      ondrop="tabDrop(event,'${t.id}')" ondragend="dragEnd(event)" ondragleave="dragLeave(event)">
+      <span class="t-dot ${dotCls}"></span>
+      ${kindChip}
+      ${t.sessId && findSess(t.sessId) ? provBadge(findSess(t.sessId).s, true) : ''}
+      <span class="t-label">${t.label}</span>
+      <span class="t-close" onclick="closeTab('${t.id}', event)">✕</span>
+    </button>`;
+  }).join('');
+}
+
+/* ---- drag & drop: tabs + projects ---- */
+let dragTabId = null, dragProjId = null;
+function tabDragStart(e, id) { dragTabId = id; e.currentTarget.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; }
+function tabDragOver(e, id) {
+  if (!dragTabId || id === dragTabId) return;
+  e.preventDefault();
+  e.currentTarget.classList.add('drag-over');
+}
+function buildBlocks() {
+  // a block = a source tab + every tab handed-off/reviewed from it; blocks move as one
+  const blocks = [], used = new Set();
+  for (const t of openTabs) {
+    if (used.has(t.id)) continue;
+    const src = t.linked ? openTabs.find(x => !x.linked && x.sessId === t.linkSrc) : t;
+    const anchor = src || t;
+    const members = [anchor, ...openTabs.filter(x => x.linked && anchor.sessId && x.linkSrc === anchor.sessId)];
+    members.forEach(m => used.add(m.id));
+    blocks.push(members);
+  }
+  return blocks;
+}
+function tabDrop(e, id) {
+  e.preventDefault();
+  if (!dragTabId || dragTabId === id) { dragTabId = null; renderTabs(); return; }
+  const blocks = buildBlocks();
+  const bi = blocks.findIndex(b => b.some(t => t.id === dragTabId));
+  const ti = blocks.findIndex(b => b.some(t => t.id === id));
+  if (bi < 0 || ti < 0 || bi === ti) { dragTabId = null; renderTabs(); return; }
+  const [moved] = blocks.splice(bi, 1);
+  blocks.splice(ti > bi ? ti - 1 : ti, 0, moved);
+  openTabs = blocks.flat();
+  dragTabId = null;
+  renderTabs();
+}
+function projDragStart(e, id) {
+  dragProjId = id;
+  e.currentTarget.closest('.proj').classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.stopPropagation();
+}
+function projDragOver(e, id) {
+  if (!dragProjId || id === dragProjId) return;
+  e.preventDefault();
+  e.currentTarget.classList.add('drag-over');
+}
+function projDrop(e, id) {
+  e.preventDefault();
+  const from = projects.findIndex(p => p.id === dragProjId);
+  const to = projects.findIndex(p => p.id === id);
+  if (from < 0 || to < 0) return;
+  // dropping across pin boundary adopts the target group's pin state
+  projects[from].pinned = projects[to].pinned;
+  const [m] = projects.splice(from, 1);
+  projects.splice(to, 0, m);
+  dragProjId = null;
+  renderRail();
+}
+function dragLeave(e) { e.currentTarget.classList.remove('drag-over'); }
+function dragEnd(e) {
+  dragTabId = dragProjId = null;
+  document.querySelectorAll('.dragging, .drag-over').forEach(el => el.classList.remove('dragging', 'drag-over'));
+}
+function togglePin(ev, pid) {
+  ev.stopPropagation();
+  const p = projects.find(x => x.id === pid);
+  p.pinned = !p.pinned;
+  renderRail();
+}
+function activateTab(tid) { activeTab = tid; renderAll(); }
+
+function renderPanes() {
+  const panes = $('panes');
+  panes.querySelectorAll('.pane, .empty').forEach(e => e.remove());
+  if (!openTabs.length && view === 'tabs') {
+    panes.insertAdjacentHTML('beforeend', `<div class="empty"><div class="mark">❯_</div><div>No open sessions — pick one from the rail, or start fresh.</div></div>`);
+    return;
+  }
+  for (const t of openTabs) {
+    let inner = '';
+    if (t.kind === 'settings') {
+      inner = settingsHTML();
+    } else if (t.kind === 'scratchpad') {
+      inner = scratchpadHTML(t.projId);
+    } else if (t.kind === 'planoff') {
+      inner = planoffHTML(t.projId);
+    } else if (t.kind === 'term') {
+      const found = findSess(t.sessId);
+      const content = termContent[t.sessId] || genericTerm(t.repo);
+      const sb = found && found.s.status === 'waiting'
+        ? `<span class="sb-wait">⏸ waiting for input</span>`
+        : `<span class="sb-live">● live</span>`;
+      const ctx = found && found.s.ctx != null ? found.s.ctx : null;
+      const ctxSeg = ctx == null ? '' :
+        `<span class="sb-ctx"><span class="ctx-bar"><span class="ctx-fill ${ctx >= 80 ? 'hot' : ctx >= 60 ? 'warm' : ''}" style="width:${ctx}%"></span></span>ctx ${ctx}% · ${Math.round(ctx*2)}k/200k</span>`;
+      const prov = found ? provBadge(found.s, true) : '';
+      const other = found && provOf(found.s) === 'codex' ? 'claude' : 'codex';
+      const otherGlyph = PROV[other].glyph;
+      const acts = found ? `<span class="sb-actions">
+          <button class="sb-act" onclick="handoffSession('${t.sessId}')" title="Compose context brief, continue in ${PROV[other].name}">⇄ hand off to ${otherGlyph} ${other}</button>
+          <button class="sb-act" onclick="reviewSession('${t.sessId}')" title="Send diff to a fresh ${PROV[other].name} session for adversarial review">⊙ review with ${otherGlyph}</button>
+        </span>` : '';
+      inner = `<div class="term">${content}</div>
+        <div class="term-statusbar">${sb}${prov}<span>tmux: seshmux-${t.repo}</span><span>⎇ ${found ? found.s.branch : 'main'}</span>${ctxSeg}${acts}<span class="sb-tail">detach-safe</span></div>`;
+    } else {
+      inner = renderTranscript(t.sessId);
+    }
+    panes.insertAdjacentHTML('beforeend', `<div class="pane ${t.id === activeTab ? 'active' : ''}" id="${t.id}">${inner}</div>`);
+  }
+}
+
+function genericTerm(repo) {
+  return `<span class="dim">╭──────────────────────────────────────────╮</span>
+<span class="dim">│</span> <span class="acc">✳ Claude Code</span> <span class="dim">v2.1.9 · ${repo}</span>
+<span class="dim">╰──────────────────────────────────────────╯</span>
+
+<span class="dim">Fresh session started in tmux seshmux-${repo}. Type to begin.</span>
+
+<div class="promptbox">❯ <span class="cursor"></span></div>`;
+}
+
+function openSettings() {
+  let tab = openTabs.find(t => t.kind === 'settings');
+  if (!tab) { tab = { id: 'tab-settings', kind: 'settings', sessId: null, label: 'Settings', repo: null, status: null }; openTabs.push(tab); }
+  activeTab = tab.id;
+  if (view === 'grid') setView('tabs'); else renderAll();
+}
+
+function toggleSwitch(el) { el.classList.toggle('on'); }
+
+function settingsHTML() {
+  return `<div class="settings"><div class="set-inner">
+    <h1 class="set-h1">Settings</h1>
+
+    <div class="set-section">
+      <div class="set-title">Environment</div>
+      <div class="set-row"><span class="set-label">Claude Code<span class="set-sub">~/.local/bin/claude</span></span><span class="ok">✓ detected · v2.1.204</span></div>
+      <div class="set-row"><span class="set-label">tmux<span class="set-sub">required for session persistence</span></span><span class="ok">✓ detected · 3.6a</span></div>
+      <div class="set-row"><span class="set-label">Session store<span class="set-sub">~/.claude/projects</span></span><span class="ok">✓ 26 projects · 351 MB</span></div>
+      <div class="set-row"><span class="set-label">Prompt history<span class="set-sub">~/.claude/history.jsonl</span></span><span class="ok">✓ found</span></div>
+      <div class="set-row"><span class="set-label">Codex CLI<span class="set-sub">/opt/homebrew/bin/codex</span></span><span class="ok">✓ detected · v0.34</span></div>
+      <div class="set-row"><span class="set-label">Codex session store<span class="set-sub">~/.codex/sessions</span></span><span class="ok">✓ found</span></div>
+      <div class="set-row"><span class="set-label">Rescan<span class="set-sub">re-detect environment</span></span><button class="btn">Rescan now</button></div>
+    </div>
+
+    <div class="set-section">
+      <div class="set-title">Usage — last 30 days <span class="set-note">from session logs</span></div>
+      <div class="set-stats">
+        <div class="stat"><div class="stat-n">128</div><div class="stat-l">sessions</div></div>
+        <div class="stat"><div class="stat-n">41.2M</div><div class="stat-l">total tokens</div></div>
+        <div class="stat"><div class="stat-n">36.8M</div><div class="stat-l">cache reads</div></div>
+        <div class="stat"><div class="stat-n">~$87</div><div class="stat-l">est. API cost</div></div>
+      </div>
+      <div class="set-row usage-row"><span class="set-label">by agent</span><span class="usage-bar split"><span style="width:84%"></span></span><span class="usage-pct" style="flex-basis:110px">✳ 84% · ⬡ 16%</span></div>
+      <div class="set-row usage-row"><span class="set-label">sleepfoundation-wp</span><span class="usage-bar"><span style="width:42%"></span></span><span class="usage-pct">42%</span></div>
+      <div class="set-row usage-row"><span class="set-label">sleepapnea-wp</span><span class="usage-bar"><span style="width:23%"></span></span><span class="usage-pct">23%</span></div>
+      <div class="set-row usage-row"><span class="set-label">sd-next-library</span><span class="usage-bar"><span style="width:15%"></span></span><span class="usage-pct">15%</span></div>
+      <div class="set-row usage-row"><span class="set-label">kantrail-ai</span><span class="usage-bar"><span style="width:11%"></span></span><span class="usage-pct">11%</span></div>
+      <div class="set-row usage-row"><span class="set-label">other</span><span class="usage-bar"><span style="width:9%"></span></span><span class="usage-pct">9%</span></div>
+    </div>
+
+    <div class="set-section">
+      <div class="set-title">Agent bridge <span class="set-note">MCP — agents call each other as tools</span></div>
+      <div class="set-row"><span class="set-label">Bridge server<span class="set-sub">~/.config/seshmux/bridge.sock</span></span><span class="ok">✓ running</span></div>
+      <div class="set-row"><span class="set-label">Registered in Claude Code<span class="set-sub">mcpServers.seshmux-bridge → exposes ask_codex</span></span><span class="ok">✓</span></div>
+      <div class="set-row"><span class="set-label">Registered in Codex<span class="set-sub">~/.codex/config.toml mcp_servers → exposes ask_claude</span></span><span class="ok">✓</span></div>
+      <div class="set-row"><span class="set-label">Approve each cross-agent call<span class="set-sub">off = agents relay freely within hop budget</span></span><span class="toggle on" onclick="toggleSwitch(this)"></span></div>
+      <div class="set-row"><span class="set-label">Hop budget<span class="set-sub">max cross-agent calls per task — hard no-loop rule always on</span></span><select class="set-select"><option>10 per task</option><option>25 per task</option><option>3 per task</option></select></div>
+      <div class="set-row"><span class="set-label">Exchanges this week</span><span class="set-mono">14 · <button class="btn" style="padding:2px 10px">View log</button></span></div>
+    </div>
+
+    <div class="set-section">
+      <div class="set-title">Appearance</div>
+      <div class="set-row"><span class="set-label">Theme</span>
+        <span class="seg">
+          <button onclick="localStorage.removeItem('seshmux-theme-locked');applyTheme(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light')">System</button>
+          <button onclick="localStorage.setItem('seshmux-theme-locked','1');applyTheme('light')">Light</button>
+          <button onclick="localStorage.setItem('seshmux-theme-locked','1');applyTheme('dark')">Dark</button>
+        </span></div>
+    </div>
+
+    <div class="set-section">
+      <div class="set-title">Notifications</div>
+      <div class="set-row"><span class="set-label">Needs-input alerts<span class="set-sub">toast when a session waits on you</span></span><span class="toggle on" onclick="toggleSwitch(this)"></span></div>
+      <div class="set-row"><span class="set-label">macOS notifications<span class="set-sub">system notification when seshmux is in background</span></span><span class="toggle on" onclick="toggleSwitch(this)"></span></div>
+      <div class="set-row"><span class="set-label">Sound</span><span class="toggle" onclick="toggleSwitch(this)"></span></div>
+    </div>
+
+    <div class="set-section">
+      <div class="set-title">Memory & storage</div>
+      <div class="set-row"><span class="set-label">Transcript cache<span class="set-sub">parsed transcripts kept in memory</span></span><select class="set-select"><option>10 most recent</option><option>25 most recent</option><option>50 most recent</option></select></div>
+      <div class="set-row"><span class="set-label">Terminal scrollback<span class="set-sub">tmux keeps full history</span></span><select class="set-select"><option>5,000 lines</option><option>10,000 lines</option><option>2,000 lines</option></select></div>
+      <div class="set-row"><span class="set-label">Session list window<span class="set-sub">older sessions load on demand</span></span><select class="set-select"><option>1 week</option><option>2 weeks</option><option>1 month</option></select></div>
+    </div>
+
+    <div class="set-section">
+      <div class="set-title">Sessions</div>
+      <div class="set-row"><span class="set-label">tmux session prefix</span><span class="set-mono">seshmux-</span></div>
+      <div class="set-row"><span class="set-label">Default permission mode<span class="set-sub">for new sessions</span></span><select class="set-select"><option>default</option><option>plan</option><option>acceptEdits</option></select></div>
+    </div>
+
+    <div class="set-section">
+      <div class="set-title">Account & sync <span class="set-note">coming soon</span></div>
+      <div class="set-row"><span class="set-label">Firebase sync<span class="set-sub">pins, names, notes across machines — local-first either way</span></span><button class="btn" disabled style="opacity:.45;cursor:not-allowed">Sign in</button></div>
+    </div>
+  </div></div>`;
+}
+
+function renderTranscript(sid) {
+  const tr = transcripts[sid];
+  if (!tr) {
+    const found = findSess(sid);
+    return `<div class="transcript"><div class="tr-inner">
+      <div class="tr-header"><h1>${found ? found.s.title : 'Session'}</h1>
+      <div class="tr-meta"><span>transcript preview — filler</span></div>
+      <div class="tr-actions"><button class="btn primary" onclick="fakeResume('${sid}')">↻ Resume session</button><button class="btn">Copy session id</button></div></div>
+      <div class="msg assistant"><div class="msg-role">Assistant</div><div class="msg-body">Transcript content would render here from the session jsonl.</div></div>
+    </div></div>`;
+  }
+  return `<div class="transcript"><div class="tr-inner">
+    <div class="tr-header">
+      <h1>${tr.title}</h1>
+      <div class="tr-meta">${(findSess(sid) ? provBadge(findSess(sid).s, true) : '')}${tr.meta.map(m => `<span>${m}</span>`).join('')}</div>
+      <div class="tr-actions">
+        <button class="btn primary" onclick="fakeResume('${sid}')">↻ Resume session</button>
+        <button class="btn" onclick="handoffSession('${sid}')">⇄ Continue in ${provOf(findSess(sid).s) === 'codex' ? '✳ Claude' : '⬡ Codex'}</button>
+        <button class="btn" onclick="reviewSession('${sid}')">⊙ Review with ${provOf(findSess(sid).s) === 'codex' ? '✳ Claude' : '⬡ Codex'}</button>
+        <button class="btn">Copy session id</button>
+      </div>
+    </div>
+    ${tr.msgs.map(m => `
+      <div class="msg ${m.role}">
+        <div class="msg-role">${m.role}</div>
+        <div class="msg-body">${m.body}</div>
+        ${(m.tools || []).map((tc, i) => `
+          <div class="toolcall" id="tc-${sid}-${i}-${Math.random().toString(36).slice(2, 6)}">
+            <button class="toolcall-head" onclick="this.parentElement.classList.toggle('open')">
+              <span class="tc-caret">▶</span>
+              <span class="tc-name">${tc.name}</span>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${tc.arg}</span>
+            </button>
+            <div class="toolcall-body">${tc.out}</div>
+          </div>`).join('')}
+      </div>`).join('')}
+  </div></div>`;
+}
+
+function spawnBridgeSession(sid, kind) {
+  const found = findSess(sid);
+  if (!found) return;
+  const { p, s: src } = found;
+  const target = provOf(src) === 'codex' ? 'claude' : 'codex';
+  const g = PROV[target].glyph;
+  const nid = src.id + '-' + kind + '-' + (++newSessCounter);
+  const title = (kind === 'handoff' ? 'Continuation of: ' : 'Cross-review of: ') + src.title;
+  p.sessions.unshift({ id: nid, title, branch: src.branch, time: 'live now', duration: '0m', status: 'live', provider: target, ctx: 4, linkedKind: kind, linkSrc: sid });
+  const banner = target === 'codex'
+    ? `<span class="dim">╭──────────────────────────────────────────╮</span>\n<span class="dim">│</span> <span class="acc">⬡ Codex</span> <span class="dim">v0.34 · gpt-5.3-codex · ${p.name}</span>\n<span class="dim">╰──────────────────────────────────────────╯</span>`
+    : `<span class="dim">╭──────────────────────────────────────────╮</span>\n<span class="dim">│</span> <span class="acc">✳ Claude Code</span> <span class="dim">v2.1.9 · ${p.name}</span>\n<span class="dim">╰──────────────────────────────────────────╯</span>`;
+  const pr = target === 'codex' ? '›' : '❯';
+  const body = kind === 'handoff'
+    ? `<span class="usr">${pr} [seshmux handoff brief — from ${PROV[provOf(src)].glyph} ${provOf(src)} session]</span>
+<span class="dim">  Task: ${src.title}</span>
+<span class="dim">  Done so far: root cause found; fix applied; build passing</span>
+<span class="dim">  Remaining: verify in browser; watch for overlay regressions</span>
+<span class="dim">  Full brief: .seshmux/handoff-brief.md · scratchpad: .seshmux/handoff.md</span>
+
+<span class="acc">•</span> Brief loaded. Picking up at verification step…<span class="cursor"></span>`
+    : `<span class="usr">${pr} [seshmux cross-review — diff from ${PROV[provOf(src)].glyph} ${provOf(src)} session, 2 files +14 −3]</span>
+
+<span class="acc">•</span> Reviewing adversarially — assume the diff is wrong until proven otherwise.
+
+<span class="dim">  └ read  scss/components/_navigation.scss</span>
+<span class="dim">  └ read  scss/components/_hero.scss</span>
+
+<span class="acc">•</span> Findings:
+  <span class="yel">1. ⚠ z-index 100 collides with .modal-backdrop (z 90) — dropdown will overlay open modals. Suggest 60.</span>
+  <span class="grn">2. ✓ stacking-context removal safe — no other transform dependencies found.</span>
+
+<span class="acc">•</span> Verdict: 1 real issue, 1 pass. Posting summary to .seshmux/handoff.md…<span class="cursor"></span>`;
+  termContent[nid] = banner + '\n\n' + body;
+  updateLiveBadge();
+  // group with source: insert tab right after the source session's tab, mark linked
+  const srcIdx = openTabs.findIndex(t => t.sessId === sid);
+  const tab = { id: 'tab-' + nid, kind: 'term', sessId: nid, label: p.name, repo: p.name, status: 'live', linked: true, linkedKind: kind, linkSrc: sid };
+  openTabs.splice(srcIdx >= 0 ? srcIdx + 1 : openTabs.length, 0, tab);
+  activeTab = tab.id;
+  if (view === 'grid') setView('tabs'); else renderAll();
+}
+function handoffSession(sid) { spawnBridgeSession(sid, 'handoff'); }
+function reviewSession(sid) { spawnBridgeSession(sid, 'review'); }
+
+function openPlanoff(pid) {
+  const p = projects.find(x => x.id === pid);
+  const tid = 'tab-planoff-' + pid + '-' + (++newSessCounter);
+  openTabs.push({ id: tid, kind: 'planoff', projId: pid, sessId: null, label: p.name, repo: p.name, status: null });
+  activeTab = tid;
+  if (view === 'grid') setView('tabs'); else renderAll();
+}
+
+function pickPlan(pid, prov) {
+  const p = projects.find(x => x.id === pid);
+  const sid = pid + '-exec-' + (++newSessCounter);
+  p.sessions.unshift({ id: sid, title: 'Execute winning plan: quiz results caching refactor', branch: 'feat/quiz-cache', time: 'live now', duration: '0m', status: 'live', provider: prov, ctx: 6 });
+  const banner = prov === 'codex'
+    ? `<span class="dim">│</span> <span class="acc">⬡ Codex</span> <span class="dim">v0.34 · gpt-5.3-codex · ${p.name}</span>`
+    : `<span class="dim">│</span> <span class="acc">✳ Claude Code</span> <span class="dim">v2.1.9 · ${p.name}</span>`;
+  termContent[sid] = `<span class="dim">╭──────────────────────────────────────────╮</span>
+${banner}
+<span class="dim">╰──────────────────────────────────────────╯</span>
+
+<span class="usr">${prov === 'codex' ? '›' : '❯'} [seshmux plan-off winner] Execute the approved plan (.seshmux/planoff-winner.md)</span>
+
+<span class="acc">•</span> Plan loaded — 5 steps. Starting with step 1: extract cache layer…<span class="cursor"></span>
+
+<div class="promptbox">${prov === 'codex' ? '›' : '❯'} <span class="cursor"></span></div>`;
+  updateLiveBadge();
+  openSession(sid);
+}
+
+function planoffHTML(pid) {
+  const p = projects.find(x => x.id === pid);
+  const col = (prov, glyph, name, mins, steps, angle) => `
+    <div class="plan-col">
+      <div class="plan-col-head">
+        <span class="prov prov-${prov}">${glyph} ${prov}</span>
+        <span class="plan-meta">${name} · read-only plan · ${mins}</span>
+      </div>
+      <div class="plan-angle">${angle}</div>
+      <ol class="plan-steps">${steps.map(st => `<li>${st}</li>`).join('')}</ol>
+      <button class="btn primary plan-pick" onclick="pickPlan('${pid}', '${prov}')">Use this plan — execute with ${glyph} ${prov}</button>
+    </div>`;
+  return `<div class="transcript"><div class="planoff-inner">
+    <div class="tr-header">
+      <h1>Plan-off</h1>
+      <div class="tr-meta"><span>${p.name}</span><span>task: refactor quiz results caching to edge-safe pattern</span><span>both plans complete</span></div>
+    </div>
+    <div class="planoff-grid">
+      ${col('claude', '✳', 'claude-opus-4-8', '2m 10s', [
+        'Read current cache path: <code>inc/quiz/results-cache.php</code> + template usage',
+        'Introduce <code>QuizCacheInterface</code> with transient-backed default (no behavior change)',
+        'Add edge-safe key strategy: hash of quiz answers + post_modified',
+        'Migrate template callers behind the interface; deprecate direct transient calls',
+        'Tests: cache hit/miss/invalidations; verify on staging with WP_DEBUG'
+      ], 'Conservative: interface first, zero behavior change until step 4; every step shippable.')}
+      ${col('codex', '⬡', 'gpt-5.3-codex', '1m 44s', [
+        'Inventory all readers/writers of quiz transients (grep sweep, 6 call sites)',
+        'Replace transients with object cache + <code>wp_cache_*</code> and stampede lock',
+        'Single edge-safe key fn shared by all call sites',
+        'Delete legacy per-template cache branches (−120 lines)',
+        'Bench before/after with wrk on staging; rollback = revert one commit'
+      ], 'Aggressive: rip out transients in one pass, net-negative diff, single-commit rollback.')}
+    </div>
+    <div class="scratch-note">Plans ran in parallel (claude --permission-mode plan · codex read-only). Winner's plan is written to .seshmux/planoff-winner.md and seeds the execution session; the loser's plan stays in the scratchpad for reference.</div>
+  </div></div>`;
+}
+
+function openScratchpad(pid) {
+  const p = projects.find(x => x.id === pid);
+  const tid = 'tab-scratch-' + pid;
+  let tab = openTabs.find(t => t.id === tid);
+  if (!tab) { tab = { id: tid, kind: 'scratchpad', projId: pid, sessId: null, label: p.name + ' · scratchpad', repo: p.name, status: null }; openTabs.push(tab); }
+  activeTab = tab.id;
+  if (view === 'grid') setView('tabs'); else renderAll();
+}
+
+function scratchpadHTML(pid) {
+  const p = projects.find(x => x.id === pid);
+  return `<div class="transcript"><div class="tr-inner">
+    <div class="tr-header">
+      <h1>Shared scratchpad</h1>
+      <div class="tr-meta"><span>${p.path}/.seshmux/handoff.md</span><span>both agents read &amp; write this file</span></div>
+      <div class="tr-actions"><button class="btn">Open in editor</button><button class="btn">Clear</button></div>
+    </div>
+    <div class="scratch-entry">
+      <div class="scratch-head"><span class="prov prov-claude">✳ claude</span><span class="branch-chip">⎇ fix/nav-zindex</span><span class="scratch-time">today 14:32</span></div>
+      <div class="msg-body">Raised <code>.site-header</code> to z-index 100 — root cause was the stacking context from <code>translateZ(0)</code> at <code>_hero.scss:48</code>. If you touch the hero, don't re-add the transform.</div>
+    </div>
+    <div class="scratch-entry">
+      <div class="scratch-head"><span class="prov prov-codex">⬡ codex</span><span class="branch-chip">⎇ main</span><span class="scratch-time">today 15:04</span></div>
+      <div class="msg-body">Ack — config loader refactor doesn't touch hero. Left a TODO at <code>src/ws/config.ts:12</code>: timeout unit reads ambiguous (ms vs s). Claude, confirm before merging.</div>
+    </div>
+    <div class="scratch-entry">
+      <div class="scratch-head"><span class="prov prov-codex">⬡ codex</span><span class="scratch-time">today 15:41 · cross-review</span></div>
+      <div class="msg-body">Review verdict on nav diff: <strong>1 issue</strong> — z-index 100 collides with <code>.modal-backdrop</code> (z 90); suggest 60. Everything else passes.</div>
+    </div>
+    <div class="scratch-note">Agents are nudged to read this file at session start and after each seshmux handoff/review. The filesystem is the message bus — works even when only one agent is running.</div>
+  </div></div>`;
+}
+
+function fakeResume(sid) {
+  const found = findSess(sid);
+  if (!found) return;
+  found.s.status = 'live';
+  found.s.time = 'live now';
+  const tab = openTabs.find(t => t.sessId === sid);
+  if (tab) { tab.kind = 'term'; tab.label = found.p.name; tab.status = 'live'; }
+  termContent[sid] = `<span class="dim">╭──────────────────────────────────────────╮</span>
+<span class="dim">│</span> <span class="acc">✳ Claude Code</span> <span class="dim">v2.1.9 · ${found.p.name}</span>
+<span class="dim">╰──────────────────────────────────────────╯</span>
+
+<span class="dim">$ claude --resume ${sid}-uuid-would-go-here</span>
+
+<span class="acc">●</span> Resumed session: <span class="grn">${found.s.title}</span>
+<span class="dim">  Context restored — ${(transcripts[sid] ? transcripts[sid].meta[3] : '48 messages')} loaded.</span>
+
+<div class="promptbox">❯ <span class="cursor"></span></div>`;
+  updateLiveBadge();
+  renderAll();
+}
+
+/* ==================================================================
+   GRID VIEW
+================================================================== */
+function setView(v) {
+  view = v;
+  $('btnTabs').classList.toggle('active', v === 'tabs');
+  $('btnGrid').classList.toggle('active', v === 'grid');
+  renderAll();
+}
+
+function renderGrid() {
+  const gv = $('gridView');
+  gv.classList.toggle('active', view === 'grid');
+  if (view !== 'grid') { gv.innerHTML = ''; return; }
+  const flat = [];
+  for (const p of projects) for (const s of p.sessions) if (s.status === 'live' || s.status === 'waiting') flat.push({ p, s });
+  // keep bridge pairs adjacent: each source immediately followed by its linked sessions
+  const liveSessions = [], seen = new Set();
+  for (const e of flat) {
+    if (seen.has(e.s.id)) continue;
+    if (e.s.linkSrc && flat.some(x => x.s.id === e.s.linkSrc)) continue; // placed with its source
+    liveSessions.push(e); seen.add(e.s.id);
+    for (const l of flat.filter(x => x.s.linkSrc === e.s.id)) { liveSessions.push(l); seen.add(l.s.id); }
+  }
+  gv.innerHTML = liveSessions.map(({ p, s }) => `
+    <button class="grid-tile ${s.status === 'waiting' ? 'waiting' : ''} ${s.linkedKind ? 'bridged' : ''}" data-sess="${s.id}" onclick="gridTileClick('${s.id}')">
+      <div class="gt-head">
+        <div class="gt-row">
+          <span class="t-dot ${s.status === 'waiting' ? 'waiting' : 'live'}" style="background:${s.status === 'waiting' ? 'var(--waiting)' : 'var(--live)'}"></span>
+          <span class="gt-repo">${p.name}</span>
+          ${s.linkedKind ? `<span class="link-chip ${s.linkedKind}">${s.linkedKind === 'review' ? '⊙ review' : '⇄ handoff'}</span>` : ''}
+          ${provBadge(s, true)}
+          ${s.status === 'waiting' ? '<span class="gt-flag">needs input</span>' : ''}
+        </div>
+        <div class="gt-row gt-row2">
+          <span class="gt-branch">⎇ ${s.branch}</span>
+          ${s.linkedKind && findSess(s.linkSrc) ? `<span class="gt-from">from ${PROV[provOf(findSess(s.linkSrc).s)].glyph} ${findSess(s.linkSrc).s.title.slice(0, 24)}…</span>` : ''}
+          ${ctxBadge(s)}
+        </div>
+      </div>
+      <div class="gt-term">${(termContent[s.id] || genericTerm(p.name)).replace(/<div class="promptbox">.*?<\/div>/s, '')}</div>
+    </button>`).join('');
+  // hide tab panes while in grid
+}
+function gridTileClick(sid) {
+  // Stay in grid: select the tile, make its tab active so Tabs view lands on it later.
+  const found = findSess(sid);
+  if (!found) return;
+  let tab = openTabs.find(t => t.sessId === sid);
+  if (!tab) {
+    tab = { id: 'tab-' + sid, kind: 'term', sessId: sid, label: found.p.name, repo: found.p.name, status: found.s.status };
+    openTabs.push(tab);
+  }
+  activeTab = tab.id;
+  document.querySelectorAll('.grid-tile').forEach(t => t.classList.remove('selected'));
+  const tile = document.querySelector(`.grid-tile[data-sess="${sid}"]`);
+  if (tile) tile.classList.add('selected');
+  renderRail();
+  renderTabs();
+}
+
+/* ==================================================================
+   SEARCH
+================================================================== */
+const searchIndex = [
+  { q: 'z-index', proj: 'sleepfoundation-wp', sid: 'sf-1', title: 'Fix nav <mark>z-index</mark> overlapping hero on mobile', meta: 'live session · fix/nav-zindex · today' },
+  { q: 'z-index', proj: 'sleepfoundation-wp', sid: 'sf-4', title: 'Refactor SCSS breakpoint mixins — touched header <mark>z-index</mark> scale', meta: 'transcript · 3d ago' },
+  { q: 'pick-for-you', proj: 'sleepfoundation-wp', sid: 'sf-2', title: 'Create PR for <mark>pick-for-you</mark> block updates', meta: 'transcript · feat/pick-for-you · 2h ago' },
+  { q: 'pick-for-you', proj: 'sleepapnea-wp', sid: 'sa-1', title: 'Port <mark>pick-for-you</mark> block from sleepfoundation', meta: 'live session · needs input' },
+  { q: 'twig', proj: 'sleepapnea-wp', sid: 'sa-2', title: 'Fix <mark>Twig</mark> template escaping in provider cards', meta: 'transcript · 5h ago' },
+  { q: 'schema', proj: 'sleepfoundation-wp', sid: 'sf-3', title: 'Audit <mark>schema</mark> markup on mattress reviews', meta: 'transcript · yesterday' },
+  { q: 'websocket', proj: 'kantrail-ai', sid: 'kt-1', title: 'Debug <mark>websocket</mark> reconnect loop in agent runner', meta: 'live session · 18m' },
+  { q: 'firebase', proj: 'bdr-dashboard', sid: 'bdr-1', title: 'Wire up <mark>Firebase</mark> auth to reporting views', meta: 'transcript · 6h ago' },
+];
+
+$('search').addEventListener('input', e => {
+  const q = e.target.value.trim().toLowerCase();
+  const box = $('searchResults');
+  if (q.length < 2) { box.classList.remove('open'); return; }
+  const hits = searchIndex.filter(h => h.q.includes(q) || h.title.toLowerCase().includes(q));
+  const byProj = {};
+  hits.forEach(h => (byProj[h.proj] = byProj[h.proj] || []).push(h));
+  box.innerHTML = hits.length
+    ? Object.entries(byProj).map(([proj, items]) => `
+        <div class="sr-group">${proj}</div>
+        ${items.map(h => `<button class="sr-item" onclick="searchGo('${h.sid}')">
+          <div class="sr-title">${h.title}</div>
+          <div class="sr-meta">${h.meta}</div>
+        </button>`).join('')}`).join('')
+    : `<div class="sr-group" style="padding:14px 12px">No matches — real build greps every jsonl in ~/.claude/projects/</div>`;
+  box.classList.add('open');
+});
+document.addEventListener('click', e => {
+  if (!e.target.closest('.search-wrap')) $('searchResults').classList.remove('open');
+});
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); $('search').focus(); }
+  if (e.key === 'Escape') { $('searchResults').classList.remove('open'); closeModal(); }
+});
+function searchGo(sid) {
+  $('searchResults').classList.remove('open');
+  $('search').value = '';
+  const found = findSess(sid);
+  if (found) { found.p.open = true; }
+  openSession(sid);
+}
+
+/* ==================================================================
+   NEW SESSION MODAL
+================================================================== */
+let modalProvider = 'claude';
+function setModalProvider(prov) {
+  modalProvider = prov;
+  document.querySelectorAll('#modalProviderSeg button').forEach(b => b.classList.toggle('active', b.dataset.p === prov));
+  const both = prov === 'both';
+  $('modalNewOption').style.display = both ? 'none' : '';
+  $('modalContinueOption').style.display = both ? 'none' : '';
+  $('modalPlanOption').style.display = (both || prov === 'codex') ? 'none' : '';
+  $('modalPlanoffOption').style.display = both ? '' : 'none';
+  if (!both) {
+    $('modalDescNew').textContent = prov === 'codex' ? 'codex — new conversation in this repo' : 'claude — new conversation in this repo';
+    $('modalDescContinue').textContent = prov === 'codex' ? 'codex resume --last — pick up most recent session' : 'claude --continue — pick up most recent session';
+  }
+}
+function openModal(pid) {
+  modalProject = projects.find(p => p.id === pid);
+  setModalProvider('claude');
+  $('modalTitle').textContent = 'New session — ' + modalProject.name;
+  $('modalPath').textContent = modalProject.path;
+  $('modalOverlay').classList.add('open');
+}
+function closeModal() { $('modalOverlay').classList.remove('open'); }
+function modalStart(mode) {
+  closeModal();
+  if (!modalProject) return;
+  if (mode === 'planoff') { openPlanoff(modalProject.id); return; }
+  const sid = modalProject.id + '-new-' + (++newSessCounter);
+  const label = mode === 'plan' ? 'Plan mode session' : mode === 'continue' ? 'Continued session' : 'New session';
+  modalProject.sessions.unshift({ id: sid, title: label + ' (just started)', branch: 'main', time: 'live now', duration: '0m', status: 'live', provider: modalProvider });
+  modalProject.open = true;
+  termContent[sid] = `<span class="dim">╭──────────────────────────────────────────╮</span>
+<span class="dim">│</span> <span class="acc">✳ Claude Code</span> <span class="dim">v2.1.9 · ${modalProject.name}</span>
+<span class="dim">╰──────────────────────────────────────────╯</span>
+
+<span class="dim">$ tmux new-session -A -s seshmux-${modalProject.name}-${newSessCounter} && ${modalProvider === 'codex' ? 'codex' + (mode === 'continue' ? ' resume --last' : '') : 'claude' + (mode === 'continue' ? ' --continue' : mode === 'plan' ? ' --permission-mode plan' : '')}</span>
+
+<span class="dim">Session live. Attachable from any terminal: tmux attach -t seshmux-${modalProject.name}-${newSessCounter}</span>
+
+<div class="promptbox">❯ <span class="cursor"></span></div>`;
+  updateLiveBadge();
+  openSession(sid);
+}
+
+/* ==================================================================
+   NOTIFICATIONS / BADGE
+================================================================== */
+function updateLiveBadge() {
+  let live = 0, waiting = 0;
+  for (const p of projects) for (const s of p.sessions) {
+    if (s.status === 'live') live++;
+    if (s.status === 'waiting') waiting++;
+  }
+  $('liveCount').textContent = `${live + waiting} live${waiting ? ' · ' + waiting + ' waiting' : ''}`;
+  $('liveBadge').querySelector('.dot').className = 'dot' + (waiting ? ' pulse' : '');
+}
+function jumpToWaiting() {
+  hideToast();
+  const sa = projects.find(p => p.id === 'sa');
+  sa.open = true;
+  openSession('sa-1');
+}
+function hideToast() { $('toast').classList.remove('show'); }
+
+/* ==================================================================
+   RENDER ALL + INIT
+================================================================== */
+function renderAll() {
+  renderRail();
+  renderTabs();
+  renderPanes();
+  renderGrid();
+  // in grid view, hide active pane so grid shows
+  document.querySelectorAll('.pane').forEach(p => { if (view === 'grid') p.classList.remove('active'); });
+  const emptyEl = document.querySelector('.empty');
+  if (emptyEl && view === 'grid') emptyEl.remove();
+}
+
+/* Boot: open a few things so it feels alive */
+projects[0].open = true;
+projects[1].open = true;
+openTabs = [
+  { id: 'tab-sf-1', kind: 'term', sessId: 'sf-1', label: 'sleepfoundation-wp', repo: 'sleepfoundation-wp', status: 'live' },
+  { id: 'tab-sa-1', kind: 'term', sessId: 'sa-1', label: 'sleepapnea-wp', repo: 'sleepapnea-wp', status: 'waiting' },
+  { id: 'tab-sdnl-1', kind: 'term', sessId: 'sdnl-1', label: 'sd-next-library', repo: 'sd-next-library', status: 'live' },
+  { id: 'tab-kt-1', kind: 'term', sessId: 'kt-1', label: 'kantrail-ai', repo: 'kantrail-ai', status: 'live' },
+];
+activeTab = 'tab-sf-1';
+updateLiveBadge();
+renderAll();
+
+/* Toast appears after 6s to demo needs-input flow */
+setTimeout(() => $('toast').classList.add('show'), 6000);
+</script>
+</body>
+</html>

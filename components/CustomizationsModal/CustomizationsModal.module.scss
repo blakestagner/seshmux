@@ -1,0 +1,506 @@
+@use '../../styles/typography' as *;
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+}
+
+.modal {
+  width: 780px;
+  max-width: calc(100vw - 40px);
+  height: 600px;
+  max-height: calc(100vh - 40px);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-modal), var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.title {
+  @include t-heading;
+}
+
+.scopeLabel {
+  @include t-heading;
+  color: var(--text-dim);
+  margin-left: auto;
+  max-width: 40%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+// Header close gets the larger glyph size; the detail back arrow keeps
+// t-heading via .glyphBtn below. Compound selector so it outweighs
+// .glyphBtn's own t-heading size regardless of source order.
+.glyphBtn.glyphBtnLg {
+  @include t-glyph-lg;
+}
+
+// Header × and detail ← : plain glyph buttons — IconButton's bare tone
+// (--text-faint) read too dark here, and its glyph size is fixed.
+.glyphBtn {
+  @include t-heading;
+  background: transparent;
+  border: none;
+  padding: 4px 6px;
+  border-radius: var(--radius-xs);
+  color: var(--text-dim);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.glyphBtn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.nav {
+  width: 180px;
+  flex: 0 0 180px;
+  border-right: 1px solid var(--border);
+  padding: 10px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.navItem {
+  @include t-item-title;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-dim);
+
+  &:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
+}
+
+.navItemActive {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.overviewGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left;
+
+  &:hover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+}
+
+.cardIcon {
+  @include t-mono-data;
+  color: var(--accent);
+}
+
+.cardTitle {
+  @include t-item-title;
+}
+
+.cardCount {
+  @include t-stat;
+}
+
+.cardGlyphs {
+  @include t-mono-micro;
+  color: var(--text-faint);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+}
+
+.empty {
+  @include t-sub;
+  padding: 20px 0;
+}
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.detailTitle {
+  @include t-heading;
+}
+
+.detailPath {
+  @include t-mono-micro;
+  color: var(--text-faint);
+  word-break: break-all;
+}
+
+// Item origin chips: project = lives in the repo's .claude/, user = global
+// ~/.claude|~/.codex level. Accent marks the repo-owned ones.
+.scopeProject {
+  @include t-chip;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+}
+
+.scopeUser {
+  @include t-chip;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+}
+
+.badge {
+  @include t-chip;
+  color: var(--hot);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  margin-left: 8px;
+}
+
+.markdown {
+  @include t-markdown;
+  width: 100%;
+}
+
+.pre {
+  @include t-mono-data;
+  width: 100%;
+  overflow-x: auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+// Back arrow (left, when a detail is open) + "+ New" (right) share one row.
+.contentHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+// Create/edit pane — fills the content column in place of the list/detail view.
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+}
+
+.editorFilePath {
+  @include t-mono-micro;
+  color: var(--text-faint);
+  word-break: break-all;
+}
+
+// Layout-only override passed to TextInput — chrome (border/bg/radius/padding)
+// stays owned by TextInput.module.scss (see hard rule: primitives own chrome).
+.editorArea {
+  flex: 1;
+  min-height: 260px;
+}
+
+.editorActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+// editorActions sits at the bottom of the editor pane (which fills .content,
+// itself overflow-y: auto) — a downward menu gets clipped by the modal edge.
+// Open upward instead, same as BridgeMenu's `up` mode.
+.assistMenu {
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 140px;
+}
+
+// ── Marketplace section ─────────────────────────────────────────────────────
+.marketplace {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mpSourceRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sourceMenu {
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 200px;
+}
+
+.addSourceRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+}
+
+.mpFileList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+}
+
+.mpFileName {
+  @include t-mono-micro;
+  color: var(--text-dim);
+}
+
+.mpNote {
+  @include t-section-note;
+}
+
+.mpMarketplaces {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.mpMarketplacesLabel {
+  @include t-sub;
+}
+
+.mpCount {
+  @include t-sub;
+  margin-bottom: 6px;
+}
+
+// Source picker + search share one row; search takes the remaining width.
+.mpSearch {
+  flex: 1;
+  min-width: 160px;
+}
+
+.mpPluginRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  > :first-child {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+// Plugin row title line: name left, installed chip right.
+.mpPluginTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mpScopeMenu {
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 100px;
+  // The install-target menu lists every enabled project — cap and scroll.
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+// Item-preview install menu sits at the bottom of the scrolling content pane —
+// open UPWARD (same reasoning as .assistMenu) so it never clips off the modal,
+// and LEFT-aligned: the trigger hugs the pane's left edge, so a right-aligned
+// menu would poke past .content's overflow clip box on the left.
+.mpInstallMenu {
+  top: auto;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: auto;
+}
+
+// Preview body is bounded — a long SKILL.md scrolls inside its own box instead
+// of burying the Install button below the fold.
+.mpPreview {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+// Curated (default sources) vs unverified (user-added) origin chips — same
+// bordered-chip pattern as .scopeProject/.scopeUser above, --live for the
+// positive/curated case, --text-dim for unverified.
+.mpBadgeCurated {
+  @include t-chip;
+  color: var(--live);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.mpBadgeUnverified {
+  @include t-chip;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+// Static-scan warning rows (spec Layer 2) — amber via --waiting, bounded/scroll
+// so a heavily-flagged item never buries the file list + Install button.
+.mpWarnings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 140px;
+  overflow-y: auto;
+  border: 1px solid color-mix(in srgb, var(--waiting) 40%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--waiting) 8%, transparent);
+}
+
+.mpWarningRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mpWarningRule {
+  @include t-chip;
+  color: var(--waiting);
+  flex: 0 0 auto;
+}
+
+// Opt-in AI safety check (Task 6): button row + verdict pill, then a concerns
+// list rendered above the file list (same "above file list" placement as the
+// static-scan warnings block).
+.mpSafetyMenu {
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 140px;
+}
+
+.mpSafetyRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+// Verdict pill colors mirror the static-scan warning severity mapping:
+// ok -> --live, caution -> --waiting, danger -> --hot.
+.mpVerdictOk {
+  @include t-chip;
+  color: var(--live);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+}
+
+.mpVerdictCaution {
+  @include t-chip;
+  color: var(--waiting);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+}
+
+.mpVerdictDanger {
+  @include t-chip;
+  color: var(--hot);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+}
+
+.mpSafetyCached {
+  @include t-section-note;
+}
+
+.mpSafetyConcerns {
+  @include t-section-note;
+  margin: 0 0 8px;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mpWarningLoc {
+  @include t-mono-micro;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+
+.mpWarningExcerpt {
+  @include t-mono-micro;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 200px;
+}
