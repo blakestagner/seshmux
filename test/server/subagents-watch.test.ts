@@ -28,6 +28,7 @@ class FakeWS {
 describe('watchSubagents', () => {
   let home: string;
   let prevHome: string | undefined;
+  let prevUserProfile: string | undefined;
   const project = 'proj';
   const session = 'sess';
   let subagentsDir: string;
@@ -35,13 +36,20 @@ describe('watchSubagents', () => {
   beforeEach(() => {
     home = mkdtempSync(path.join(os.tmpdir(), 'seshmux-sub-home-'));
     prevHome = process.env.HOME;
+    prevUserProfile = process.env.USERPROFILE;
     process.env.HOME = home;
+    // os.homedir() reads USERPROFILE (not HOME) on win32, so HOME alone doesn't redirect it
+    // there — without this the watcher below watches the REAL ~/.claude instead of this
+    // sandbox and every ping assertion sees 0 events.
+    process.env.USERPROFILE = home;
     subagentsDir = path.join(home, '.claude', 'projects', project, session, 'subagents');
     mkdirSync(subagentsDir, { recursive: true });
   });
   afterEach(() => {
     if (prevHome === undefined) delete process.env.HOME;
     else process.env.HOME = prevHome;
+    if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = prevUserProfile;
     rmSync(home, { recursive: true, force: true });
   });
 

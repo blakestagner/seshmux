@@ -4,6 +4,7 @@ import { mkdtemp, readFile, writeFile, rm, mkdir, symlink, access } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import customizationsRoutes from '../../server/routes/customizations';
+import { canSymlink } from '../helpers/platform';
 
 let repo: string;
 beforeEach(async () => { repo = await mkdtemp(join(tmpdir(), 'cust-write-')); });
@@ -61,14 +62,18 @@ describe('PUT /api/customizations/item', () => {
   it('400s content over 256KB', async () => {
     expect((await put(app(), { ...base, content: 'x'.repeat(256 * 1024 + 1) })).statusCode).toBe(400);
   });
-  it('fails closed when .claude is a symlink escaping the repo', async () => {
+  // Symlink-escape guards: creating the escaping symlink is the test's own fixture setup,
+  // but on a stock Windows box (no admin/Developer Mode) fs.symlink throws EPERM before the
+  // guard under test ever runs — see test/helpers/platform.ts canSymlink(). Skipping loses
+  // coverage of the symlink half of this containment guard on such hosts.
+  it.skipIf(!canSymlink())('fails closed when .claude is a symlink escaping the repo', async () => {
     const outside = await mkdtemp(join(tmpdir(), 'outside-'));
     await symlink(outside, join(repo, '.claude'));
     const res = await put(app(), base);
     expect(res.statusCode).toBe(400);
     await rm(outside, { recursive: true, force: true });
   });
-  it('fails closed when the target itself is an existing symlink escaping the repo', async () => {
+  it.skipIf(!canSymlink())('fails closed when the target itself is an existing symlink escaping the repo', async () => {
     const outsideFile = join(await mkdtemp(join(tmpdir(), 'outside-')), 'secret.txt');
     await writeFile(outsideFile, 'do not overwrite me', 'utf8');
     await mkdir(join(repo, '.claude', 'agents'), { recursive: true });
@@ -78,7 +83,7 @@ describe('PUT /api/customizations/item', () => {
     expect(await readFile(outsideFile, 'utf8')).toBe('do not overwrite me');
     await rm(join(outsideFile, '..'), { recursive: true, force: true });
   });
-  it('fails closed when the target is a DANGLING symlink escaping the repo', async () => {
+  it.skipIf(!canSymlink())('fails closed when the target is a DANGLING symlink escaping the repo', async () => {
     const outsideDir = await mkdtemp(join(tmpdir(), 'outside-'));
     const outsideFile = join(outsideDir, 'evil.md'); // never created
     await mkdir(join(repo, '.claude', 'agents'), { recursive: true });

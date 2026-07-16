@@ -6,6 +6,7 @@ import Fastify from 'fastify';
 import marketplaceRoutes from '../../server/routes/marketplace';
 import type { AgentProvider } from '../../server/lib/providers/types';
 import type { CustomizationScope } from '../../server/lib/providers/customizations';
+import { canSymlink } from '../helpers/platform';
 
 // globalRoot mimics the real claude provider's custRoot(): global installs
 // land under <globalRoot>/agents|skills, project installs under
@@ -344,7 +345,11 @@ describe('POST /api/marketplace/install', () => {
     await expect(stat(join(globalRoot, 'skills', 'foo'))).rejects.toThrow();
   });
 
-  it('target:user 400s a dangling-symlink leaf and writes nothing (containment fails closed)', async () => {
+  // Creating the dangling symlink is the test's own fixture setup, but on a stock Windows box
+  // (no admin/Developer Mode) fs.symlink throws EPERM before the guard under test ever runs —
+  // see test/helpers/platform.ts canSymlink(). Skipping loses coverage of the symlink half of
+  // this containment guard on such hosts.
+  it.skipIf(!canSymlink())('target:user 400s a dangling-symlink leaf and writes nothing (containment fails closed)', async () => {
     const { f, globalRoot } = await app(async (url: string) => {
       if (url === 'https://api.github.com/repos/acme/user-symlink-repo/git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1') {
         return JSON.stringify({ tree: [{ path: 'agents/baz.md', type: 'blob' }] });

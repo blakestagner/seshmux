@@ -7,6 +7,7 @@ import {
   isDaemonStale,
   _resetUpdateCache,
 } from '../../server/lib/update';
+import { canSymlink } from '../helpers/platform';
 
 // Fake fetch that returns a registry-shaped body, a status, or throws (offline/timeout).
 function fakeFetch(opts: { version?: string; status?: number; throws?: boolean }) {
@@ -122,7 +123,12 @@ describe('applyUpdate', () => {
 // That silently hides the update button, since we refuse `npm i -g` for non-global installs.
 // Found by booting the packed tarball, not by unit tests — fake paths never hit the symlink.
 describe('detectInstallMethod — symlinked global prefix', () => {
-  it('still reports global when `npm prefix -g` returns a symlink to the real prefix', async () => {
+  // Creating the directory symlink is the test's own fixture setup, but on a stock Windows box
+  // (no admin/Developer Mode) fs.symlink throws EPERM before detectInstallMethod ever runs —
+  // see test/helpers/platform.ts canSymlink(). Skipping loses coverage of this regression on
+  // such hosts (a symlinked npm global prefix, e.g. via nvm-windows junctions, would go
+  // unverified); the non-symlinked detectInstallMethod cases above still run.
+  it.skipIf(!canSymlink())('still reports global when `npm prefix -g` returns a symlink to the real prefix', async () => {
     const { mkdtemp, mkdir, writeFile, symlink } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');

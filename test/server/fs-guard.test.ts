@@ -3,6 +3,7 @@ import { mkdtemp, readFile, writeFile, rm, mkdir, symlink, access } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { writeWithinRepo, FsGuardError } from '../../server/lib/fs-guard';
+import { canSymlink } from '../helpers/platform';
 
 let repo: string;
 beforeEach(async () => { repo = await mkdtemp(join(tmpdir(), 'fs-guard-')); });
@@ -15,7 +16,12 @@ describe('writeWithinRepo', () => {
     expect(await readFile(target, 'utf8')).toBe('# hi');
   });
 
-  it('rejects a traversal ancestor symlink escaping the repo', async () => {
+  // Symlink-escape guards: creating the ESCAPING symlink is the test's own setup, but on a
+  // stock Windows box (no admin/Developer Mode) fs.symlink itself throws EPERM before the
+  // guard under test ever runs — see test/helpers/platform.ts canSymlink(). Skipping loses
+  // coverage of the symlink half of the containment guard on such hosts; the realpath
+  // containment walk itself (junctions) is still exercised elsewhere and unaffected.
+  it.skipIf(!canSymlink())('rejects a traversal ancestor symlink escaping the repo', async () => {
     const outside = await mkdtemp(join(tmpdir(), 'outside-'));
     await symlink(outside, join(repo, '.claude'));
     const target = join(repo, '.claude', 'agents', 'my-agent.md');
@@ -23,7 +29,7 @@ describe('writeWithinRepo', () => {
     await rm(outside, { recursive: true, force: true });
   });
 
-  it('rejects an existing leaf symlink escaping the repo, outside file untouched', async () => {
+  it.skipIf(!canSymlink())('rejects an existing leaf symlink escaping the repo, outside file untouched', async () => {
     const outsideFile = join(await mkdtemp(join(tmpdir(), 'outside-')), 'secret.txt');
     await writeFile(outsideFile, 'do not overwrite me', 'utf8');
     await mkdir(join(repo, '.claude', 'agents'), { recursive: true });
@@ -34,7 +40,7 @@ describe('writeWithinRepo', () => {
     await rm(join(outsideFile, '..'), { recursive: true, force: true });
   });
 
-  it('rejects a DANGLING leaf symlink escaping the repo, outside file untouched', async () => {
+  it.skipIf(!canSymlink())('rejects a DANGLING leaf symlink escaping the repo, outside file untouched', async () => {
     const outsideDir = await mkdtemp(join(tmpdir(), 'outside-'));
     const outsideFile = join(outsideDir, 'evil.md'); // never created
     await mkdir(join(repo, '.claude', 'agents'), { recursive: true });
@@ -45,7 +51,7 @@ describe('writeWithinRepo', () => {
     await rm(outsideDir, { recursive: true, force: true });
   });
 
-  it('FsGuardError carries statusCode 400 and the expected message', async () => {
+  it.skipIf(!canSymlink())('FsGuardError carries statusCode 400 and the expected message', async () => {
     const outside = await mkdtemp(join(tmpdir(), 'outside-'));
     await symlink(outside, join(repo, '.claude'));
     const target = join(repo, '.claude', 'agents', 'my-agent.md');
