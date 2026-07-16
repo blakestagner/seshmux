@@ -307,6 +307,7 @@ function AppShell() {
             label,
             provider: proj?.provider,
             sessionId: s.sessionId,
+            branch: s.branch ?? null,
           });
           // Teams v1 (Task 6) reload case: a rehydrated live tab carries no
           // isTeamLead marker (getLive()'s LiveSession has no team field) — one-shot

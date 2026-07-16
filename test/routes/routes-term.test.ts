@@ -175,23 +175,25 @@ describe('defaultResolveSessionForCwd (worktree fold)', () => {
     {
       scanProjects: async () => [{ id: projectId, path: repo }],
       listSessions: async () => [
-        { id: 'parent-newest', mtime: 100, cwd: repo },
-        { id: 'wt-sess', mtime: 50, cwd: wt },
+        { id: 'parent-newest', mtime: 100, cwd: repo, branch: 'main' },
+        { id: 'wt-sess', mtime: 50, cwd: wt, branch: 'agent/a-1' },
       ],
     },
   ]) as never;
 
-  it('maps a worktree PTY cwd to the parent project and its OWN session', async () => {
+  it('maps a worktree PTY cwd to the parent project and its OWN session (+ branch)', async () => {
     expect(await defaultResolveSessionForCwd(wt, providersFn)).toEqual({
       projectId,
       sessionId: 'wt-sess',
+      branch: 'agent/a-1',
     });
   });
 
-  it('a plain repo cwd still resolves to the newest session', async () => {
+  it('a plain repo cwd still resolves to the newest session (+ branch)', async () => {
     expect(await defaultResolveSessionForCwd(repo, providersFn)).toEqual({
       projectId,
       sessionId: 'parent-newest',
+      branch: 'main',
     });
   });
 });

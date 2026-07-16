@@ -404,10 +404,27 @@
   background: var(--accent-soft);
 }
 
-.openTabLabel {
-  @include t-row;
+.openTabInfo {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.openTabLabel {
+  @include t-row;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+// Branch under the session name in the open-sessions panel — matches the
+// project session list's .sessSub treatment.
+.openTabBranch {
+  @include t-mono-micro;
+  color: var(--text-faint);
+  margin-top: 2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -481,11 +481,14 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
             <button
               type="button"
               className={`${styles.openTab} ${t.id === state.activeTab ? styles.selected : ''}`}
-              title={t.label}
+              title={t.branch ? `${t.label} · ${t.branch}` : t.label}
               onClick={() => handleOpenTab(t)}
             >
               <StatusDot status={tabDotStatus(t)} size={7} />
-              <span className={styles.openTabLabel}>{t.label}</span>
+              <span className={styles.openTabInfo}>
+                <span className={styles.openTabLabel}>{t.label}</span>
+                {t.branch ? <span className={styles.openTabBranch}>⎇ {t.branch}</span> : null}
+              </span>
               {showProvider && t.provider ? (
                 <span className={`${styles.sessAgent} ${styles[t.provider]}`}>{t.provider}</span>
               ) : null}

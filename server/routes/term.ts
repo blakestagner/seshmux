@@ -43,7 +43,7 @@ export interface TermRouteDeps {
 export async function defaultResolveSessionForCwd(
   cwd: string,
   providersFn: typeof getProviders = getProviders, // injectable for hermetic tests only
-): Promise<{ projectId?: string; sessionId?: string }> {
+): Promise<{ projectId?: string; sessionId?: string; branch?: string | null }> {
   try {
     const canonical = derivedWorkspaceParent(cwd) ?? cwd;
     const providers = await providersFn();
@@ -52,14 +52,16 @@ export async function defaultResolveSessionForCwd(
       const proj = projects.find((pr) => pr.path === canonical);
       if (!proj) continue;
       const sessions = await p.listSessions(proj.id).catch(() => []);
-      let best: { id: string; mtime: number } | null = null;
-      let bestOwn: { id: string; mtime: number } | null = null;
+      // Carry the picked session's branch too — the sessions are already loaded
+      // here, so the rail/terminal branch label costs no extra work.
+      let best: { id: string; mtime: number; branch?: string | null } | null = null;
+      let bestOwn: { id: string; mtime: number; branch?: string | null } | null = null;
       for (const s of sessions) {
-        if (!best || s.mtime > best.mtime) best = { id: s.id, mtime: s.mtime };
-        if (s.cwd === cwd && (!bestOwn || s.mtime > bestOwn.mtime)) bestOwn = { id: s.id, mtime: s.mtime };
+        if (!best || s.mtime > best.mtime) best = { id: s.id, mtime: s.mtime, branch: s.branch };
+        if (s.cwd === cwd && (!bestOwn || s.mtime > bestOwn.mtime)) bestOwn = { id: s.id, mtime: s.mtime, branch: s.branch };
       }
       const pick = bestOwn ?? best;
-      if (pick) return { projectId: proj.id, sessionId: pick.id };
+      if (pick) return { projectId: proj.id, sessionId: pick.id, branch: pick.branch ?? null };
       return { projectId: proj.id };
     }
   } catch {
@@ -148,7 +150,7 @@ export default async function termRoutes(f: FastifyInstance, deps: TermRouteDeps
       const alive = ptys.filter((p) => p.alive);
       // N PTYs in the same repo share one resolve — the scan behind it is
       // provider-wide, so per-PTY calls with the same cwd were pure duplication.
-      const byCwd = new Map<string, Promise<{ projectId?: string; sessionId?: string }>>();
+      const byCwd = new Map<string, Promise<{ projectId?: string; sessionId?: string; branch?: string | null }>>();
       const live = await Promise.all(
         alive.map(async (p) => {
           let r = byCwd.get(p.cwd);
@@ -156,8 +158,8 @@ export default async function termRoutes(f: FastifyInstance, deps: TermRouteDeps
             r = resolveSessionForCwd(p.cwd);
             byCwd.set(p.cwd, r);
           }
-          const { projectId, sessionId } = await r;
-          return { ptyId: p.ptyId, cwd: p.cwd, tmuxName: p.tmuxName, projectId, sessionId };
+          const { projectId, sessionId, branch } = await r;
+          return { ptyId: p.ptyId, cwd: p.cwd, tmuxName: p.tmuxName, projectId, sessionId, branch };
         }),
       );
       return { live };

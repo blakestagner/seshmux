@@ -149,7 +149,7 @@ export function startSession(opts: {
 
 // projectId = the OWNING project's id (a worktree PTY folds to its parent project) —
 // prefer it over matching project.path === cwd, which misses folded worktrees.
-export type LiveSession = { ptyId: string; cwd: string; tmuxName: string | null; projectId?: string; sessionId?: string };
+export type LiveSession = { ptyId: string; cwd: string; tmuxName: string | null; projectId?: string; sessionId?: string; branch?: string | null };
 
 export function getLive(): Promise<{ live: LiveSession[] }> {
   return req('/api/sessions/live');
