@@ -11,7 +11,7 @@
   "scripts": {
     "postinstall": "node bin/postinstall.js",
     "predev": "node -e \"require('./daemon/ensure').ensureDaemon()\"",
-    "dev": "PORT=${PORT:-4800} tsx watch --clear-screen=false server/index.ts",
+    "dev": "node scripts/dev.js",
     "build": "bash scripts/build-standalone.sh",
     "start": "node bin/seshmux.js",
     "lint:styles": "bash scripts/lint-styles.sh",
