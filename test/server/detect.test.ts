@@ -13,8 +13,10 @@ describe('detectEnv', () => {
       if (cmd === 'which' && args[0] === 'codex') throw new Error('not found');
       if (cmd === 'which' && args[0] === 'tmux') return { stdout: '/usr/bin/tmux\n' };
       if (cmd === 'which' && args[0] === 'rg') throw new Error('not found');
-      if (cmd === 'claude' && args[0] === '--version') return { stdout: '1.2.3\n' };
-      if (cmd === 'tmux' && args[0] === '-V') return { stdout: 'tmux 3.4\n' };
+      // version probes run the RESOLVED path (a bare .cmd name can't be
+      // execFile'd on win32), not the bare binary name.
+      if (cmd === '/usr/local/bin/claude' && args[0] === '--version') return { stdout: '1.2.3\n' };
+      if (cmd === '/usr/bin/tmux' && args[0] === '-V') return { stdout: 'tmux 3.4\n' };
       throw new Error(`unexpected call: ${cmd} ${args.join(' ')}`);
     };
 

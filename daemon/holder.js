@@ -54,7 +54,16 @@ const spec = JSON.parse(process.argv[2] || '{}');
 const { holderDir, ptyId, sock: sockPath, cwd, args, cols, rows, env } = spec;
 const jsonPath = path.join(holderDir, ptyId + '.json');
 
-const proc = pty.spawn(args[0], args.slice(1), {
+// win32: CreateProcess can't run .cmd/.bat shims (npm installs agent CLIs as
+// exactly those) — route them through the command interpreter.
+let file = args[0];
+let rest = args.slice(1);
+if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(file)) {
+  rest = ['/c', file, ...rest];
+  file = process.env.ComSpec || 'cmd.exe';
+}
+
+const proc = pty.spawn(file, rest, {
   name: 'xterm-256color',
   cols: cols || 80,
   rows: rows || 24,

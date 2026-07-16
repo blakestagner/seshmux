@@ -22,6 +22,7 @@ const os = require('node:os');
 const { PtyManager } = require('./pty-manager');
 const { PROTOCOL, encode, createDecoder } = require('./protocol');
 const { stripTerminalQueries } = require('./strip-queries');
+const { ipcPath } = require('./ipc');
 
 const VERSION = readVersion();
 
@@ -239,7 +240,7 @@ async function startDaemon(opts = {}) {
 
   await new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(sockPath, () => {
+    server.listen(ipcPath(sockPath), () => {
       server.removeListener('error', reject);
       resolve();
     });

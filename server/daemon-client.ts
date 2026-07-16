@@ -12,6 +12,7 @@
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { ipcPath } from './lib/ipc';
 
 export const PROTOCOL = 1;
 
@@ -78,7 +79,7 @@ export class DaemonConnection {
   private closeHandler: (() => void) | null = null;
 
   constructor(sockPath: string = socketPath()) {
-    this.sock = net.connect(sockPath);
+    this.sock = net.connect(ipcPath(sockPath));
     this.sock.setEncoding('utf8');
     this.sock.on('data', (chunk: string) => this.onData(chunk));
     this.sock.on('close', () => {

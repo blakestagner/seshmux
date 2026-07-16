@@ -16,6 +16,7 @@
 
 import { createServer, createConnection, type Server } from 'node:net';
 import { listenWithStaleRecovery } from './socket-listen';
+import { ipcPath } from '../ipc';
 
 // Spec 5: wait_for_status / read_terminal reuse this SAME approval flow (reading
 // or blocking on another agent's session is a cross-agent action too) — the
@@ -136,7 +137,7 @@ export function requestApprovalOverSocket(
       resolve(approved);
     };
 
-    const conn = createConnection(socketPath);
+    const conn = createConnection(ipcPath(socketPath));
     let buf = '';
 
     // Backstop: if the server never replies (and never EOFs), deny after a hard deadline.

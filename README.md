@@ -72,7 +72,7 @@ Updating also upgrades the session daemon, but only when nothing would be lost â
 
 | Dependency | Required? | What it unlocks |
 | --- | --- | --- |
-| macOS, Linux, or Windows via WSL | required | native Windows is not supported yet (the daemon uses unix sockets) |
+| macOS, Linux, or Windows | required | native Windows uses named pipes + ConPTY; status hooks and the tmux tier are posix-only (heuristics + holder tier cover both) |
 | Node â‰¥ 20 + npm | required | everything |
 | `claude` CLI (Claude Code) | required | if no agent CLI is found, seshmux shows a setup screen |
 | `codex` CLI | optional | Codex sessions + the cross-agent bridge |

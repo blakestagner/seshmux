@@ -8,6 +8,7 @@
 
 import { connect, type Server } from 'node:net';
 import { unlinkSync, chmodSync } from 'node:fs';
+import { ipcPath } from '../ipc';
 
 function tryListen(server: Server, socketPath: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -36,6 +37,10 @@ function probeAlive(socketPath: string): Promise<boolean> {
 }
 
 export async function listenWithStaleRecovery(server: Server, socketPath: string): Promise<void> {
+  // win32: bind a named pipe instead (unlink/chmod below no-op on it — pipes
+  // leave no fs entry, and a dead owner's pipe vanishes on its own, so the
+  // stale-file recovery below is posix-only by nature).
+  socketPath = ipcPath(socketPath);
   try {
     await tryListen(server, socketPath);
   } catch (err) {

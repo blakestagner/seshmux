@@ -23,6 +23,7 @@
 import { createServer, createConnection, type Server } from 'node:net';
 import type { NIStatus } from '../needs-input';
 import { listenWithStaleRecovery } from './socket-listen';
+import { ipcPath } from '../ipc';
 
 export interface WaitRequest {
   project: string;
@@ -110,7 +111,7 @@ export function requestWaitOverSocket(socketPath: string, req: WaitRequest): Pro
       resolve(result);
     };
 
-    const conn = createConnection(socketPath);
+    const conn = createConnection(ipcPath(socketPath));
     let buf = '';
 
     // Backstop: cap the client's own wait so a hung/absent server can't stall the
