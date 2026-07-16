@@ -64,7 +64,11 @@ describe('workspaces.create', () => {
     expect(records).toHaveLength(1);
     // Both paths are canonicalized: git reports realpaths, so records built from `git worktree
     // list` (reconcile's adopt half) must key identically to ones create() writes.
-    expect(records[0]).toMatchObject({ dir, branch, project: realpathSync(repo) });
+    // .native: match the flavor the product canonicalizes with (canon() -> fs/promises
+    // realpath). The JS realpathSync leaves Windows 8.3 short names unexpanded, so where
+    // tmpdir() is an 8.3 path (windows-latest: C:\Users\RUNNER~1\...) this expected the
+    // SHORT spelling while record.project holds the LONG one. Identity on posix.
+    expect(records[0]).toMatchObject({ dir, branch, project: realpathSync.native(repo) });
   });
 
   it('rejects a non-git directory', async () => {
@@ -492,7 +496,12 @@ describe('concurrent workspace create + orphan adoption (D5-2)', () => {
       .split('\n')
       .filter((l) => l.startsWith('worktree '))
       .map((l) => l.slice('worktree '.length).trim())
-      .filter((d) => d !== gitPathOf(realpathSync(repo))); // exclude the main tree (git reports realpaths, forward-slash form)
+      // Exclude the main tree. git reports realpaths in forward-slash form (gitPathOf), and
+      // it expands 8.3 short names — so this must use the NATIVE realpath flavor too, or on
+      // a runner whose tmpdir is 8.3 (C:\Users\RUNNER~1\...) the short spelling never equals
+      // git's long one, the main tree survives the filter, and the count is off by one
+      // (N+1 instead of N) — a test-side miscount, not a product dedup bug. Identity on posix.
+      .filter((d) => d !== gitPathOf(realpathSync.native(repo)));
 
     expect(worktreeDirs).toHaveLength(N);
 

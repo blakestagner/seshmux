@@ -50,7 +50,18 @@ beforeEach(() => {
   // realpath: a real agent's jsonl records getcwd(), which is always canonical (macOS
   // /tmp -> /private/tmp). Writing the raw path here would be an unrealistic fixture — and
   // it silently masked whether grouping survives a symlinked repo root.
-  repo = realpathSync(mkdtempSync(join(tmpdir(), 'seshmux-repo-')));
+  //
+  // .native, specifically: it must be the SAME realpath flavor the product canonicalizes
+  // with (workspaces.ts canon() -> fs/promises realpath, which is the native one). The JS
+  // realpathSync does NOT expand Windows 8.3 short names, the native one does. That only
+  // shows up where tmpdir() is itself an 8.3 path — as on the windows-latest CI runner,
+  // C:\Users\RUNNER~1\... — and there the fixture held the SHORT spelling while every
+  // product record held the LONG one, so each `path === repo` compare missed and the
+  // worktree never folded into its parent. Measured:
+  //   realpathSync(short)        -> C:\...\SESHMU~1            (short, unchanged)
+  //   realpathSync.native(short) -> C:\...\seshmuxlongrepodir  (== fs/promises realpath)
+  // Identity on posix, where the two flavors agree.
+  repo = realpathSync.native(mkdtempSync(join(tmpdir(), 'seshmux-repo-')));
   initRepo(repo);
   storeRoot = mkdtempSync(join(tmpdir(), 'seshmux-store-'));
 });
