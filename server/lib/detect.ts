@@ -17,11 +17,15 @@ export type AgentEnv = {
   store: { found: boolean; projects: number; bytes: number };
 };
 
-export type Runner = (cmd: string, args: string[]) => Promise<{ stdout: string }>;
+// `opts` is optional and additive: cmdInvocation returns spawn options the caller
+// must apply (windowsVerbatimArguments on the .cmd path — its command line is
+// already escaped and node must not re-escape it). Stub runners in tests simply
+// ignore the extra argument.
+export type Runner = (cmd: string, args: string[], opts?: object) => Promise<{ stdout: string }>;
 
-function defaultRun(cmd: string, args: string[]): Promise<{ stdout: string }> {
+function defaultRun(cmd: string, args: string[], opts: object = {}): Promise<{ stdout: string }> {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: TIMEOUT_MS }, (err, stdout) => {
+    execFile(cmd, args, { timeout: TIMEOUT_MS, ...opts }, (err, stdout) => {
       if (err) reject(err);
       else resolve({ stdout });
     });
@@ -37,8 +41,11 @@ function which(run: Runner, bin: string): Promise<string | undefined> {
 async function version(run: Runner, bin: string, flag = '--version'): Promise<string | undefined> {
   try {
     // cmdInvocation: a resolved .cmd/.bat can't be execFile'd directly on win32.
-    const [file, args] = cmdInvocation(bin, [flag]);
-    const { stdout } = await run(file, args);
+    // spawnOpts must reach the runner — without it node re-escapes the command
+    // line and a .cmd under a spaced path (C:\Program Files\...) never runs, so
+    // its version would silently read as undefined.
+    const [file, args, spawnOpts] = cmdInvocation(bin, [flag]);
+    const { stdout } = await run(file, args, spawnOpts);
     return stdout.trim().split('\n')[0] || undefined;
   } catch {
     return undefined;

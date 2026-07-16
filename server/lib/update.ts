@@ -97,9 +97,12 @@ function defaultExec(cmd: string, args: string[]): Promise<{ stdout: string; std
   // win32: `npm` is npm.cmd, which Node refuses to execFile directly — resolve
   // the name and route through the interpreter. Identity on posix.
   if (process.platform === 'win32' && cmd === 'npm') cmd = 'npm.cmd';
-  [cmd, args] = cmdInvocation(cmd, args);
+  // spawnOpts carries windowsVerbatimArguments on the .cmd path — cmdInvocation has
+  // already escaped the command line, and node must not re-escape it. Still NOT
+  // shell:true: verbatim means "pass my line through", not "let a shell re-parse it".
+  const [file, spawnArgs, spawnOpts] = cmdInvocation(cmd, args);
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: 120_000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(file, spawnArgs, { timeout: 120_000, maxBuffer: 8 * 1024 * 1024, ...spawnOpts }, (err, stdout, stderr) => {
       if (err) reject(Object.assign(err, { stdout, stderr }));
       else resolve({ stdout, stderr });
     });

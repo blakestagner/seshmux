@@ -58,9 +58,17 @@ const jsonPath = path.join(holderDir, ptyId + '.json');
 // win32: CreateProcess can't run .cmd/.bat shims (npm installs agent CLIs as
 // exactly those) — route them through the command interpreter, with args quoted
 // for both cmd.exe and the target's parser. Identity on posix.
-const [file, rest] = cmdInvocation(args[0], args.slice(1));
+const [file, rest, spawnOpts] = cmdInvocation(args[0], args.slice(1));
+// cmdInvocation hands back a command line that is already fully escaped, so
+// node-pty must not re-escape it. It has no windowsVerbatimArguments option, but
+// a STRING `args` IS its verbatim form: windowsPtyAgent.js does
+// `argsToCommandLine(file, []) + ' ' + args`, i.e. it quotes only the file and
+// appends our line untouched. Passing the array instead let node-pty rewrite our
+// quotes as MSVC `\"`, which cmd.exe does not understand — a .cmd under a path
+// with spaces then never launched. Array (normal quoting) on posix / non-.cmd.
+const ptyArgs = spawnOpts.windowsVerbatimArguments ? rest.join(' ') : rest;
 
-const proc = pty.spawn(file, rest, {
+const proc = pty.spawn(file, ptyArgs, {
   name: 'xterm-256color',
   cols: cols || 80,
   rows: rows || 24,

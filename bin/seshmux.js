@@ -125,9 +125,11 @@ async function runUpdate(checkOnly) {
     process.exit(1);
   }
   const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  const [file, spawnArgs] = cmdInvocation(npmBin, ['i', '-g', `seshmux@${latest}`, '--prefer-online']);
+  // spawnOpts carries windowsVerbatimArguments on the .cmd path: cmdInvocation has
+  // already escaped the line and node must not re-escape it. Still not shell:true.
+  const [file, spawnArgs, spawnOpts] = cmdInvocation(npmBin, ['i', '-g', `seshmux@${latest}`, '--prefer-online']);
   const code = await new Promise((resolve) => {
-    const child = spawn(file, spawnArgs, { stdio: 'inherit' });
+    const child = spawn(file, spawnArgs, { stdio: 'inherit', ...spawnOpts });
     child.on('exit', (c) => resolve(c ?? 1));
     child.on('error', () => resolve(1));
   });
