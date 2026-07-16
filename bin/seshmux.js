@@ -305,6 +305,29 @@ function openBrowser(url) {
   });
 }
 
+// tsx's real CLI entry, for the dev (unbuilt) paths below.
+//
+// These used to hand node `<root>/node_modules/.bin/tsx`. On posix that is a
+// SYMLINK to tsx's entry, so node runs the real JS. On win32 npm instead writes
+// a POSIX SHELL SHIM at that name (alongside tsx.cmd/tsx.ps1), so node parsed
+// `basedir=$(dirname "$(echo "$0" | ...)")` as JavaScript and the whole app died
+// with "SyntaxError: missing ) after argument list" — no hint that a build was
+// missing. Resolving the package entry yields the exact file .bin/tsx points at
+// on posix, so behavior there is unchanged, and it needs no interpreter wrap
+// (cf. daemon/win-args.js) because node runs it directly.
+function tsxEntry(root) {
+  try {
+    return require.resolve('tsx/cli', { paths: [root] });
+  } catch {
+    console.error(
+      '[seshmux] no built server found (.next/standalone) and tsx is not installed.\n' +
+        '  Run `npm run build` first — on Windows, stop any running seshmux before\n' +
+        '  building: it holds .next/standalone open and the clean step then fails.',
+    );
+    process.exit(1);
+  }
+}
+
 // `seshmux mcp-bridge` — run the MCP stdio bridge server (ask_codex/ask_claude).
 // Invoked by claude/codex as a registered MCP server; it speaks stdio, so it must
 // NOT start the web server. Runs the TS module via tsx in dev, compiled in prod.
@@ -316,7 +339,7 @@ function runMcpBridge(root) {
     : spawn(
         process.execPath,
         [
-          path.join(root, 'node_modules', '.bin', 'tsx'),
+          tsxEntry(root),
           '-e',
           "import('./server/lib/bridge/mcp.ts').then(m => m.startMcpBridge())",
         ],
@@ -523,7 +546,7 @@ async function main() {
       ? spawn(process.execPath, [standalone], { cwd: path.dirname(standalone), stdio: 'inherit', env })
       : spawn(
           process.execPath,
-          [path.join(root, 'node_modules', '.bin', 'tsx'), path.join(root, 'server', 'index.ts')],
+          [tsxEntry(root), path.join(root, 'server', 'index.ts')],
           { cwd: root, stdio: 'inherit', env },
         );
   }
