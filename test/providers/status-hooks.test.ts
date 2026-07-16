@@ -11,6 +11,7 @@ import {
   type StatusHookTargets,
 } from '../../server/lib/providers/status-hooks';
 import { CLAUDE_STATUS_HOOK_SCRIPT } from '../../server/lib/providers/status-hook-script';
+import { IS_WIN } from '../helpers/platform';
 
 // Temp dir per test — NEVER touch the real ~/.claude/settings.json.
 // scriptPath is NOT pre-created — installHooks() writes it out itself; that
@@ -57,9 +58,15 @@ describe('installHooks', () => {
     await installHooks(targets);
     expect(existsSync(targets.scriptPath)).toBe(true);
     expect(readFileSync(targets.scriptPath, 'utf8')).toBe(CLAUDE_STATUS_HOOK_SCRIPT);
-    const { statSync } = await import('node:fs');
-    const mode = statSync(targets.scriptPath).mode & 0o777;
-    expect(mode & 0o100).toBe(0o100); // owner-executable
+    // NTFS has no POSIX executable bit — chmod's argument is accepted but stat().mode
+    // always comes back with the exec bits cleared, so this assertion cannot hold on
+    // Windows. Not a real coverage gap: hooksAvailable() gates this whole feature off
+    // on win32 (see status-hooks.ts), so installHooks() never runs there in production.
+    if (!IS_WIN) {
+      const { statSync } = await import('node:fs');
+      const mode = statSync(targets.scriptPath).mode & 0o777;
+      expect(mode & 0o100).toBe(0o100); // owner-executable
+    }
   });
 
   it('preserves existing unrelated settings and the user’s own hooks for other events', async () => {

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import {
   classify,
   classifyExplain,
@@ -15,7 +16,9 @@ import {
 import { ClaudeProvider } from '../../server/lib/providers/claude';
 import { CodexProvider } from '../../server/lib/providers/codex';
 
-const fx = (name: string) => readFileSync(join(new URL('../fixtures/tui', import.meta.url).pathname, name), 'utf8');
+// fileURLToPath, not .pathname — see test/store/scan.test.ts for why the raw pathname
+// doubles the drive letter on Windows.
+const fx = (name: string) => readFileSync(join(fileURLToPath(new URL('../fixtures/tui', import.meta.url)), name), 'utf8');
 
 // RAW fixtures (ANSI intact) — classify must strip ANSI itself, so matching raw bytes proves
 // the real daemon pipeline (raw PTY bytes) works, not a pre-stripped stand-in.

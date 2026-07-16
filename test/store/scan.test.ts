@@ -2,10 +2,15 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { utimesSync, statSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { scanProjects, listSessions, storeBytes } from '../../server/lib/store/scan';
 
-const root = new URL('../fixtures', import.meta.url).pathname;
-const projDir = `${root}/-Users-demo-github-myrepo`;
+// fileURLToPath (not new URL(...).pathname) — on Windows a file:// URL's pathname is
+// "/C:/Users/..." (leading slash before the drive letter); joining that raw string
+// doubles the drive letter into "C:\C:\Users\...". fileURLToPath decodes it correctly
+// on every platform.
+const root = fileURLToPath(new URL('../fixtures', import.meta.url));
+const projDir = join(root, '-Users-demo-github-myrepo');
 const opts = { root, provider: 'claude' as const };
 
 // Deterministic mtimes: bbbb (Jul 2) newer than aaaa (Jul 1).

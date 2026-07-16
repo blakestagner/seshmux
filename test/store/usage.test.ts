@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, copyFileSync, utimesSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { aggregateUsage } from '../../server/lib/store/usage';
 
 // Isolated root: a fresh temp dir containing only the myrepo project, copied from the
@@ -9,7 +10,9 @@ import { aggregateUsage } from '../../server/lib/store/usage';
 // -Users-demo-github-other and codex-sessions fixtures (mtime=now, no utimesSync),
 // polluting sessions/byProject counts. Copy, don't symlink — scanProjects skips
 // symlinked dirs (dirent.isDirectory() is false for them).
-const fixturesRoot = new URL('../fixtures', import.meta.url).pathname;
+// fileURLToPath, not .pathname — see test/store/scan.test.ts for why the raw pathname
+// doubles the drive letter on Windows.
+const fixturesRoot = fileURLToPath(new URL('../fixtures', import.meta.url));
 const srcProjDir = join(fixturesRoot, '-Users-demo-github-myrepo');
 
 let root: string;

@@ -2,9 +2,12 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { join } from 'node:path';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { parseTranscript, readCtx } from '../../server/lib/store/transcript';
 
-const root = new URL('../fixtures', import.meta.url).pathname;
+// fileURLToPath, not .pathname — see test/store/scan.test.ts for why the raw pathname
+// doubles the drive letter on Windows.
+const root = fileURLToPath(new URL('../fixtures', import.meta.url));
 const projId = '-Users-demo-github-myrepo';
 const WINDOW = 200_000; // caller (provider) supplies the window; tests stand in for claude.ts
 

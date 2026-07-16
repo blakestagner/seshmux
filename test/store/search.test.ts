@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import { searchStore } from '../../server/lib/store/search';
 
-const root = new URL('../fixtures', import.meta.url).pathname;
+// fileURLToPath, not .pathname — see test/store/scan.test.ts for why the raw pathname
+// doubles the drive letter on Windows.
+const root = fileURLToPath(new URL('../fixtures', import.meta.url));
 
 describe('searchStore (JS fallback, rg forced off)', () => {
   it('finds a hit inside a claude session and tags it with project/title/provider', async () => {
