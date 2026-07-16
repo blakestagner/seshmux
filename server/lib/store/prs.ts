@@ -22,7 +22,12 @@ export interface PrRef {
 }
 
 const PR_URL = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/g;
-const CREATE_INPUT = /\bpr\s+create\b|\bcreat(?:e|ing)\b[\s\S]{0,80}?\b(?:pr|pull\s+request)\b/i;
+// "create/creating/open/opening ... pr/pull request" within a short window, or a
+// literal `pr create`. "open" covers the create-pr subagent, whose prompt says
+// "Open a GitHub PR ..." — a real creation the create-phrasing alone missed. Past
+// tense ("opened") is deliberately NOT here (that reads as a report/view of an
+// existing PR); the assistant-text path (CREATE_TEXT) handles "opened https://…".
+const CREATE_INPUT = /\bpr\s+create\b|\b(?:creat(?:e|ing)|open(?:ing)?)\b[\s\S]{0,80}?\b(?:pr|pull\s+request)\b/i;
 const CREATE_TEXT = /\bcreat(?:e|ed|ing)\b|\bopened\b/i;
 // Best-effort `--title` capture from a raw (often JSON-stringified) command
 // string. ponytail: stops at the first quote/backslash — good enough for the

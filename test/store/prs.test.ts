@@ -68,6 +68,23 @@ describe('extractPrs', () => {
     expect(prs[0]).toMatchObject({ owner: 'acme', repo: 'tools', number: 5 });
   });
 
+  it('catches a PR opened via the create-pr subagent ("Open a GitHub PR" prompt)', () => {
+    const prs = extractPrs([
+      msg({
+        tools: [
+          {
+            name: 'Agent',
+            input:
+              '{"description":"Open PR for branch","prompt":"Open a GitHub PR for branch feat/x, base main. Push the branch first, then open the PR with gh."}',
+            output: 'PR created: https://github.com/acme/webapp/pull/56',
+          },
+        ],
+      }),
+    ]);
+    expect(prs).toHaveLength(1);
+    expect(prs[0]).toMatchObject({ owner: 'acme', repo: 'webapp', number: 56 });
+  });
+
   it('canonicalizes URL variants (trailing paths/fragments) into one entry', () => {
     const prs = extractPrs([
       msg({ text: 'Created https://github.com/acme/webapp/pull/8/files just now.' }),
