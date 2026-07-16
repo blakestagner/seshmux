@@ -5,6 +5,7 @@
 
 import { execFile } from 'node:child_process';
 import type { AgentProvider } from './providers/types';
+import { execArgs } from './which';
 
 const TIMEOUT_MS = 2_000;
 
@@ -28,9 +29,16 @@ function defaultRun(cmd: string, args: string[]): Promise<{ stdout: string }> {
 
 async function which(run: Runner, bin: string): Promise<string | undefined> {
   try {
-    const { stdout } = await run('which', [bin]);
-    const path = stdout.trim().split('\n')[0];
-    return path || undefined;
+    // `which` is posix-only; `where` returns every PATH match (one per line),
+    // including npm's extensionless unix shim — prefer what CreateProcess can start.
+    const win = process.platform === 'win32';
+    const { stdout } = await run(win ? 'where' : 'which', [bin]);
+    const lines = stdout
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (!win) return lines[0] || undefined;
+    return lines.find((l) => /\.(exe|cmd|bat)$/i.test(l)) ?? lines[0] ?? undefined;
   } catch {
     return undefined;
   }
@@ -38,7 +46,9 @@ async function which(run: Runner, bin: string): Promise<string | undefined> {
 
 async function version(run: Runner, bin: string, flag = '--version'): Promise<string | undefined> {
   try {
-    const { stdout } = await run(bin, [flag]);
+    // execArgs: a resolved .cmd/.bat can't be execFile'd directly on win32.
+    const [file, args] = execArgs(bin, [flag]);
+    const { stdout } = await run(file, args);
     return stdout.trim().split('\n')[0] || undefined;
   } catch {
     return undefined;
@@ -48,7 +58,7 @@ async function version(run: Runner, bin: string, flag = '--version'): Promise<st
 async function detectTool(run: Runner, bin: string, versionFlag = '--version') {
   const path = await which(run, bin);
   if (!path) return { found: false };
-  const v = await version(run, bin, versionFlag);
+  const v = await version(run, path, versionFlag);
   return { found: true, path, ...(v ? { version: v } : {}) };
 }
 
@@ -74,7 +84,7 @@ export async function detectEnv(deps?: { run?: Runner }): Promise<{
     const provider = byId.get(id)!;
     const bin = provider.commands.fresh('')[0];
     const path = await which(run, bin);
-    const v = path ? await version(run, bin) : undefined;
+    const v = path ? await version(run, path) : undefined;
 
     let store = { found: false, projects: 0, bytes: 0 };
     try {

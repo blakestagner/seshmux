@@ -35,6 +35,7 @@ const {
   encode,
   createDecoder,
 } = require('./protocol');
+const { ipcPath } = require('./ipc');
 
 const HOLDER_ENTRY = path.join(__dirname, 'holder.js');
 // Connect retries while a freshly-spawned holder boots node + binds its socket.
@@ -50,10 +51,13 @@ const HOLDER_CONNECT_DELAY_MS = 100;
  */
 function holderSockPath(holderDir, ptyId) {
   const natural = path.join(holderDir, ptyId + '.sock');
+  // win32: no unix sockets — map to a named pipe up front. The pipe name flows
+  // through the holder spec, the holder's listen(), its .json, and adoption
+  // unchanged; unlink/exists on it just no-op (pipes leave no fs entry).
+  if (process.platform === 'win32') return ipcPath(natural);
   if (Buffer.byteLength(natural) <= 100) return natural;
-  const base = process.platform === 'win32' ? os.tmpdir() : '/tmp';
   const h = crypto.createHash('sha1').update(holderDir).digest('hex').slice(0, 8);
-  return path.join(base, `smx-${h}-${ptyId}.sock`);
+  return path.join('/tmp', `smx-${h}-${ptyId}.sock`);
 }
 
 function pidAlive(pid) {
@@ -506,7 +510,7 @@ class PtyManager {
         name: 'xterm-256color',
         cols: entry.cols,
         rows: entry.rows,
-        cwd: process.env.HOME || process.cwd(),
+        cwd: os.homedir() || process.cwd(),
         env: tmuxEnv(),
       });
     } catch {
@@ -541,6 +545,7 @@ class PtyManager {
     const child = spawnProcess(process.execPath, [HOLDER_ENTRY, JSON.stringify(spec)], {
       detached: true,
       stdio: 'ignore',
+      windowsHide: true, // win32: detached would otherwise open a console window
       cwd,
       env: process.env,
     });
@@ -559,7 +564,7 @@ class PtyManager {
     }
     const columns = cols || 80;
     const lines = rows || 24;
-    const cwdResolved = cwd || process.env.HOME || process.cwd();
+    const cwdResolved = cwd || os.homedir() || process.cwd();
 
     // ptyId assigned BEFORE spawn (not after) so it can be exported into the
     // child's env — status-hook scripts (Spec 2) read $SESHMUX_PTY_ID from
@@ -853,12 +858,12 @@ class PtyManager {
       // Recover the session's real cwd from its active pane — the UI maps
       // cwd → project, so HOME here mislabels every rehydrated tab.
       const paneCwd = await tmuxPaneCwd(fullName);
-      const cwd = paneCwd || process.env.HOME || process.cwd();
+      const cwd = paneCwd || os.homedir() || process.cwd();
       const proc = pty.spawn('tmux', ['attach-session', '-t', fullName], {
         name: 'xterm-256color',
         cols: 80,
         rows: 24,
-        cwd: process.env.HOME || process.cwd(),
+        cwd: os.homedir() || process.cwd(),
         env: tmuxEnv(),
       });
       // Session already exists here (no create race) but may predate the

@@ -31,7 +31,6 @@
 // same info (fallback: per-model table, fallback DEFAULT_WINDOW). null if no usable count.
 // NO plan mode: codex has no `--permission-mode plan` equivalent (per mockup, modal hides it).
 
-import { execFile } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -43,6 +42,7 @@ import type { SearchHit, SearchOpts } from '../store/search';
 import { pricingFor, type UsageSummary } from '../store/usage';
 import type { Ctx, Msg, ToolCall } from '../store/transcript';
 import { loadNeedsInputPatterns } from './manifest';
+import { whichBin } from '../which';
 import {
   itemId,
   scanInstructionFiles,
@@ -384,11 +384,7 @@ export class CodexProvider implements AgentProvider {
 
   // `which codex` — this file is the only place allowed to know the binary name (hard rule 3).
   private async hasCli(): Promise<boolean> {
-    return new Promise((resolve) => {
-      execFile('which', [CODEX_BIN], { timeout: 2000 }, (err, stdout) => {
-        resolve(!err && !!stdout.trim());
-      });
-    });
+    return !!(await whichBin(CODEX_BIN));
   }
 
   async scanProjects(): Promise<Project[]> {

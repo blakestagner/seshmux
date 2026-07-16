@@ -4,15 +4,6 @@
 // Runtime backstop for package.json engines (npm doesn't enforce it). ES5-only syntax.
 var _nodeMajor = parseInt(process.versions.node.split('.')[0], 10);
 if (_nodeMajor < 20) { console.error('seshmux requires Node.js >= 20 (found ' + process.versions.node + '). Please upgrade.'); process.exit(1); }
-
-// Native Windows isn't supported yet: the daemon, PTY holders, and bridge all
-// speak over unix domain sockets, which Node can't listen on under win32.
-// Fail with one clear sentence instead of a socket stack trace. WSL works fully.
-if (process.platform === 'win32') {
-  console.error('seshmux does not support native Windows yet. Run it inside WSL (https://learn.microsoft.com/windows/wsl/install), where it works fully.');
-  process.exit(1);
-}
-
 // seshmux CLI entry. Ensures a responsive seshmuxd daemon, picks a free port
 // (reusing an already-running seshmux if one answers), starts the Fastify
 // server, and opens the browser to the chosen port.
@@ -125,7 +116,8 @@ async function runUpdate(checkOnly) {
   if (checkOnly) return;
 
   const code = await new Promise((resolve) => {
-    const child = spawn('npm', ['i', '-g', `seshmux@${latest}`, '--prefer-online'], { stdio: 'inherit' });
+    // shell:true on win32 only — npm is npm.cmd there, which spawn can't start directly.
+    const child = spawn('npm', ['i', '-g', `seshmux@${latest}`, '--prefer-online'], { stdio: 'inherit', shell: process.platform === 'win32' });
     child.on('exit', (c) => resolve(c ?? 1));
     child.on('error', () => resolve(1));
   });
@@ -323,10 +315,11 @@ function runMcpBridge(root) {
   child.on('exit', (code) => process.exit(code ?? 0));
 }
 
-// Is a binary on PATH? Shell-free.
+// Is a binary on PATH? Shell-free. (`which` is posix-only; win32 has where.exe.)
 function have(bin) {
+  const probe = process.platform === 'win32' ? 'where' : 'which';
   return new Promise((resolve) => {
-    execFile('which', [bin], (err, stdout) => resolve(!err && !!String(stdout).trim()));
+    execFile(probe, [bin], (err, stdout) => resolve(!err && !!String(stdout).trim()));
   });
 }
 

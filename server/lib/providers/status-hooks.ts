@@ -223,5 +223,8 @@ export async function hooksInstallState(
 // needed: the hook mechanism has been stable Claude Code surface for a long
 // time, unlike codex's undocumented internal hooks (see codex.ts note).
 export function hooksAvailable(): boolean {
-  return true;
+  // The hook is a bash script — on win32 installing it would "succeed" and then
+  // never fire, silently degrading status detection. Gate it off; heuristics
+  // still work. A PowerShell sibling script is the upgrade path.
+  return process.platform !== 'win32';
 }

@@ -8,6 +8,7 @@
 
 import { execFile } from 'node:child_process';
 import { realpathSync } from 'node:fs';
+import { execArgs } from './which';
 
 export type InstallMethod = 'global' | 'npx' | 'local';
 
@@ -93,6 +94,10 @@ function resolveArgvRealPath(): string {
 const defaultFetch: FetchLike = (url, init) => fetch(url, init) as ReturnType<FetchLike>;
 
 function defaultExec(cmd: string, args: string[]): Promise<{ stdout: string; stderr?: string }> {
+  // win32: `npm` is npm.cmd, which Node refuses to execFile directly — resolve
+  // the name and route through the interpreter. Identity on posix.
+  if (process.platform === 'win32' && cmd === 'npm') cmd = 'npm.cmd';
+  [cmd, args] = execArgs(cmd, args);
   return new Promise((resolve, reject) => {
     execFile(cmd, args, { timeout: 120_000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) reject(Object.assign(err, { stdout, stderr }));
