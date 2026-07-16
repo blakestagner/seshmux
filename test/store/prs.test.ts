@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseTranscriptFile, type Msg } from '../../server/lib/store/transcript';
 import { extractPrs } from '../../server/lib/store/prs';
 
-const fixture = join(new URL('../fixtures/prs', import.meta.url).pathname, 'cccc-3333.jsonl');
+// fileURLToPath, NOT new URL(...).pathname: on Windows the latter yields
+// `/C:/Users/...`, which path.join turns into a broken `C:\C:\...` and the
+// fixture can't be read (returns [] — a silent Windows-only failure).
+const fixture = fileURLToPath(new URL('../fixtures/prs/cccc-3333.jsonl', import.meta.url));
 
 function msg(partial: Partial<Msg>): Msg {
   return { role: 'assistant', text: '', tools: [], ts: 0, ...partial };
