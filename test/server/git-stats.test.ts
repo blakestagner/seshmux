@@ -12,6 +12,24 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' });
 }
 
+// Windows can hold a just-used-as-cwd directory locked (briefly, ~hundreds of ms — observed
+// AV/indexer-style transient lock, not a leaked handle from our own process) after a child
+// git process spawned with cwd=dir exits, racing an immediate rmSync with EPERM. rmSync's
+// own maxRetries/retryDelay do NOT cover this: empirically they take a fast path for a plain
+// (already-empty) directory that fails once and rethrows immediately (0ms elapsed) rather
+// than retrying — so this is a small manual async retry loop instead, no-op on posix.
+async function rmSyncRetrying(dir: string, tries = 10, delayMs = 300): Promise<void> {
+  for (let i = 0; i < tries; i++) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      if (i === tries - 1) throw err;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 describe('parseNumstat', () => {
   it('parses added/removed/path', () => {
     expect(parseNumstat('3\t1\tsrc/a.ts\n10\t0\tREADME.md\n')).toEqual([
@@ -98,7 +116,7 @@ describe('changes (real repo)', () => {
       const res = await changes(dir, 'main', true);
       expect(res).toEqual({ added: 0, removed: 0, files: [], degraded: true });
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      await rmSyncRetrying(dir);
     }
   });
 });

@@ -4,10 +4,16 @@
 // any id with a separator or ".." while still accepting every legit dash-encoded id form.
 
 import { describe, it, expect } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import { isSafeId, listSessions } from '../../server/lib/store/scan';
 import { parseTranscript } from '../../server/lib/store/transcript';
 
-const root = new URL('../fixtures', import.meta.url).pathname;
+// fileURLToPath, not .pathname — see test/store/scan.test.ts for why the raw pathname
+// doubles the drive letter on Windows. This one matters even more than most: with the
+// doubled root every join() below 404s regardless of the guard, so the traversal
+// rejections were passing VACUOUSLY (both legit and evil ids failed to resolve). Fixing
+// the root makes the legit "control" cases resolve for real and re-exercises the guard.
+const root = fileURLToPath(new URL('../fixtures', import.meta.url));
 const projId = '-Users-demo-github-myrepo';
 const WINDOW = 200_000;
 

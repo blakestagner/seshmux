@@ -5,6 +5,8 @@
 
 import { execFile } from 'node:child_process';
 import type { AgentProvider } from './providers/types';
+import { whichBin, type Runner as WhichRunner } from './which';
+import { cmdInvocation } from './win-args';
 
 const TIMEOUT_MS = 2_000;
 
@@ -15,30 +17,35 @@ export type AgentEnv = {
   store: { found: boolean; projects: number; bytes: number };
 };
 
-export type Runner = (cmd: string, args: string[]) => Promise<{ stdout: string }>;
+// `opts` is optional and additive: cmdInvocation returns spawn options the caller
+// must apply (windowsVerbatimArguments on the .cmd path — its command line is
+// already escaped and node must not re-escape it). Stub runners in tests simply
+// ignore the extra argument.
+export type Runner = (cmd: string, args: string[], opts?: object) => Promise<{ stdout: string }>;
 
-function defaultRun(cmd: string, args: string[]): Promise<{ stdout: string }> {
+function defaultRun(cmd: string, args: string[], opts: object = {}): Promise<{ stdout: string }> {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: TIMEOUT_MS }, (err, stdout) => {
+    execFile(cmd, args, { timeout: TIMEOUT_MS, ...opts }, (err, stdout) => {
       if (err) reject(err);
       else resolve({ stdout });
     });
   });
 }
 
-async function which(run: Runner, bin: string): Promise<string | undefined> {
-  try {
-    const { stdout } = await run('which', [bin]);
-    const path = stdout.trim().split('\n')[0];
-    return path || undefined;
-  } catch {
-    return undefined;
-  }
+// Resolution heuristic (where.exe parsing, CWD-shadow drop, extension preference)
+// lives in which.ts — share it so detection and the spawn path never disagree.
+function which(run: Runner, bin: string): Promise<string | undefined> {
+  return whichBin(bin, run as WhichRunner);
 }
 
 async function version(run: Runner, bin: string, flag = '--version'): Promise<string | undefined> {
   try {
-    const { stdout } = await run(bin, [flag]);
+    // cmdInvocation: a resolved .cmd/.bat can't be execFile'd directly on win32.
+    // spawnOpts must reach the runner — without it node re-escapes the command
+    // line and a .cmd under a spaced path (C:\Program Files\...) never runs, so
+    // its version would silently read as undefined.
+    const [file, args, spawnOpts] = cmdInvocation(bin, [flag]);
+    const { stdout } = await run(file, args, spawnOpts);
     return stdout.trim().split('\n')[0] || undefined;
   } catch {
     return undefined;
@@ -48,7 +55,7 @@ async function version(run: Runner, bin: string, flag = '--version'): Promise<st
 async function detectTool(run: Runner, bin: string, versionFlag = '--version') {
   const path = await which(run, bin);
   if (!path) return { found: false };
-  const v = await version(run, bin, versionFlag);
+  const v = await version(run, path, versionFlag);
   return { found: true, path, ...(v ? { version: v } : {}) };
 }
 
@@ -74,7 +81,7 @@ export async function detectEnv(deps?: { run?: Runner }): Promise<{
     const provider = byId.get(id)!;
     const bin = provider.commands.fresh('')[0];
     const path = await which(run, bin);
-    const v = path ? await version(run, bin) : undefined;
+    const v = path ? await version(run, path) : undefined;
 
     let store = { found: false, projects: 0, bytes: 0 };
     try {

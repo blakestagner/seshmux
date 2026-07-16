@@ -8,6 +8,7 @@ import {
   type ApprovalListener,
 } from '../../server/lib/bridge/approval-socket';
 import { defaultRequestApproval } from '../../server/lib/bridge/mcp';
+import { ipcPath } from '../../server/lib/ipc';
 
 let dir: string;
 let sock: string;
@@ -129,7 +130,10 @@ describe('malformed / client-side', () => {
       conns.push(c);
       c.write('not json\n');
     });
-    await new Promise<void>((res) => srv.listen(sock, res));
+    // Raw net.Server here (not the product's listener) — must still go through
+    // ipcPath() like every real listen()/connect(), since win32 can't listen()
+    // on a filesystem path.
+    await new Promise<void>((res) => srv.listen(ipcPath(sock), res));
     try {
       expect(await requestApprovalOverSocket(sock, info)).toBe(false);
     } finally {

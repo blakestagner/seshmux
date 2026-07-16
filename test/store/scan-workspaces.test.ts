@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scanProjects, listSessions, sessionFilePath } from '../../server/lib/store/scan';
+import { scanProjects, listSessions, sessionFilePath, encodeProjectId } from '../../server/lib/store/scan';
 import { ClaudeProvider } from '../../server/lib/providers/claude';
 import * as workspaces from '../../server/lib/workspaces';
 
@@ -50,7 +50,18 @@ beforeEach(() => {
   // realpath: a real agent's jsonl records getcwd(), which is always canonical (macOS
   // /tmp -> /private/tmp). Writing the raw path here would be an unrealistic fixture — and
   // it silently masked whether grouping survives a symlinked repo root.
-  repo = realpathSync(mkdtempSync(join(tmpdir(), 'seshmux-repo-')));
+  //
+  // .native, specifically: it must be the SAME realpath flavor the product canonicalizes
+  // with (workspaces.ts canon() -> fs/promises realpath, which is the native one). The JS
+  // realpathSync does NOT expand Windows 8.3 short names, the native one does. That only
+  // shows up where tmpdir() is itself an 8.3 path — as on the windows-latest CI runner,
+  // C:\Users\RUNNER~1\... — and there the fixture held the SHORT spelling while every
+  // product record held the LONG one, so each `path === repo` compare missed and the
+  // worktree never folded into its parent. Measured:
+  //   realpathSync(short)        -> C:\...\SESHMU~1            (short, unchanged)
+  //   realpathSync.native(short) -> C:\...\seshmuxlongrepodir  (== fs/promises realpath)
+  // Identity on posix, where the two flavors agree.
+  repo = realpathSync.native(mkdtempSync(join(tmpdir(), 'seshmux-repo-')));
   initRepo(repo);
   storeRoot = mkdtempSync(join(tmpdir(), 'seshmux-store-'));
 });
@@ -64,11 +75,11 @@ afterEach(() => {
 
 describe('scanProjects workspace grouping', () => {
   it('folds a workspace worktree project into its parent (one group, summed count)', async () => {
-    const parentDirName = repo.replace(/\//g, '-');
+    const parentDirName = encodeProjectId(repo);
     writeSessionFile(join(storeRoot, parentDirName), 'parent-1', repo, 'main', 'do the main thing');
 
     const { dir: wsDir } = await workspaces.create(repo);
-    const wsDirName = wsDir.replace(/\//g, '-');
+    const wsDirName = encodeProjectId(wsDir);
     writeSessionFile(join(storeRoot, wsDirName), 'ws-1', wsDir, 'agent/foo-1', 'do the workspace thing');
 
     const projects = await scanProjects(storeRoot, 'claude');
@@ -83,11 +94,11 @@ describe('scanProjects workspace grouping', () => {
   });
 
   it('listSessions on the scanned project id also returns the workspace session', async () => {
-    const parentDirName = repo.replace(/\//g, '-');
+    const parentDirName = encodeProjectId(repo);
     writeSessionFile(join(storeRoot, parentDirName), 'parent-1', repo, 'main', 'do the main thing');
 
     const { dir: wsDir } = await workspaces.create(repo);
-    const wsDirName = wsDir.replace(/\//g, '-');
+    const wsDirName = encodeProjectId(wsDir);
     writeSessionFile(join(storeRoot, wsDirName), 'ws-1', wsDir, 'agent/foo-1', 'do the workspace thing');
 
     // Take project.id from the scan result (never hardcode the dirent name) —
@@ -108,11 +119,11 @@ describe('scanProjects workspace grouping', () => {
 
   it('two workspaces with no direct-in-repo session both surface via listSessions(project.id)', async () => {
     const { dir: ws1Dir } = await workspaces.create(repo);
-    const ws1DirName = ws1Dir.replace(/\//g, '-');
+    const ws1DirName = encodeProjectId(ws1Dir);
     writeSessionFile(join(storeRoot, ws1DirName), 'ws-1', ws1Dir, 'agent/foo-1', 'workspace one thing');
 
     const { dir: ws2Dir } = await workspaces.create(repo);
-    const ws2DirName = ws2Dir.replace(/\//g, '-');
+    const ws2DirName = encodeProjectId(ws2Dir);
     writeSessionFile(join(storeRoot, ws2DirName), 'ws-2', ws2Dir, 'agent/bar-1', 'workspace two thing');
 
     const projects = await scanProjects(storeRoot, 'claude');
@@ -132,7 +143,7 @@ describe('scanProjects workspace grouping', () => {
 
   it('a workspace with no parent-repo sessions yet still surfaces as the parent project', async () => {
     const { dir: wsDir } = await workspaces.create(repo);
-    const wsDirName = wsDir.replace(/\//g, '-');
+    const wsDirName = encodeProjectId(wsDir);
     writeSessionFile(join(storeRoot, wsDirName), 'ws-1', wsDir, 'agent/foo-1', 'first workspace session');
 
     const projects = await scanProjects(storeRoot, 'claude');
@@ -152,11 +163,11 @@ describe('scanProjects workspace grouping', () => {
 // no workspaces.json record at all — must fold in from the cwd pattern alone.
 describe('scanProjects .claude/worktrees pattern grouping', () => {
   it('folds a .claude/worktrees cwd into its parent (one group, summed count), no workspaces.json record', async () => {
-    const parentDirName = repo.replace(/\//g, '-');
+    const parentDirName = encodeProjectId(repo);
     writeSessionFile(join(storeRoot, parentDirName), 'parent-1', repo, 'main', 'do the main thing');
 
     const wtDir = join(repo, '.claude', 'worktrees', 'skills-agents-authoring');
-    const wtDirName = wtDir.replace(/\//g, '-');
+    const wtDirName = encodeProjectId(wtDir);
     writeSessionFile(join(storeRoot, wtDirName), 'wt-1', wtDir, 'marketplace', 'worktree thing');
 
     const projects = await scanProjects(storeRoot, 'claude');
@@ -174,7 +185,7 @@ describe('scanProjects .claude/worktrees pattern grouping', () => {
 
   it('a .claude/worktrees cwd with no parent-repo sessions yet still synthesizes the parent project', async () => {
     const wtDir = join(repo, '.claude', 'worktrees', 'skills-agents-authoring');
-    const wtDirName = wtDir.replace(/\//g, '-');
+    const wtDirName = encodeProjectId(wtDir);
     writeSessionFile(join(storeRoot, wtDirName), 'wt-1', wtDir, 'marketplace', 'worktree thing');
 
     const projects = await scanProjects(storeRoot, 'claude');
@@ -191,11 +202,11 @@ describe('scanProjects .claude/worktrees pattern grouping', () => {
   // session with the PARENT projectId, but every file-path consumer joined
   // root/projectId/sessionId.jsonl and missed — the transcript came back empty.
   it("resolves a folded worktree session's file + transcript under the PARENT projectId", async () => {
-    const parentDirName = repo.replace(/\//g, '-');
+    const parentDirName = encodeProjectId(repo);
     writeSessionFile(join(storeRoot, parentDirName), 'parent-1', repo, 'main', 'do the main thing');
 
     const wtDir = join(repo, '.claude', 'worktrees', 'skills-agents-authoring');
-    const wtDirName = wtDir.replace(/\//g, '-');
+    const wtDirName = encodeProjectId(wtDir);
     writeSessionFile(join(storeRoot, wtDirName), 'wt-1', wtDir, 'marketplace', 'worktree task prompt');
 
     const projects = await scanProjects(storeRoot, 'claude');
@@ -217,7 +228,7 @@ describe('scanProjects .claude/worktrees pattern grouping', () => {
 
   it('a session cwd DEEPER inside a worktree (worktrees/x/subdir) still folds to the parent', async () => {
     const deepCwd = join(repo, '.claude', 'worktrees', 'x', 'packages', 'app');
-    writeSessionFile(join(storeRoot, deepCwd.replace(/\//g, '-')), 'deep-1', deepCwd, 'b', 'deep thing');
+    writeSessionFile(join(storeRoot, encodeProjectId(deepCwd)), 'deep-1', deepCwd, 'b', 'deep thing');
 
     const projects = await scanProjects(storeRoot, 'claude');
     const match = projects.find((p) => p.path === repo);

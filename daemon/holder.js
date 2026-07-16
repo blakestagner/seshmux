@@ -38,6 +38,7 @@ const {
   encode,
   createDecoder,
 } = require('./protocol');
+const { cmdInvocation } = require('./win-args');
 
 // After the PTY exits we keep the socket up so a daemon that reconnects can
 // still learn the exit code. Long grace when nobody knew; short when a live
@@ -54,7 +55,20 @@ const spec = JSON.parse(process.argv[2] || '{}');
 const { holderDir, ptyId, sock: sockPath, cwd, args, cols, rows, env } = spec;
 const jsonPath = path.join(holderDir, ptyId + '.json');
 
-const proc = pty.spawn(args[0], args.slice(1), {
+// win32: CreateProcess can't run .cmd/.bat shims (npm installs agent CLIs as
+// exactly those) — route them through the command interpreter, with args quoted
+// for both cmd.exe and the target's parser. Identity on posix.
+const [file, rest, spawnOpts] = cmdInvocation(args[0], args.slice(1));
+// cmdInvocation hands back a command line that is already fully escaped, so
+// node-pty must not re-escape it. It has no windowsVerbatimArguments option, but
+// a STRING `args` IS its verbatim form: windowsPtyAgent.js does
+// `argsToCommandLine(file, []) + ' ' + args`, i.e. it quotes only the file and
+// appends our line untouched. Passing the array instead let node-pty rewrite our
+// quotes as MSVC `\"`, which cmd.exe does not understand — a .cmd under a path
+// with spaces then never launched. Array (normal quoting) on posix / non-.cmd.
+const ptyArgs = spawnOpts.windowsVerbatimArguments ? rest.join(' ') : rest;
+
+const proc = pty.spawn(file, ptyArgs, {
   name: 'xterm-256color',
   cols: cols || 80,
   rows: rows || 24,
@@ -166,6 +180,19 @@ function handle(msg) {
 }
 
 const server = net.createServer((s) => {
+  // FIRST, before ANY write: an accepted socket with no 'error' listener turns a
+  // failed write into an unhandled 'error' event, which takes THIS PROCESS down —
+  // and this process is the only thing holding the user's agent PTY. The busy
+  // write below is the one that bit: a peer that connects and vanishes (a probe,
+  // a racing re-dial, an adopting second daemon) makes it fail EPIPE, and the
+  // holder died — silently, since we run stdio:'ignore' — taking a live session
+  // with it. The daemon then saw an attached-then-dropped socket and reported
+  // `pty is not alive`. Reproduced deterministically: connect + destroy twice.
+  // Not win32-specific — a posix peer that vanishes EPIPEs identically; Windows
+  // named pipes just lose the race far more often.
+  s.on('error', () => {
+    if (client === s) client = null;
+  });
   // Single-client rule: a second daemon can never attach the same holder.
   if (client && !client.destroyed) {
     s.write(encode({ event: 'busy' }));
@@ -179,9 +206,6 @@ const server = net.createServer((s) => {
   s.setEncoding('utf8');
   s.on('data', (chunk) => {
     for (const m of decoder.push(chunk)) handle(m);
-  });
-  s.on('error', () => {
-    if (client === s) client = null;
   });
   s.on('close', () => {
     if (client === s) client = null;

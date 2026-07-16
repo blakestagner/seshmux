@@ -3,7 +3,7 @@
 // (server/lib/providers/claude.ts) supplies both `root` and `provider`. This file only
 // knows how to read a directory of dash-encoded project dirs each holding `<id>.jsonl`.
 
-import { open, readdir, stat } from 'node:fs/promises';
+import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { listAll as listAllWorkspaces } from '../workspaces';
 import { Lru } from './lru';
@@ -112,6 +112,27 @@ export function isSafeId(id: string): boolean {
 // callers needing the true path use the cwd recorded inside the session file.
 export function encodeProjectId(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+// Segment separators of a REAL, OS-native path. win32 accepts both; on posix a
+// backslash is a legal FILENAME character, so treating it as a separator there
+// would change behavior — hence the platform branch rather than a blanket
+// [\\/]. Identity on posix.
+const PATH_SEP_RE = process.platform === 'win32' ? /[\\/]/ : /\//;
+
+/**
+ * Last segment of a REAL path (a cwd the agent recorded, or a repo path we
+ * resolved) — i.e. the project's display name.
+ *
+ * A `/`-only split never splits a native Windows path, so `.pop()` returned the
+ * WHOLE absolute path and every project on Windows was titled
+ * "C:\Users\b\dev\seshmux" instead of "seshmux".
+ *
+ * NOT for decodeProjectDir's output: that is a synthetic "-"→"/" decode which is
+ * forward-slash by construction and must keep splitting on "/" only.
+ */
+export function pathLeaf(p: string): string | undefined {
+  return p.split(PATH_SEP_RE).filter(Boolean).pop();
 }
 
 export function decodeProjectDir(dir: string): { path: string; name: string } {
@@ -233,7 +254,29 @@ async function computeHead(filePath: string): Promise<HeadInfo> {
     }
   }
 
+  // win32: fold the recorded cwd to the SAME canonical form the workspaces store
+  // uses. workspaces.json's `project`/`dir` are realpath'd via node:fs/promises
+  // (the native flavor, which expands 8.3 short names: C:\Users\RUNNER~1\ ->
+  // runneradmin). A real Windows agent launched from an 8.3-spelled directory
+  // records the SHORT form via getcwd(), so its worktree would never fold into
+  // its parent (raw short cwd != canonical long record). Canonicalize here, at
+  // the single point cwd is extracted, so every reader (grouping, memberDirs,
+  // projectSessionDirs, SessionMeta.cwd) compares like-for-like. Cached by
+  // readHead's mtime key, so the realpath runs once per file change, not per scan.
+  // Identity on posix (getcwd() is already canonical there). Fallback to the raw
+  // path when it no longer exists (deleted repo — realpath ENOENTs).
+  if (cwd) cwd = await canonCwd(cwd);
+
   return { title, branch, startedAt, cwd, teamName, agentName };
+}
+
+async function canonCwd(cwd: string): Promise<string> {
+  if (process.platform !== 'win32') return cwd;
+  try {
+    return await realpath(cwd);
+  } catch {
+    return cwd;
+  }
 }
 
 // worktree dir -> parent repo absolute path (workspaces.json is the lookup —
@@ -261,7 +304,17 @@ async function workspaceParentMap(): Promise<Map<string, string>> {
 // Matches the worktree root AND any cwd deeper inside it (a session started in
 // worktrees/x/subdir must fold too). Greedy `(.+)` takes the LAST occurrence, so a
 // nested worktree-in-worktree folds to its innermost parent — fine.
-const CLAUDE_WORKTREE_RE = /^(.+)\/\.claude\/worktrees\/[^/]+(?:\/|$)/;
+// Matched against a REAL recorded cwd, so it must accept the host's separator:
+// on native Windows those cwds are backslash-separated and the "/"-only form
+// never matched, silently disabling worktree folding everywhere
+// derivedWorkspaceParent is consumed (grouping, memberDirs, listSessions,
+// routes/bridge wait, routes/term). Platform-branched rather than a blanket
+// [\\/] because a backslash is a legal posix filename character — identity on
+// posix.
+const CLAUDE_WORKTREE_RE =
+  process.platform === 'win32'
+    ? /^(.+)[\\/]\.claude[\\/]worktrees[\\/][^\\/]+(?:[\\/]|$)/
+    : /^(.+)\/\.claude\/worktrees\/[^/]+(?:\/|$)/;
 // Exported: CodexProvider.scanProjects()/listSessions() do their own cwd->id grouping
 // (they don't route through computeRootScan above) and must apply the same fold so a
 // repo cwd resolves to the same project id regardless of which provider recorded it
@@ -280,6 +333,11 @@ export function derivedWorkspaceParent(cwd: string): string | null {
 // suffix to recover the parent's encoded id. Greedy `(.+)` = innermost fold wins.
 // ponytail: a repo literally named "*--claude-worktrees-*" would false-fold; encode is
 // lossy so this can't be told apart — acceptable, same ceiling as decodeProjectDir.
+// ponytail: win32 8.3 ceiling — this matches on the ENCODED DIRENT NAME, which watch.ts
+// events see (they have no cwd to realpath). A worktree whose recorded cwd is an 8.3
+// short path encodes to "*CLAUDE~1-WORKTR~1*", not "--claude-worktrees-", so it won't
+// fold here even though canonCwd folds it in the path-based scan. Rare (an agent hand-
+// launched from a short path) and unreachable from the cwd side — left as-is.
 const CLAUDE_WORKTREE_ID_RE = /^(.+)--claude-worktrees-.+$/;
 export function derivedWorkspaceParentId(encodedId: string): string | null {
   return CLAUDE_WORKTREE_ID_RE.exec(encodedId)?.[1] ?? null;
@@ -411,7 +469,7 @@ async function computeRootScan(root: string, provider: ProviderId): Promise<Root
           const head = await readHead(newestFile.path, Math.floor(newestFile.mtime));
           if (head.cwd) {
             path = head.cwd;
-            name = head.cwd.split('/').filter(Boolean).pop() || decoded.name;
+            name = pathLeaf(head.cwd) || decoded.name;
             dirCwds.push({ dirPath, cwd: head.cwd });
           }
         }
@@ -460,6 +518,15 @@ async function computeRootScan(root: string, provider: ProviderId): Promise<Root
         prev.id = p.id;
         prev.name = p.name;
         prev.isWorkspace = false;
+      } else if (!prev.isWorkspace && !p.isWorkspace && p.id < prev.id) {
+        // Two non-workspace dirents on the SAME canonical path (win32 only: the
+        // same repo recorded once short-form, once long-form, now folded by
+        // canonCwd). Neither is "the" own-dirent, so the tiebreak above never
+        // fires — pick the lexicographically smaller id so the winner is
+        // deterministic, not dependent on readdir order. No-op on posix (a
+        // canonical cwd yields exactly one dirent per path).
+        prev.id = p.id;
+        prev.name = p.name;
       }
     } else {
       byPath.set(p.path, { ...p });
@@ -472,7 +539,7 @@ async function computeRootScan(root: string, provider: ProviderId): Promise<Root
     out.map(async (p) => {
       if (p.isWorkspace) {
         p.id = encodeProjectId(p.path);
-        p.name = p.path.split('/').filter(Boolean).pop() || p.id;
+        p.name = pathLeaf(p.path) || p.id;
       }
       // Re-stat `missing` post-merge: a workspace-only parent (brand new repo,
       // no sessions yet outside the workspace) never got a real missing check.

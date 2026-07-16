@@ -2,8 +2,17 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import path, { join } from 'node:path';
 import * as ws from '../../server/lib/workspaces';
+
+// `git worktree list --porcelain` ALWAYS emits forward-slash paths, even on Windows, while
+// node's realpathSync()/record.dir use the native separator (backslash on Windows). Mirrors
+// the product's gitPath() (server/lib/workspaces.ts) at the comparison sites below — without
+// it these compare backslash paths against forward-slash ones and never match, which is a
+// test-side bug (off-by-one exclusion / false "orphan"), not a product one.
+function gitPathOf(p: string): string {
+  return p.split(path.sep).join('/');
+}
 
 let configDir: string;
 let repo: string;
@@ -55,7 +64,11 @@ describe('workspaces.create', () => {
     expect(records).toHaveLength(1);
     // Both paths are canonicalized: git reports realpaths, so records built from `git worktree
     // list` (reconcile's adopt half) must key identically to ones create() writes.
-    expect(records[0]).toMatchObject({ dir, branch, project: realpathSync(repo) });
+    // .native: match the flavor the product canonicalizes with (canon() -> fs/promises
+    // realpath). The JS realpathSync leaves Windows 8.3 short names unexpanded, so where
+    // tmpdir() is an 8.3 path (windows-latest: C:\Users\RUNNER~1\...) this expected the
+    // SHORT spelling while record.project holds the LONG one. Identity on posix.
+    expect(records[0]).toMatchObject({ dir, branch, project: realpathSync.native(repo) });
   });
 
   it('rejects a non-git directory', async () => {
@@ -483,7 +496,12 @@ describe('concurrent workspace create + orphan adoption (D5-2)', () => {
       .split('\n')
       .filter((l) => l.startsWith('worktree '))
       .map((l) => l.slice('worktree '.length).trim())
-      .filter((d) => d !== realpathSync(repo)); // exclude the main tree (git reports realpaths)
+      // Exclude the main tree. git reports realpaths in forward-slash form (gitPathOf), and
+      // it expands 8.3 short names — so this must use the NATIVE realpath flavor too, or on
+      // a runner whose tmpdir is 8.3 (C:\Users\RUNNER~1\...) the short spelling never equals
+      // git's long one, the main tree survives the filter, and the count is off by one
+      // (N+1 instead of N) — a test-side miscount, not a product dedup bug. Identity on posix.
+      .filter((d) => d !== gitPathOf(realpathSync.native(repo)));
 
     expect(worktreeDirs).toHaveLength(N);
 
@@ -491,7 +509,8 @@ describe('concurrent workspace create + orphan adoption (D5-2)', () => {
     expect(records).toHaveLength(N);
 
     // No orphan: every worktree dir on disk has a matching record, and vice versa.
-    const recordDirs = new Set(records.map((r) => r.dir));
+    // records store the NATIVE separator form; normalize both sides to compare.
+    const recordDirs = new Set(records.map((r) => gitPathOf(r.dir)));
     for (const d of worktreeDirs) expect(recordDirs.has(d)).toBe(true);
   });
 

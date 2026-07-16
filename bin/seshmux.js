@@ -4,15 +4,6 @@
 // Runtime backstop for package.json engines (npm doesn't enforce it). ES5-only syntax.
 var _nodeMajor = parseInt(process.versions.node.split('.')[0], 10);
 if (_nodeMajor < 20) { console.error('seshmux requires Node.js >= 20 (found ' + process.versions.node + '). Please upgrade.'); process.exit(1); }
-
-// Native Windows isn't supported yet: the daemon, PTY holders, and bridge all
-// speak over unix domain sockets, which Node can't listen on under win32.
-// Fail with one clear sentence instead of a socket stack trace. WSL works fully.
-if (process.platform === 'win32') {
-  console.error('seshmux does not support native Windows yet. Run it inside WSL (https://learn.microsoft.com/windows/wsl/install), where it works fully.');
-  process.exit(1);
-}
-
 // seshmux CLI entry. Ensures a responsive seshmuxd daemon, picks a free port
 // (reusing an already-running seshmux if one answers), starts the Fastify
 // server, and opens the browser to the chosen port.
@@ -27,6 +18,7 @@ const { randomBytes } = require('node:crypto');
 const path = require('node:path');
 const fs = require('node:fs');
 const { ensureDaemon, pidAlive, paths, configDir, daemonInfo, canSafelyRestartDaemon } = require('../daemon/ensure');
+const { cmdInvocation } = require('../daemon/win-args');
 
 // The daemon's pid, from the pidfile it writes in the config dir. null when it isn't running.
 function readDaemonPid() {
@@ -124,8 +116,20 @@ async function runUpdate(checkOnly) {
   console.log(`[seshmux] update available: v${current} -> v${latest}`);
   if (checkOnly) return;
 
+  // win32: npm is npm.cmd, which spawn can't start directly — route through the
+  // interpreter with args quoted (cmdInvocation), NOT shell:true, which would let
+  // cmd re-parse the version spec. `latest` is npm's own published version, but
+  // guard it as semver before it reaches a command line regardless.
+  if (!/^\d+\.\d+\.\d+[A-Za-z0-9.+-]*$/.test(latest)) {
+    console.error(`[seshmux] refusing to install unexpected version string "${latest}"`);
+    process.exit(1);
+  }
+  const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  // spawnOpts carries windowsVerbatimArguments on the .cmd path: cmdInvocation has
+  // already escaped the line and node must not re-escape it. Still not shell:true.
+  const [file, spawnArgs, spawnOpts] = cmdInvocation(npmBin, ['i', '-g', `seshmux@${latest}`, '--prefer-online']);
   const code = await new Promise((resolve) => {
-    const child = spawn('npm', ['i', '-g', `seshmux@${latest}`, '--prefer-online'], { stdio: 'inherit' });
+    const child = spawn(file, spawnArgs, { stdio: 'inherit', ...spawnOpts });
     child.on('exit', (c) => resolve(c ?? 1));
     child.on('error', () => resolve(1));
   });
@@ -303,6 +307,29 @@ function openBrowser(url) {
   });
 }
 
+// tsx's real CLI entry, for the dev (unbuilt) paths below.
+//
+// These used to hand node `<root>/node_modules/.bin/tsx`. On posix that is a
+// SYMLINK to tsx's entry, so node runs the real JS. On win32 npm instead writes
+// a POSIX SHELL SHIM at that name (alongside tsx.cmd/tsx.ps1), so node parsed
+// `basedir=$(dirname "$(echo "$0" | ...)")` as JavaScript and the whole app died
+// with "SyntaxError: missing ) after argument list" — no hint that a build was
+// missing. Resolving the package entry yields the exact file .bin/tsx points at
+// on posix, so behavior there is unchanged, and it needs no interpreter wrap
+// (cf. daemon/win-args.js) because node runs it directly.
+function tsxEntry(root) {
+  try {
+    return require.resolve('tsx/cli', { paths: [root] });
+  } catch {
+    console.error(
+      '[seshmux] no built server found (.next/standalone) and tsx is not installed.\n' +
+        '  Run `npm run build` first — on Windows, stop any running seshmux before\n' +
+        '  building: it holds .next/standalone open and the clean step then fails.',
+    );
+    process.exit(1);
+  }
+}
+
 // `seshmux mcp-bridge` — run the MCP stdio bridge server (ask_codex/ask_claude).
 // Invoked by claude/codex as a registered MCP server; it speaks stdio, so it must
 // NOT start the web server. Runs the TS module via tsx in dev, compiled in prod.
@@ -314,7 +341,7 @@ function runMcpBridge(root) {
     : spawn(
         process.execPath,
         [
-          path.join(root, 'node_modules', '.bin', 'tsx'),
+          tsxEntry(root),
           '-e',
           "import('./server/lib/bridge/mcp.ts').then(m => m.startMcpBridge())",
         ],
@@ -323,10 +350,11 @@ function runMcpBridge(root) {
   child.on('exit', (code) => process.exit(code ?? 0));
 }
 
-// Is a binary on PATH? Shell-free.
+// Is a binary on PATH? Shell-free. (`which` is posix-only; win32 has where.exe.)
 function have(bin) {
+  const probe = process.platform === 'win32' ? 'where' : 'which';
   return new Promise((resolve) => {
-    execFile('which', [bin], (err, stdout) => resolve(!err && !!String(stdout).trim()));
+    execFile(probe, [bin], (err, stdout) => resolve(!err && !!String(stdout).trim()));
   });
 }
 
@@ -357,35 +385,40 @@ function askYesNo(question) {
   });
 }
 
-// Without tmux, a session's PTY is owned by the daemon and dies with it — a crash or a daemon
-// restart ends the user's running agent. session-start.ts picks the tmux tier ONLY when tmux is
-// on PATH, so a tmux-less machine silently gets the fragile tier and nobody says a word. A real
-// user lost every session this way. Offer to fix it, once, and never nag again.
+// tmux is an OPTIONAL extra persistence tier — not required for durable sessions. The daemon's
+// holder tier already keeps agent PTYs alive across browser refreshes, server restarts, and
+// updates (a detached holder owns the PTY, so even a daemon crash on posix re-adopts them). What
+// tmux adds on top: surviving a full daemon restart, and `tmux attach` from any plain terminal.
+// So this is a soft, informational offer, not a "you'll lose everything" warning.
+//
+// Windows has no native tmux, and the named-pipe holder tier covers it there anyway — so the
+// offer is posix-only (skipped below).
 //
 // NOT an npm postinstall: that needs a package manager we can't assume, is skipped entirely under
 // `npm ci --ignore-scripts` (standard in CI), would run in Docker images where tmux is pointless,
 // and shelling out to a system installer from an install hook is exactly what supply-chain
 // scanners flag. A first-run prompt asks the person who is actually there.
 async function offerTmux() {
+  if (process.platform === 'win32') return; // no native tmux; holder tier already keeps sessions durable
   if (await have('tmux')) return;
   const ackFile = path.join(configDir(), 'tmux-declined');
   if (fs.existsSync(ackFile)) return;
 
   const durability =
-    '[seshmux] tmux is not installed.\n' +
-    '  Your agent sessions will end if seshmux restarts or crashes.\n' +
-    '  With tmux, they survive restarts, updates, and crashes.';
+    '[seshmux] tmux is not installed (optional).\n' +
+    '  Your sessions already survive browser refreshes, server restarts, and updates.\n' +
+    '  tmux adds one more tier: surviving a full daemon restart, plus `tmux attach` from any terminal.';
 
   // Non-interactive (piped, CI, launched by a GUI): state it, never block on a prompt nobody
   // can answer, and do not record a decline the user never made.
   if (!process.stdin.isTTY) {
-    console.log(`${durability}\n  Install tmux to make sessions durable.`);
+    console.log(`${durability}\n  Install tmux for the extra tier.`);
     return;
   }
 
   const installer = await tmuxInstaller();
   if (!installer) {
-    console.log(`${durability}\n  Install tmux with your package manager to make sessions durable.`);
+    console.log(`${durability}\n  Install tmux with your package manager to add it.`);
     return;
   }
 
@@ -399,7 +432,7 @@ async function offerTmux() {
     } catch {
       /* best effort — worst case we ask again next launch */
     }
-    console.log('[seshmux] continuing without tmux (sessions are not crash-safe). Not asking again.');
+    console.log('[seshmux] continuing without tmux (sessions still survive restarts/updates via the holder tier). Not asking again.');
     return;
   }
 
@@ -520,7 +553,7 @@ async function main() {
       ? spawn(process.execPath, [standalone], { cwd: path.dirname(standalone), stdio: 'inherit', env })
       : spawn(
           process.execPath,
-          [path.join(root, 'node_modules', '.bin', 'tsx'), path.join(root, 'server', 'index.ts')],
+          [tsxEntry(root), path.join(root, 'server', 'index.ts')],
           { cwd: root, stdio: 'inherit', env },
         );
   }

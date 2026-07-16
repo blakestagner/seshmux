@@ -2,6 +2,15 @@
 // server/session-start.ts (no real daemon dial). Mocks daemon-client + the provider
 // registry + detectEnv so we can assert argv shape and whether the delayed write fires.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'node:path';
+
+// argv[0] may be resolved to an absolute, platform-native path (tmux shell-PATH proofing;
+// see resolveBin() in server/session-start.ts) — e.g. C:\Users\Blake\.local\bin\claude.exe
+// on win32, /usr/local/bin/claude on posix. Strip dir + runnable extension to compare
+// against the bare provider-command name on both platforms.
+function binName(p: string): string {
+  return path.basename(p).replace(/\.(exe|cmd|bat|com)$/i, '');
+}
 
 const spawnCalls: { cwd?: string; args: string[] }[] = [];
 const writeCalls: { ptyId: string; data: string }[] = [];
@@ -57,7 +66,13 @@ describe('startSession firstPrompt seeding', () => {
     writeCalls.length = 0;
   });
 
-  it('seeds a fresh session via argv when the provider supports freshPrompt — no delayed write', async () => {
+  // win32 deliberately disables argv-seeding of firstPrompt for EVERY provider, even one
+  // that implements freshPrompt: the agent CLI resolves through a .cmd shim there, so argv
+  // flows through cmd.exe, whose %VAR% expansion can't be safely escaped against arbitrary
+  // user text (see server/session-start.ts's seedViaArgv). It falls through to the same
+  // delayed-write path providers without freshPrompt use. This is intended product
+  // behavior, not something to "fix" here — assert the platform-appropriate seam instead.
+  it('seeds a fresh session via argv when the provider supports freshPrompt — no delayed write (posix); win32 always falls back to the delayed write', async () => {
     const { getProviders } = await import('../../server/lib/providers/types');
     (getProviders as ReturnType<typeof vi.fn>).mockResolvedValue([makeProvider(true)]);
     const { startSession } = await import('../../server/session-start');
@@ -70,15 +85,22 @@ describe('startSession firstPrompt seeding', () => {
     });
 
     expect(spawnCalls).toHaveLength(1);
-    // argv[0] may be resolved to an absolute path (tmux shell-PATH proofing)
-    expect(spawnCalls[0].args[0].split('/').pop()).toBe('claude');
-    expect(spawnCalls[0].args.slice(1)).toEqual(['--', 'build the team']);
+    expect(binName(spawnCalls[0].args[0])).toBe('claude');
 
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(writeCalls).toHaveLength(0); // never falls back — the prompt already landed in argv
+    if (process.platform === 'win32') {
+      expect(spawnCalls[0].args.slice(1)).toEqual([]); // plain fresh() argv, prompt NOT injected
+      expect(writeCalls).toHaveLength(0); // not yet — still waiting out the settle delay
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(writeCalls).toHaveLength(1);
+      expect(writeCalls[0].data).toBe('build the team\n'); // seeded intact via the fallback write
+    } else {
+      expect(spawnCalls[0].args.slice(1)).toEqual(['--', 'build the team']);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(writeCalls).toHaveLength(0); // never falls back — the prompt already landed in argv
+    }
   });
 
-  it('multi-line prompt survives intact as a single argv element (never shell-interpolated)', async () => {
+  it('multi-line prompt survives intact and unmangled (never shell-interpolated) — via argv on posix, via delayed write on win32', async () => {
     const { getProviders } = await import('../../server/lib/providers/types');
     (getProviders as ReturnType<typeof vi.fn>).mockResolvedValue([makeProvider(true)]);
     const { startSession } = await import('../../server/session-start');
@@ -86,8 +108,15 @@ describe('startSession firstPrompt seeding', () => {
     const prompt = 'line one\nline two\n$(rm -rf /) `evil`';
     await startSession({ projectPath: '/tmp/repo', provider: 'claude', mode: 'new', firstPrompt: prompt });
 
-    expect(spawnCalls[0].args).toHaveLength(3);
-    expect(spawnCalls[0].args[2]).toBe(prompt); // untouched — one argv element, no shell escaping/splitting
+    if (process.platform === 'win32') {
+      expect(spawnCalls[0].args).toHaveLength(1); // no argv-seeding — prompt never touches argv/cmd.exe
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(writeCalls).toHaveLength(1);
+      expect(writeCalls[0].data).toBe(prompt + '\n'); // untouched — written to the PTY, no shell involved
+    } else {
+      expect(spawnCalls[0].args).toHaveLength(3);
+      expect(spawnCalls[0].args[2]).toBe(prompt); // untouched — one argv element, no shell escaping/splitting
+    }
   });
 
   it('falls back to the delayed write when the provider has no freshPrompt', async () => {
@@ -97,7 +126,7 @@ describe('startSession firstPrompt seeding', () => {
 
     await startSession({ projectPath: '/tmp/repo', provider: 'claude', mode: 'new', firstPrompt: 'hi' });
 
-    expect(spawnCalls[0].args[0].split('/').pop()).toBe('claude'); // plain fresh() argv, no prompt injected
+    expect(binName(spawnCalls[0].args[0])).toBe('claude'); // plain fresh() argv, no prompt injected
     expect(writeCalls).toHaveLength(0); // not yet — still waiting out the settle delay
 
     await vi.advanceTimersByTimeAsync(3000);
@@ -114,8 +143,8 @@ describe('startSession firstPrompt seeding', () => {
       { id: 'claude', commands: { ...makeProvider(false).commands, fresh: () => ['node'] } },
     ]);
     await startSession({ projectPath: '/tmp/repo', provider: 'claude', mode: 'new' });
-    expect(spawnCalls[0].args[0].startsWith('/')).toBe(true);
-    expect(spawnCalls[0].args[0].split('/').pop()).toBe('node');
+    expect(path.isAbsolute(spawnCalls[0].args[0])).toBe(true);
+    expect(binName(spawnCalls[0].args[0])).toBe('node');
 
     // Unresolvable name must pass through unchanged (which fails, spawn still attempted).
     spawnCalls.length = 0;
@@ -140,7 +169,7 @@ describe('startSession firstPrompt seeding', () => {
     });
 
     // resume path, not freshPrompt
-    expect(spawnCalls[0].args[0].split('/').pop()).toBe('claude');
+    expect(binName(spawnCalls[0].args[0])).toBe('claude');
     expect(spawnCalls[0].args.slice(1)).toEqual(['--resume=sess-123']);
     await vi.advanceTimersByTimeAsync(3000);
     expect(writeCalls).toHaveLength(1); // seeded via the fallback write instead

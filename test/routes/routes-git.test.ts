@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import gitRoutes, { type GitRouteDeps } from '../../server/routes/git';
+import { canSymlink } from '../helpers/platform';
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' });
@@ -142,7 +143,11 @@ describe('GET /api/git/file', () => {
     }
   });
 
-  it('rejects symlink escape', async () => {
+  // Creating the escaping symlink is the test's own fixture setup, but on a stock Windows box
+  // (no admin/Developer Mode) fs.symlinkSync throws EPERM before the guard under test ever
+  // runs — see test/helpers/platform.ts canSymlink(). Skipping loses coverage of the symlink
+  // half of this containment guard on such hosts.
+  it.skipIf(!canSymlink())('rejects symlink escape', async () => {
     const f = makeApp();
     symlinkSync('/etc', join(repo, 'esc'));
     const res = await f.inject({ method: 'GET', url: '/api/git/file?project=x&path=esc/passwd' });

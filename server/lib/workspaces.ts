@@ -61,6 +61,26 @@ async function canon(p: string): Promise<string> {
   }
 }
 
+/**
+ * A native path in the form `git worktree list` reports it.
+ *
+ * git ALWAYS emits forward slashes, even on native Windows ("C:/Users/b/wt"),
+ * while node's realpath() returns the native form ("C:\Users\b\wt"). Comparing
+ * the two raw made `dirs.includes(real)` ALWAYS false on Windows, so reconcile()
+ * pruned every valid record on every boot (it runs unconditionally at startup)
+ * and findOrphanWorktrees() never adopted anything — the crash-recovery path was
+ * dead. Same class of bug as the macOS /tmp -> /private/tmp realpath note above.
+ *
+ * Only for COMPARING against git output. Records keep the native form: scan.ts
+ * groups by path equality against the agent-recorded cwd, which is native
+ * (Windows agents record "C:\Users\..."), so the stored shape must not change.
+ *
+ * path.sep is '/' on posix, so this is identity there.
+ */
+function gitPath(nativePath: string): string {
+  return nativePath.split(path.sep).join('/');
+}
+
 function worktreesRoot(): string {
   return path.join(configDir(), 'worktrees');
 }
@@ -548,10 +568,18 @@ async function findOrphanWorktrees(known: Set<string>): Promise<WorkspaceRecord[
           .split('\n')
           .filter((l) => l.startsWith('worktree '))
           .map((l) => l.slice('worktree '.length).trim());
-        const project = dirs[0];
         // A worktree git no longer tracks (its admin data was pruned) isn't adoptable — the
         // dir is just leftover files. Leave it; only git can tell us it's still a worktree.
-        if (!project || project === real || !dirs.includes(real)) continue;
+        // Compare in git's separator form: a raw compare never matched on win32, so nothing
+        // was ever adoptable there.
+        const gitReal = gitPath(real);
+        const reported = dirs[0];
+        if (!reported || reported === gitReal || !dirs.includes(gitReal)) continue;
+        // Store the NATIVE realpath, not git's forward-slash form: create() records
+        // canon(repoPath) and list() matches records on it, so an adopted record must key
+        // identically or list() would never return it. canon() is identity-ish on posix
+        // (git already reports realpaths there).
+        const project = await canon(reported);
 
         const branch = (await git(real, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
         if (!branch.startsWith('agent/')) continue; // not ours — never claim it
@@ -595,9 +623,11 @@ export async function reconcile(): Promise<void> {
         .map((l) => l.slice('worktree '.length).trim());
       // git resolves symlinks in its report (e.g. macOS /tmp -> /private/tmp),
       // so compare realpaths, not raw strings, or every workspace on macOS
-      // gets silently pruned on the next boot.
+      // gets silently pruned on the next boot. gitPath() additionally puts the
+      // realpath in git's separator form — without it the same silent prune hit
+      // EVERY workspace on native Windows, on every boot.
       const real = await realpath(record.dir);
-      if (!dirs.includes(real)) continue; // git doesn't know this worktree anymore
+      if (!dirs.includes(gitPath(real))) continue; // git doesn't know this worktree anymore
     } catch {
       continue; // parent repo unreachable — drop the orphan record
     }

@@ -1,8 +1,23 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import net from 'node:net';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn, ChildProcess } from 'node:child_process';
+import { ipcPath } from '../../server/lib/ipc';
+import { catPty, nodeScriptPty } from '../helpers/platform';
+
+// daemon spawn's `args` is [file, ...execArgs] (daemon/holder.js reads args[0]
+// as the spawn target via cmdInvocation) — cross-platform stand-ins for
+// posix-only `/bin/cat` and `/bin/sh -c '<script>'`.
+const catArgs = () => {
+  const { file, args } = catPty();
+  return [file, ...args];
+};
+const nodeArgs = (code: string) => {
+  const { file, args } = nodeScriptPty(code);
+  return [file, ...args];
+};
 
 /**
  * Holder tier: a detached `daemon/holder.js` owns each non-tmux PTY, so the
@@ -15,7 +30,7 @@ import { spawn, ChildProcess } from 'node:child_process';
  */
 
 const DAEMON_ENTRY = path.join(__dirname, '..', '..', 'daemon', 'index.js');
-const CONFIG_DIR = '/tmp/smxh-' + process.pid;
+const CONFIG_DIR = path.join(os.tmpdir(), 'smxh-' + process.pid);
 const HOLDER_DIR = path.join(CONFIG_DIR, 'holders');
 const SOCK = path.join(CONFIG_DIR, 'seshmuxd.sock');
 
@@ -31,7 +46,9 @@ class Client {
   private idc = 0;
 
   constructor(sockPath: string) {
-    this.sock = net.connect(sockPath);
+    // Raw client here (not DaemonConnection) — must still go through ipcPath()
+    // like every real listen()/connect(); win32 has no fs-path socket to dial.
+    this.sock = net.connect(ipcPath(sockPath));
     this.sock.setEncoding('utf8');
     this.sock.on('error', () => {});
     this.sock.on('data', (chunk: string) => {
@@ -110,7 +127,11 @@ async function startDaemonProc(): Promise<ChildProcess> {
   });
   for (let i = 0; i < 100; i++) {
     await sleep(50);
-    if (!fs.existsSync(SOCK)) continue;
+    // No fs.existsSync(SOCK) pre-check: a win32 named pipe leaves no filesystem
+    // entry (the whole reason ipcPath() exists), so that pre-check would always
+    // fail there and declare the daemon dead before a connect was ever tried.
+    // Attempt-and-catch each iteration instead — strictly more rigorous than
+    // the existsSync gate, and identical in effect on posix.
     try {
       const c = new Client(SOCK);
       await c.ready();
@@ -194,8 +215,13 @@ describe('seshmuxd holder tier', () => {
     // `sleep 1` fires AFTER the daemon is dead — its output must still be
     // buffered by the holder (asserted by the next test via replay).
     const spawned = await c1.call('spawn', {
-      cwd: '/tmp',
-      args: ['/bin/sh', '-c', 'sleep 1; echo AFTERKILL; cat'],
+      cwd: os.tmpdir(),
+      // Cross-platform stand-in for `sleep 1; echo AFTERKILL; cat`: wait 1s
+      // (so it fires after the daemon is killed below), print the marker, then
+      // keep echoing stdin like cat.
+      args: nodeArgs(
+        'setTimeout(() => { console.log("AFTERKILL"); process.stdin.pipe(process.stdout); }, 1000)'
+      ),
       cols: 80,
       rows: 24,
     });
@@ -268,8 +294,8 @@ describe('seshmuxd holder tier', () => {
     const c = new Client(SOCK);
     await c.ready();
     const spawned = await c.call('spawn', {
-      cwd: '/tmp',
-      args: ['/bin/sh', '-c', 'exit 7'],
+      cwd: os.tmpdir(),
+      args: nodeArgs('process.exit(7)'),
       cols: 80,
       rows: 24,
     });
@@ -289,7 +315,7 @@ describe('seshmuxd holder tier', () => {
   it('refuses a second client on the same holder (no double-attach)', async () => {
     const c = new Client(SOCK);
     await c.ready();
-    const spawned = await c.call('spawn', { cwd: '/tmp', args: ['/bin/cat'], cols: 80, rows: 24 });
+    const spawned = await c.call('spawn', { cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
     const ptyId = spawned.result.ptyId as string;
     expect(await until(() => holderMeta(ptyId) !== null, 5000)).toBe(true);
     const meta = holderMeta(ptyId);
@@ -330,8 +356,8 @@ describe('seshmuxd holder tier', () => {
         ptyId: ghost,
         pid: 999999, // not a live process
         sock,
-        cwd: '/tmp',
-        args: ['/bin/cat'],
+        cwd: os.tmpdir(),
+        args: catArgs(),
         cols: 80,
         rows: 24,
         startedAt: Date.now(),

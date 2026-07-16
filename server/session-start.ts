@@ -7,8 +7,8 @@
 // argv comes ONLY from provider.commands (hard rule 3). No agent binary names here.
 
 import path from 'node:path';
-import { execFile } from 'node:child_process';
 import { dial } from './daemon-client';
+import { whichBin } from './lib/which';
 import { getProviders } from './lib/providers/types';
 import type { ProviderId } from './lib/providers/types';
 import { detectEnv } from './lib/detect';
@@ -84,12 +84,8 @@ function nextTmuxName(projectPath: string, taken: Set<string>): string {
 // PATH so the spawn is shell- and tmux-env-proof. Best effort: unresolved
 // names pass through unchanged.
 async function resolveBin(bin: string): Promise<string | null> {
-  if (bin.includes('/')) return null; // already a path
-  return new Promise((resolve) => {
-    execFile('which', [bin], { timeout: 2000 }, (err, stdout) => {
-      resolve(!err && stdout.trim() ? stdout.trim() : null);
-    });
-  });
+  if (bin.includes('/') || bin.includes('\\')) return null; // already a path
+  return (await whichBin(bin)) ?? null;
 }
 
 function argvFor(
@@ -123,7 +119,13 @@ export async function startSession(input: StartSessionInput): Promise<StartSessi
   // Only for a genuinely fresh session (new mode, no resumeId) on a provider that
   // implements freshPrompt; every other case (resume/continue/plan, or a provider that
   // doesn't support it) keeps the delayed-write fallback below.
-  const seedViaArgv = !!(firstPrompt && mode === 'new' && !resumeId && provider.commands.freshPrompt);
+  // win32: never seed a user firstPrompt as an argv element — the agent CLI is a
+  // .cmd there, so argv flows through cmd.exe, whose %VAR% expansion can't be safely
+  // escaped (win-args.ts). Fall through to the delayed-write path, which types the
+  // prompt into the PTY after spawn and never touches the command line.
+  const seedViaArgv =
+    !!(firstPrompt && mode === 'new' && !resumeId && provider.commands.freshPrompt) &&
+    process.platform !== 'win32';
   const args = seedViaArgv
     ? provider.commands.freshPrompt!(projectPath, firstPrompt!)
     : argvFor(provider, mode, projectPath, resumeId);

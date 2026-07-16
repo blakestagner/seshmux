@@ -7,8 +7,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { catPty } from '../helpers/platform';
 const require = createRequire(import.meta.url);
 const { startDaemon } = require('../../daemon/index.js');
+
+// daemon spawn's `args` is [file, ...execArgs] (daemon/holder.js reads args[0]
+// as the spawn target) — cross-platform stand-in for the posix-only `/bin/cat`.
+const catArgs = () => {
+  const { file, args } = catPty();
+  return [file, ...args];
+};
 
 describe('peekTerminal (real daemon)', () => {
   let daemon: any;
@@ -39,7 +47,7 @@ describe('peekTerminal (real daemon)', () => {
 
     const control = new DaemonConnection(daemon.sockPath);
     await control.connect();
-    const { ptyId } = await control.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'] });
+    const { ptyId } = await control.spawn({ cwd: os.tmpdir(), args: catArgs() });
 
     // Write a distinctive marker THROUGH a subscribed connection and poll the
     // daemon's own list()/scrollback for it landing in the ring buffer BEFORE
@@ -74,7 +82,7 @@ describe('peekTerminal (real daemon)', () => {
 
     const control = new DaemonConnection(daemon.sockPath);
     await control.connect();
-    const { ptyId } = await control.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'] });
+    const { ptyId } = await control.spawn({ cwd: os.tmpdir(), args: catArgs() });
 
     const writer = new DaemonConnection(daemon.sockPath);
     await writer.connect();
@@ -104,7 +112,7 @@ describe('peekTerminal (real daemon)', () => {
 
     const control = new DaemonConnection(daemon.sockPath);
     await control.connect();
-    const { ptyId } = await control.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'] });
+    const { ptyId } = await control.spawn({ cwd: os.tmpdir(), args: catArgs() });
 
     const result = await peekTerminal(ptyId, 10_000);
     expect(result.lines.length).toBeLessThanOrEqual(MAX_PEEK_LINES);

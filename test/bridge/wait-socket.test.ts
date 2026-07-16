@@ -8,6 +8,7 @@ import {
   type WaitListener,
 } from '../../server/lib/bridge/wait-socket';
 import { defaultWaitForStatus } from '../../server/lib/bridge/mcp';
+import { ipcPath } from '../../server/lib/ipc';
 
 let dir: string;
 let sock: string;
@@ -79,7 +80,9 @@ describe('FAIL-SAFE (never throws — degrades to {status:"timeout"})', () => {
   it('malformed request → listener replies a timeout result, not a hang', async () => {
     const net = await import('node:net');
     listener = await startWaitListener({ socketPath: sock, onRequest: async () => ({ status: 'waiting' }) });
-    const conn = net.createConnection(sock);
+    // Raw client connect must go through ipcPath() like the product's own
+    // connect() calls — win32 has no fs-path socket to connect to.
+    const conn = net.createConnection(ipcPath(sock));
     const reply = await new Promise<string>((resolve) => {
       conn.on('connect', () => conn.write('not json\n'));
       conn.on('data', (d) => resolve(d.toString()));
@@ -97,7 +100,9 @@ describe('malformed / client-side', () => {
       conns.push(c);
       c.write('not json\n');
     });
-    await new Promise<void>((res) => srv.listen(sock, res));
+    // Raw net.Server here (not the product's listener) — must still go through
+    // ipcPath() like every real listen()/connect().
+    await new Promise<void>((res) => srv.listen(ipcPath(sock), res));
     try {
       expect(await requestWaitOverSocket(sock, req)).toEqual({ status: 'timeout' });
     } finally {

@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { cpSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CodexProvider, invalidateCodexSummaries } from '../../server/lib/providers/codex';
 
-const root = new URL('../fixtures/codex-sessions', import.meta.url).pathname;
+// fileURLToPath, not .pathname — see test/store/scan.test.ts for why the raw pathname
+// doubles the drive letter on Windows.
+const root = fileURLToPath(new URL('../fixtures/codex-sessions', import.meta.url));
 
 // A project id is the dash-encoded cwd, matching the claude scheme so the same repo
 // path merges across providers in Task 7.

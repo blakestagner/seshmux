@@ -24,6 +24,7 @@ const os = require('node:os');
 const { spawn } = require('node:child_process');
 
 const { PROTOCOL, encode, createDecoder } = require('./protocol');
+const { ipcPath } = require('./ipc');
 
 const HELLO_TIMEOUT_MS = 1500;
 // A spawnlock older than this is presumed orphaned by a SIGKILLed launcher.
@@ -96,7 +97,7 @@ function tryHello(sockPath, timeoutMs = HELLO_TIMEOUT_MS) {
     };
     const timer = setTimeout(() => done(false), timeoutMs);
     const decoder = createDecoder();
-    const sock = net.connect(sockPath);
+    const sock = net.connect(ipcPath(sockPath));
     sock.setEncoding('utf8');
     sock.on('connect', () => sock.write(encode({ id: 1, method: 'hello' })));
     sock.on('data', (chunk) => {
@@ -144,7 +145,7 @@ function daemonInfo(sockPath, timeoutMs = HELLO_TIMEOUT_MS) {
     };
     const timer = setTimeout(() => done(null), timeoutMs);
     const decoder = createDecoder();
-    const sock = net.connect(sockPath);
+    const sock = net.connect(ipcPath(sockPath));
     sock.setEncoding('utf8');
     sock.on('connect', () => {
       sock.write(encode({ id: 1, method: 'hello' }));
@@ -177,6 +178,7 @@ function spawnDaemon(dir) {
   const child = spawn(process.execPath, [daemonEntry], {
     detached: true,
     stdio: 'ignore',
+    windowsHide: true, // win32: detached would otherwise open a console window
     env: { ...process.env, SESHMUX_CONFIG_DIR: dir },
   });
   child.unref();
@@ -198,8 +200,11 @@ async function ensureDaemon(opts = {}) {
 
   for (let attempt = 0; attempt < retries; attempt++) {
     const dialOk = await tryHello(p.sock);
-    const socketExists = fs.existsSync(p.sock);
     const pid = readPid(p.pid);
+    // win32: named pipes leave no fs entry, so the pidfile stands in for the
+    // socket file in the staleness classifier (it's written after listen, so
+    // it carries the same "a daemon got as far as binding" meaning).
+    const socketExists = process.platform === 'win32' ? pid != null : fs.existsSync(p.sock);
     const facts = {
       socketExists,
       dialOk,
@@ -242,7 +247,12 @@ async function ensureDaemon(opts = {}) {
     try {
       if (action === 'stale') {
         try {
-          fs.unlinkSync(p.sock);
+          fs.unlinkSync(p.sock); // no-op on win32 (pipes leave no file)
+        } catch {
+          /* already gone */
+        }
+        try {
+          fs.unlinkSync(p.pid); // dead daemon's pidfile must not re-classify as 'stale' forever on win32
         } catch {
           /* already gone */
         }

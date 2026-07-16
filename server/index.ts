@@ -233,10 +233,11 @@ export async function startServer({ port = 4700, dev = false } = {}) {
 }
 
 // Allow direct execution: `tsx server/index.ts` (dev spike) or compiled JS in prod.
-const isMain =
-  process.argv[1] &&
-  (process.argv[1].endsWith('server/index.ts') ||
-    process.argv[1].endsWith('server/index.js'));
+// argv[1] is an OS-native path — on win32 that's backslash-separated, so compare
+// against a slash-normalized copy or this never matches and the server silently
+// exits 0 without listening. Normalizing is a no-op for posix separators.
+const entryPath = (process.argv[1] ?? '').replace(/\\/g, '/');
+const isMain = entryPath.endsWith('server/index.ts') || entryPath.endsWith('server/index.js');
 if (isMain) {
   const dev = process.env.NODE_ENV !== 'production';
   const port = Number(process.env.PORT) || 4700;

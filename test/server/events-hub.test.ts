@@ -22,6 +22,15 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { startDaemon } = require('../../daemon/index.js');
+import { catPty } from '../helpers/platform';
+
+// daemon spawn's `args` is [file, ...execArgs] (daemon/holder.js reads args[0]
+// as the spawn target) — cross-platform stand-in for the posix-only `/bin/cat`
+// every PTY in this file is spawned as.
+const catArgs = () => {
+  const { file, args } = catPty();
+  return [file, ...args];
+};
 
 // Condition-based waiting (kills the CI flake): the old write → sleep(300) →
 // assert pattern raced BOTH the monitor attach (a chunk written before the hub
@@ -42,6 +51,48 @@ async function waitForCond<T>(
     if (Date.now() - start > timeoutMs) throw new Error(`timeout waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 25));
   }
+}
+
+// A ws stand-in that just records the frames the hub broadcasts.
+function fakeWs(sink: any[]) {
+  return {
+    readyState: 1,
+    OPEN: 1,
+    send: (frame: string) => sink.push(JSON.parse(frame)),
+    on: () => {},
+    close: () => {},
+  } as any;
+}
+
+/**
+ * trackPty + wait until the hub has really attached, instead of sleeping 200ms
+ * and hoping.
+ *
+ * attachPty (server/events-hub.ts:344-373) awaits ensureMonitor() + m.attach()
+ * before it seeds a status, and on a loaded Windows runner that can exceed 200ms
+ * — every downstream race in this file then leaks. It IS observable: the seed
+ * goes out through setStatus -> broadcast (events-hub.ts:363), so attach a probe
+ * client FIRST and wait for the seed frame.
+ *
+ * The probe is why the caller's own recorder stays clean: tests here deliberately
+ * add their ws AFTER the seed so `seen` holds only what the test provoked. Pass
+ * `status` when a specific seed must land (e.g. a pre-existing fresh hook file
+ * flips the 'working' default to 'waiting' via the ASYNC readHookStatusDetail at
+ * events-hub.ts:369-373 — waiting on that exact value proves the async read
+ * resolved, which a sleep only guessed at).
+ */
+async function trackAndAwaitAttach(hub: any, ptyId: string, status?: string): Promise<void> {
+  const probe: any[] = [];
+  hub.addClient(fakeWs(probe));
+  hub.trackPty(ptyId);
+  await waitForCond(
+    () =>
+      probe.some(
+        (e) => e.event === 'status' && e.ptyId === ptyId && (status === undefined || e.status === status),
+      ),
+    `attach seed status${status ? ` '${status}'` : ''} for ${ptyId}`,
+    8000,
+  );
 }
 
 describe('events-hub — hook status precedence (Spec 2)', () => {
@@ -107,7 +158,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       // Plain /bin/cat output matches NONE of the waiting patterns — the
       // heuristic path alone would classify this as 'working', never 'waiting'.
       // This is the "verify by breaking the regex on purpose" acceptance case.
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
       // Write a fresh hook status file BEFORE the hub attaches — attachPty()
@@ -165,7 +216,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     try {
       const { dial } = await import('../../server/daemon-client');
       const spawnConn = await dial();
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
       const statusDir = path.join(configDir, 'status');
@@ -210,7 +261,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     try {
       const { dial } = await import('../../server/daemon-client');
       const spawnConn = await dial();
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
       const statusDir = path.join(configDir, 'status');
@@ -260,21 +311,14 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     try {
       const { dial } = await import('../../server/daemon-client');
       const spawnConn = await dial();
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
-      hub.trackPty(ptyId);
-      await new Promise((r) => setTimeout(r, 200)); // attach settles, hooksActive seed sees no file yet
+      // No hook file exists yet, so the seed is attachPty's 'working' default.
+      await trackAndAwaitAttach(hub, ptyId, 'working');
 
       const seen: any[] = [];
-      const fakeWs = {
-        readyState: 1,
-        OPEN: 1,
-        send: (frame: string) => seen.push(JSON.parse(frame)),
-        on: () => {},
-        close: () => {},
-      } as any;
-      hub.addClient(fakeWs);
+      hub.addClient(fakeWs(seen));
 
       // Hook file appears AFTER attach — no pre-seed, no data chunk needed. The
       // status-dir watch alone must flip status to 'waiting'.
@@ -285,14 +329,16 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
         JSON.stringify({ status: 'waiting', ts: Date.now(), source: 'hook' }),
       );
 
-      // Poll well under one TICK_MS (4000ms) for the status broadcast.
-      const deadline = Date.now() + 1000;
-      let status: any;
-      while (Date.now() < deadline) {
-        status = seen.find((e) => e.event === 'status' && e.ptyId === ptyId && e.status === 'waiting');
-        if (status) break;
-        await new Promise((r) => setTimeout(r, 25));
-      }
+      // Poll under one TICK_MS (4000ms) for the status broadcast. 3s, not 1s: the
+      // status-dir watch has no awaitWriteFinish (events-hub.ts:461), and Windows
+      // fs-event latency under CI load can exceed a second. Still strictly below
+      // TICK_MS, so a pass STILL proves the watch — not the periodic tick — drove
+      // the flip, which is the whole point of this test.
+      const status = await waitForCond(
+        () => seen.find((e) => e.event === 'status' && e.ptyId === ptyId && e.status === 'waiting'),
+        'hook-file watch to flip status to waiting (under TICK_MS)',
+        3000,
+      );
       expect(status?.status).toBe('waiting');
 
       const killConn = await dial();
@@ -309,7 +355,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     try {
       const { dial } = await import('../../server/daemon-client');
       const spawnConn = await dial();
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
       hub.trackPty(ptyId);
@@ -342,7 +388,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     try {
       const { dial } = await import('../../server/daemon-client');
       const spawnConn = await dial();
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
       const statusDir = path.join(configDir, 'status');
@@ -352,18 +398,13 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
         JSON.stringify({ status: 'waiting', ts: Date.now(), source: 'hook' }),
       );
 
-      hub.trackPty(ptyId);
-      await new Promise((r) => setTimeout(r, 200));
+      // The hook file above is fresh, so attach's async hook read flips the
+      // 'working' default to 'waiting' — wait for THAT exact seed, so the async
+      // read is known to have resolved before we start recording.
+      await trackAndAwaitAttach(hub, ptyId, 'waiting');
 
       const seen: any[] = [];
-      const fakeWs = {
-        readyState: 1,
-        OPEN: 1,
-        send: (frame: string) => seen.push(JSON.parse(frame)),
-        on: () => {},
-        close: () => {},
-      } as any;
-      hub.addClient(fakeWs);
+      hub.addClient(fakeWs(seen));
 
       // Fire a data chunk (schedules the async hook read) immediately followed
       // by kill (fires 'exit' synchronously, broadcasting idle + deleting the
@@ -375,8 +416,21 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       writeConn.close();
       killConn.close();
 
-      // Let both the exit broadcast and the (guarded) async resolve settle.
-      await new Promise((r) => setTimeout(r, 400));
+      // Wait for the exit-driven idle, THEN settle, THEN assert it stuck.
+      //
+      // A fixed 400ms settle raced ConPTY's exit propagation on the node-20
+      // Windows runner: idle simply hadn't arrived yet, the last event was still
+      // 'waiting', and the test failed for a reason it wasn't testing. Polling
+      // for idle first STRENGTHENS this test rather than loosening it — its point
+      // is "nothing resurrects a status AFTER idle", which is only meaningful once
+      // idle has actually landed. The settle after it is what gives the late
+      // (guarded) hook read room to wrongly resurrect, which is the real assertion.
+      await waitForCond(
+        () => seen.some((e) => e.event === 'status' && e.ptyId === ptyId && e.status === 'idle'),
+        'exit-driven idle status',
+        8000,
+      );
+      await new Promise((r) => setTimeout(r, 250));
 
       const statusEvents = seen.filter((e) => e.event === 'status' && e.ptyId === ptyId);
       // Last status seen for this ptyId must be 'idle' (from exit) — never
@@ -424,7 +478,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     try {
       const { dial } = await import('../../server/daemon-client');
       const spawnConn = await dial();
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
       expect(hub.getStatusExplain(ptyId)).toBeNull(); // never classified yet
@@ -468,7 +522,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     try {
       const { dial } = await import('../../server/daemon-client');
       const spawnConn = await dial();
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
       const statusDir = path.join(configDir, 'status');
@@ -513,11 +567,14 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       try {
         const { dial } = await import('../../server/daemon-client');
         const spawnConn = await dial();
-        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
         spawnConn.close();
 
-        hub.trackPty(ptyId);
-        await new Promise((r) => setTimeout(r, 200));
+        // Wait for the 'working' seed to have actually landed before racing it
+        // against a 50ms timer. Gated on a 200ms sleep this was a latent flake CI
+        // hadn't hit yet: if attach hadn't seeded, waitForStatus registered a real
+        // 5s waiter and 'slow' won — failing the test for a reason it isn't about.
+        await trackAndAwaitAttach(hub, ptyId, 'working');
 
         // attachPty seeds a fresh PTY to 'working' if unset — assert against
         // that real starting status rather than assuming it.
@@ -541,11 +598,10 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       try {
         const { dial } = await import('../../server/daemon-client');
         const spawnConn = await dial();
-        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
         spawnConn.close();
 
-        hub.trackPty(ptyId);
-        await new Promise((r) => setTimeout(r, 200));
+        await trackAndAwaitAttach(hub, ptyId, 'working');
 
         const waitPromise = hub.waitForStatus(ptyId, 'waiting', 5);
 
@@ -571,16 +627,27 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       try {
         const { dial } = await import('../../server/daemon-client');
         const spawnConn = await dial();
-        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
         spawnConn.close();
 
-        hub.trackPty(ptyId);
-        await new Promise((r) => setTimeout(r, 200));
+        await trackAndAwaitAttach(hub, ptyId, 'working');
 
         // Never fires 'idle' (session stays alive, no idle-tick within the cap) —
         // the 1s cap here is far below the real idle-silence threshold, so this
         // is genuinely exercising the timeout path, not a lucky race.
+        //
+        // The ONLY way 'idle' can appear inside a ~1s window is the daemon's exit
+        // broadcast (events-hub.ts:329) — no heuristic can, since SILENCE_MS is
+        // 20s. So a {status:'idle'} here means the cat PTY DIED, not that anything
+        // classified it: that is what the node-20 Windows runner hit, and why
+        // fixtures/bin/cat.cjs now holds its own event loop open instead of
+        // depending on stdin staying open. Assert liveness explicitly so a
+        // regression names itself instead of masquerading as a status bug.
         const result = await hub.waitForStatus(ptyId, 'idle', 1);
+        const listConn = await dial();
+        const stillAlive = (await listConn.list()).ptys.some((p: any) => p.ptyId === ptyId);
+        listConn.close();
+        expect(stillAlive).toBe(true); // if this fails, the fixture died — not a classifier bug
         expect(result).toEqual({ status: 'timeout' });
 
         const killConn = await dial();
@@ -597,11 +664,10 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       try {
         const { dial } = await import('../../server/daemon-client');
         const spawnConn = await dial();
-        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
         spawnConn.close();
 
-        hub.trackPty(ptyId);
-        await new Promise((r) => setTimeout(r, 200));
+        await trackAndAwaitAttach(hub, ptyId, 'working');
 
         const waitPromise = hub.waitForStatus(ptyId, 'idle', 5);
 
