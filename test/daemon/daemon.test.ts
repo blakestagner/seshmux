@@ -6,8 +6,22 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 // daemon is plain CJS Node JS — require it, no build step.
 import { createRequire } from 'node:module';
+import { ipcPath } from '../../server/lib/ipc';
+import { catPty, nodeScriptPty } from '../helpers/platform';
 const require = createRequire(import.meta.url);
 const { startDaemon } = require('../../daemon/index.js');
+
+// daemon spawn's `args` is [file, ...execArgs] (daemon/holder.js reads args[0]
+// as the spawn target) — cross-platform stand-ins for posix-only `/bin/cat`
+// and `/bin/sh -c '<script>'`.
+const catArgs = () => {
+  const { file, args } = catPty();
+  return [file, ...args];
+};
+const nodeArgs = (code: string) => {
+  const { file, args } = nodeScriptPty(code);
+  return [file, ...args];
+};
 
 /**
  * A tiny NDJSON client over the unix socket. Collects responses (by id) and
@@ -21,7 +35,9 @@ class Client {
   private eventWaiters: { pred: (e: any) => boolean; resolve: (e: any) => void }[] = [];
 
   constructor(sockPath: string) {
-    this.sock = net.connect(sockPath);
+    // Raw client here (not DaemonConnection) — must still go through ipcPath()
+    // like every real listen()/connect(); win32 has no fs-path socket to dial.
+    this.sock = net.connect(ipcPath(sockPath));
     this.sock.setEncoding('utf8');
     this.sock.on('data', (chunk: string) => this.onData(chunk));
   }
@@ -112,8 +128,23 @@ describe('seshmuxd daemon', () => {
     } catch {}
   });
 
-  it('creates socket and pidfile under the config dir', () => {
-    expect(fs.existsSync(sockPath)).toBe(true);
+  it('creates socket and pidfile under the config dir', async () => {
+    if (process.platform === 'win32') {
+      // A win32 named pipe leaves no filesystem entry — that's the entire
+      // reason ipcPath() exists — so "the socket exists" has to be proven by
+      // actually connecting through it, a strictly more rigorous check than
+      // fs.existsSync on the raw path.
+      await new Promise<void>((resolve, reject) => {
+        const c = net.connect(ipcPath(sockPath));
+        c.once('connect', () => {
+          c.destroy();
+          resolve();
+        });
+        c.once('error', reject);
+      });
+    } else {
+      expect(fs.existsSync(sockPath)).toBe(true);
+    }
     expect(fs.existsSync(daemon.pidPath)).toBe(true);
     expect(sockPath.startsWith(configDir)).toBe(true);
   });
@@ -134,14 +165,14 @@ describe('seshmuxd daemon', () => {
   it('spawns a pty, echoes write via a data event', async () => {
     const c = new Client(sockPath);
     await c.ready();
-    const spawn = await c.call('spawn', { cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+    const spawn = await c.call('spawn', { cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
     const ptyId = spawn.result.ptyId;
     expect(ptyId).toMatch(/^pty-/);
 
     // Real protocol flow: attach to subscribe to this pty's events.
     await c.call('attach', { ptyId });
 
-    // /bin/cat echoes its input.
+    // catPty() echoes its input, same as /bin/cat.
     await c.call('write', { ptyId, data: 'hello\n' });
     const evt = await c.waitForEvent((e) => e.event === 'data' && e.ptyId === ptyId && e.data.includes('hello'));
     expect(evt.data).toContain('hello');
@@ -155,7 +186,7 @@ describe('seshmuxd daemon', () => {
     await c.ready();
     const spawn = await c.call('spawn', {
       cwd: os.tmpdir(),
-      args: ['/bin/sh', '-c', 'echo "PTYID=$SESHMUX_PTY_ID"'],
+      args: nodeArgs('process.stdout.write("PTYID=" + (process.env.SESHMUX_PTY_ID || "") + "\\n")'),
       cols: 80,
       rows: 24,
     });
@@ -169,7 +200,7 @@ describe('seshmuxd daemon', () => {
   it('second client attach replays the ring buffer', async () => {
     const c1 = new Client(sockPath);
     await c1.ready();
-    const spawn = await c1.call('spawn', { cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+    const spawn = await c1.call('spawn', { cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
     const ptyId = spawn.result.ptyId;
     await c1.call('attach', { ptyId });
 
@@ -192,7 +223,7 @@ describe('seshmuxd daemon', () => {
   it('list reports spawned ptys; kill removes it from alive set', async () => {
     const c = new Client(sockPath);
     await c.ready();
-    const spawn = await c.call('spawn', { cwd: os.tmpdir(), args: ['/bin/cat'] });
+    const spawn = await c.call('spawn', { cwd: os.tmpdir(), args: catArgs() });
     const ptyId = spawn.result.ptyId;
     await c.call('attach', { ptyId });
 
@@ -228,7 +259,7 @@ describe('seshmuxd daemon', () => {
   it('shutdown refuses while a pty is alive unless forced', async () => {
     const c = new Client(sockPath);
     await c.ready();
-    const spawn = await c.call('spawn', { cwd: os.tmpdir(), args: ['/bin/cat'] });
+    const spawn = await c.call('spawn', { cwd: os.tmpdir(), args: catArgs() });
     const ptyId = spawn.result.ptyId;
     await c.call('attach', { ptyId });
 
@@ -245,7 +276,7 @@ describe('seshmuxd daemon', () => {
   it('attach to a dead-in-grace pty replays the exit event to the late subscriber', async () => {
     const c1 = new Client(sockPath);
     await c1.ready();
-    const spawn = await c1.call('spawn', { cwd: os.tmpdir(), args: ['/bin/cat'] });
+    const spawn = await c1.call('spawn', { cwd: os.tmpdir(), args: catArgs() });
     const ptyId = spawn.result.ptyId;
     await c1.call('attach', { ptyId });
     await c1.call('kill', { ptyId });
@@ -265,7 +296,7 @@ describe('seshmuxd daemon', () => {
   it('sweeps dead pty entries past the grace period, keeps recently-exited ones (MEM-1)', async () => {
     const c = new Client(sockPath);
     await c.ready();
-    const spawn = await c.call('spawn', { cwd: os.tmpdir(), args: ['/bin/cat'] });
+    const spawn = await c.call('spawn', { cwd: os.tmpdir(), args: catArgs() });
     const ptyId = spawn.result.ptyId;
     await c.call('attach', { ptyId });
     await c.call('kill', { ptyId });

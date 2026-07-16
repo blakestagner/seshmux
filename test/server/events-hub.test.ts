@@ -22,6 +22,15 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { startDaemon } = require('../../daemon/index.js');
+import { catPty } from '../helpers/platform';
+
+// daemon spawn's `args` is [file, ...execArgs] (daemon/holder.js reads args[0]
+// as the spawn target) — cross-platform stand-in for the posix-only `/bin/cat`
+// every PTY in this file is spawned as.
+const catArgs = () => {
+  const { file, args } = catPty();
+  return [file, ...args];
+};
 
 // Condition-based waiting (kills the CI flake): the old write → sleep(300) →
 // assert pattern raced BOTH the monitor attach (a chunk written before the hub
@@ -107,7 +116,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       // Plain /bin/cat output matches NONE of the waiting patterns — the
       // heuristic path alone would classify this as 'working', never 'waiting'.
       // This is the "verify by breaking the regex on purpose" acceptance case.
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
       // Write a fresh hook status file BEFORE the hub attaches — attachPty()
@@ -165,7 +174,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     try {
       const { dial } = await import('../../server/daemon-client');
       const spawnConn = await dial();
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
       const statusDir = path.join(configDir, 'status');
@@ -210,7 +219,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     try {
       const { dial } = await import('../../server/daemon-client');
       const spawnConn = await dial();
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
       const statusDir = path.join(configDir, 'status');
@@ -260,7 +269,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     try {
       const { dial } = await import('../../server/daemon-client');
       const spawnConn = await dial();
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
       hub.trackPty(ptyId);
@@ -309,7 +318,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     try {
       const { dial } = await import('../../server/daemon-client');
       const spawnConn = await dial();
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
       hub.trackPty(ptyId);
@@ -342,7 +351,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     try {
       const { dial } = await import('../../server/daemon-client');
       const spawnConn = await dial();
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
       const statusDir = path.join(configDir, 'status');
@@ -424,7 +433,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     try {
       const { dial } = await import('../../server/daemon-client');
       const spawnConn = await dial();
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
       expect(hub.getStatusExplain(ptyId)).toBeNull(); // never classified yet
@@ -468,7 +477,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     try {
       const { dial } = await import('../../server/daemon-client');
       const spawnConn = await dial();
-      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
       spawnConn.close();
 
       const statusDir = path.join(configDir, 'status');
@@ -513,7 +522,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       try {
         const { dial } = await import('../../server/daemon-client');
         const spawnConn = await dial();
-        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
         spawnConn.close();
 
         hub.trackPty(ptyId);
@@ -541,7 +550,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       try {
         const { dial } = await import('../../server/daemon-client');
         const spawnConn = await dial();
-        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
         spawnConn.close();
 
         hub.trackPty(ptyId);
@@ -571,7 +580,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       try {
         const { dial } = await import('../../server/daemon-client');
         const spawnConn = await dial();
-        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
         spawnConn.close();
 
         hub.trackPty(ptyId);
@@ -597,7 +606,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       try {
         const { dial } = await import('../../server/daemon-client');
         const spawnConn = await dial();
-        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'], cols: 80, rows: 24 });
+        const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
         spawnConn.close();
 
         hub.trackPty(ptyId);

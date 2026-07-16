@@ -6,6 +6,22 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { listenWithStaleRecovery } from '../../server/lib/bridge/socket-listen';
+import { ipcPath } from '../../server/lib/ipc';
+
+// win32 named pipes leave no filesystem entry (that's the whole reason ipcPath
+// exists), so "does the socket exist" has to be asked by actually connecting
+// through ipcPath() instead of fs.existsSync() on the raw path.
+function socketIsListening(socketPath: string): Promise<boolean> {
+  if (process.platform !== 'win32') return Promise.resolve(fs.existsSync(socketPath));
+  return new Promise((resolve) => {
+    const c = connect(ipcPath(socketPath));
+    c.once('connect', () => {
+      c.destroy();
+      resolve(true);
+    });
+    c.once('error', () => resolve(false));
+  });
+}
 
 // Short base dir — macOS unix-socket paths cap ~104 bytes.
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'smx-sl-'));
@@ -23,7 +39,7 @@ describe('listenWithStaleRecovery', () => {
     const s = createServer();
     servers.push(s);
     await listenWithStaleRecovery(s, sock('fresh.sock'));
-    expect(fs.existsSync(sock('fresh.sock'))).toBe(true);
+    expect(await socketIsListening(sock('fresh.sock'))).toBe(true);
   });
 
   it('locks the socket to 0600 (SEC-2)', async () => {
@@ -35,6 +51,12 @@ describe('listenWithStaleRecovery', () => {
   });
 
   it('recovers a stale socket file left by a dead server (the kill -9 case)', async () => {
+    // Architecturally impossible on win32: named pipes are not fs-backed, and a
+    // dead owner's pipe is torn down by the OS with it — there is no "leftover
+    // pipe file" to unlink, so the stale-file unlink-and-retry branch this test
+    // exercises (socket-listen.ts:40-42) can never be reached here. Lost coverage:
+    // the unlink-and-retry recovery path is unverified on Windows hosts.
+    if (process.platform === 'win32') return;
     const p = sock('stale.sock');
     // A dead server's leftover: a socket FILE with no listener. Create one by
     // listening then closing WITHOUT the close() unlink — simulate by copying
@@ -65,7 +87,7 @@ describe('listenWithStaleRecovery', () => {
     await expect(listenWithStaleRecovery(second, p)).rejects.toMatchObject({ code: 'EADDRINUSE' });
     // First server unharmed — still accepting.
     await new Promise<void>((resolve, reject) => {
-      const c = connect(p);
+      const c = connect(ipcPath(p));
       c.once('connect', () => {
         c.destroy();
         resolve();

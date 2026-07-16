@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DaemonConnection } from '../../server/daemon-client';
+import { ipcPath } from '../../server/lib/ipc';
 
 // A daemon that dies mid-call must REJECT in-flight RPCs, not hang them —
 // session-start/bridge/mcp all bare-await rpc(), and a hung awaiter leaks the
@@ -28,7 +29,9 @@ describe('DaemonConnection pending-RPC rejection', () => {
     server = net.createServer((sock) => {
       setTimeout(() => sock.destroy(), 50);
     });
-    await new Promise<void>((r) => server.listen(sockPath, r));
+    // Raw net.Server here (not DaemonConnection, which wraps internally) — must
+    // still go through ipcPath() like every real listen()/connect().
+    await new Promise<void>((r) => server.listen(ipcPath(sockPath), r));
 
     const conn = new DaemonConnection(sockPath);
     await conn.connect();
@@ -38,7 +41,9 @@ describe('DaemonConnection pending-RPC rejection', () => {
 
   it('rejects an rpc issued after the socket already closed', async () => {
     server = net.createServer((sock) => sock.destroy());
-    await new Promise<void>((r) => server.listen(sockPath, r));
+    // Raw net.Server here (not DaemonConnection, which wraps internally) — must
+    // still go through ipcPath() like every real listen()/connect().
+    await new Promise<void>((r) => server.listen(ipcPath(sockPath), r));
 
     const conn = new DaemonConnection(sockPath);
     await conn.connect().catch(() => {});

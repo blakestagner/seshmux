@@ -7,6 +7,16 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const ensure = require('../../daemon/ensure.js');
 const { startDaemon } = require('../../daemon/index.js');
+// Aliased: the "daemon-client bridge" tests below already use `catPty` as a
+// local variable name for a spawned PTY handle.
+import { catPty as catPtyTarget } from '../helpers/platform';
+
+// daemon spawn's `args` is [file, ...execArgs] (daemon/holder.js reads args[0]
+// as the spawn target) — cross-platform stand-in for the posix-only `/bin/cat`.
+const catArgs = () => {
+  const { file, args } = catPtyTarget();
+  return [file, ...args];
+};
 
 // ── Pure classifier (the stale-socket / dead-pid decision), no I/O ──────────────
 describe('ensure.classify', () => {
@@ -139,8 +149,14 @@ describe('ensureDaemon (real spawn + recovery)', () => {
   it('spawns a daemon when none exists, and it answers hello', async () => {
     const res = await ensure.ensureDaemon({ configDir });
     expect(res.spawned).toBe(true);
-    expect(fs.existsSync(res.sock)).toBe(true);
-    // hello works through the socket.
+    // A win32 named pipe leaves no filesystem entry (ensure.js's own
+    // socketExists check falls back to the pidfile there for that reason), so
+    // existsSync on the raw path only means something on posix.
+    if (process.platform !== 'win32') {
+      expect(fs.existsSync(res.sock)).toBe(true);
+    }
+    // hello works through the socket — strictly more rigorous than existsSync,
+    // and the only liveness proof available on win32.
     const ok = await ensure.tryHello(res.sock);
     expect(ok).toBe(true);
   });
@@ -161,7 +177,14 @@ describe('ensureDaemon (real spawn + recovery)', () => {
     }
     // Point the pidfile at a definitely-dead pid so classify() sees "stale".
     fs.writeFileSync(p.pid, '999999');
-    expect(fs.existsSync(p.sock)).toBe(true); // stale socket still there
+    if (process.platform === 'win32') {
+      // No socket FILE ever exists for a named pipe — ensure.js's own
+      // socketExists check stands the pidfile in for it on win32, so that's
+      // the precondition to prove here instead.
+      expect(fs.existsSync(p.pid)).toBe(true);
+    } else {
+      expect(fs.existsSync(p.sock)).toBe(true); // stale socket still there
+    }
 
     const res = await ensure.ensureDaemon({ configDir });
     expect(res.spawned).toBe(true);
@@ -202,8 +225,8 @@ describe('daemon-client bridge', () => {
 
     const control = new DaemonConnection(daemon.sockPath);
     await control.connect();
-    const catPty = await control.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'] });
-    const otherPty = await control.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'] });
+    const catPty = await control.spawn({ cwd: os.tmpdir(), args: catArgs() });
+    const otherPty = await control.spawn({ cwd: os.tmpdir(), args: catArgs() });
 
     // Simulate one /ws/term connection bound to catPty, with the ptyId filter.
     const term = new DaemonConnection(daemon.sockPath);
@@ -242,7 +265,7 @@ describe('daemon-client bridge', () => {
 
     const c1 = new DaemonConnection(daemon.sockPath);
     await c1.connect();
-    const { ptyId } = await c1.spawn({ cwd: os.tmpdir(), args: ['/bin/cat'] });
+    const { ptyId } = await c1.spawn({ cwd: os.tmpdir(), args: catArgs() });
     await c1.attach(ptyId, true);
     await c1.write(ptyId, 'survivor\n');
     await delay(200);
