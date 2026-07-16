@@ -57,6 +57,16 @@ function rgAvailable(): Promise<boolean> {
   });
 }
 
+// Recovers a sessionId from a path rg reports. rg emits NATIVE separators, so on
+// win32 its paths are backslash-separated and a `[^/]+` capture swallowed the
+// backslash-joined parent dir too ("fixtures\-Users-demo\aaaa-1111"). That id
+// matched no session, so every rg-accelerated search on Windows silently
+// returned zero hits (each match dropped as an orphan file below) while the
+// rg-absent jsSearch fallback worked — the two were NOT identical. Platform
+// branch, not a blanket [^/\\], because a backslash is a legal posix filename
+// character; identity on posix.
+const SESSION_ID_RE = process.platform === 'win32' ? /([^/\\]+)\.jsonl$/ : /([^/]+)\.jsonl$/;
+
 // rg --json search across the store; returns raw {sessionId, line} matches.
 function rgSearch(root: string, q: string, limit: number): Promise<{ sessionId: string; line: string }[]> {
   return new Promise((resolve) => {
@@ -83,7 +93,7 @@ function rgSearch(root: string, q: string, limit: number): Promise<{ sessionId: 
           }
           if (ev.type !== 'match') continue;
           const path: string = ev.data?.path?.text ?? '';
-          const m = path.match(/([^/]+)\.jsonl$/);
+          const m = path.match(SESSION_ID_RE);
           if (!m) continue;
           out.push({ sessionId: m[1], line: ev.data?.lines?.text ?? '' });
           if (out.length >= limit) break;
