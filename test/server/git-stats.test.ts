@@ -229,6 +229,59 @@ describe('review-fix regressions (real repo)', () => {
   });
 });
 
+describe('stale local base branch (real repo)', () => {
+  let repo: string;
+
+  beforeAll(() => {
+    // Reproduces the massive-diff bug: local main is STALE (behind origin/main),
+    // the feature branch forked from the fresh origin/main. merge-base against
+    // stale main includes all of main's evolution in the "branch diff".
+    repo = mkdtempSync(join(tmpdir(), 'smx-stale-'));
+    git(repo, ['init', '-b', 'main']);
+    git(repo, ['config', 'user.email', 't@t']);
+    git(repo, ['config', 'user.name', 't']);
+    writeFileSync(join(repo, 'a.txt'), 'one\n');
+    git(repo, ['add', '.']);
+    git(repo, ['commit', '-m', 'A']);
+    const shaA = git(repo, ['rev-parse', 'HEAD']).trim();
+    // main-line evolution (commit B): a big unrelated change
+    writeFileSync(join(repo, 'mainline.txt'), Array.from({ length: 500 }, (_, i) => `m${i}`).join('\n') + '\n');
+    git(repo, ['add', '.']);
+    git(repo, ['commit', '-m', 'B']);
+    const shaB = git(repo, ['rev-parse', 'HEAD']).trim();
+    // feature forks at B with one small commit
+    git(repo, ['checkout', '-b', 'feature']);
+    writeFileSync(join(repo, 'a.txt'), 'one\ntwo\n');
+    git(repo, ['add', 'a.txt']);
+    git(repo, ['commit', '-m', 'C']);
+    // origin/main points at B (fresh); local main rewound to A (stale)
+    git(repo, ['update-ref', 'refs/remotes/origin/main', shaB]);
+    git(repo, ['branch', '-f', 'main', shaA]);
+  });
+
+  afterAll(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  it('diffs against the newer of local and origin base, not the stale local', async () => {
+    const res = await changes(repo, 'main', false);
+    expect(res.added).toBe(1); // only feature's own +1, not main's 500 lines
+    expect(res.removed).toBe(0);
+    expect(res.files.map((f) => f.path)).toEqual(['a.txt']);
+  });
+
+  it('handles the reverse: unpushed local main ahead of stale origin/main', async () => {
+    // flip: local main at B (fresh), origin/main at A (stale)
+    const shaA = git(repo, ['rev-parse', 'main']).trim();
+    const shaB = git(repo, ['rev-parse', 'refs/remotes/origin/main']).trim();
+    git(repo, ['branch', '-f', 'main', shaB]);
+    git(repo, ['update-ref', 'refs/remotes/origin/main', shaA]);
+    const res = await changes(repo, 'origin/main', false);
+    expect(res.added).toBe(1);
+    expect(res.files.map((f) => f.path)).toEqual(['a.txt']);
+  });
+});
+
 describe('defaultBranch (shared by creation + diff base)', () => {
   function makeRepo(): string {
     const repo = mkdtempSync(join(tmpdir(), 'smx-baseref-'));

@@ -84,13 +84,25 @@ function parseNumstatZ(out: string): NumstatEntry[] {
 
 // merge-base failure (unknown ref, unborn HEAD, detached weirdness) →
 // diff against HEAD, i.e. uncommitted-only. Wrong-but-useful beats a 500.
+//
+// Both the local branch AND its origin/ counterpart are candidates, newest
+// merge-base wins: a stale local main (or a stale origin/main with unpushed
+// local commits) otherwise counts every commit between the stale tip and the
+// real fork point as "branch changes" — the +12k phantom-diff bug.
 async function resolveMergeBase(dir: string, baseRef: string | null): Promise<string> {
   if (!baseRef) return 'HEAD';
-  try {
-    return (await git(dir, ['merge-base', baseRef, 'HEAD'])).trim() || 'HEAD';
-  } catch {
-    return 'HEAD';
+  const candidates = baseRef.startsWith('origin/')
+    ? [baseRef, baseRef.slice('origin/'.length)]
+    : [baseRef, `origin/${baseRef}`];
+  let best = '';
+  for (const ref of candidates) {
+    const mb = await git(dir, ['merge-base', ref, 'HEAD']).then((s) => s.trim(), () => '');
+    if (!mb || mb === best) continue;
+    // keep whichever merge-base is the descendant (closest to the real fork)
+    const newer = !best || (await git(dir, ['merge-base', '--is-ancestor', best, mb]).then(() => true, () => false));
+    if (newer) best = mb;
   }
+  return best || 'HEAD';
 }
 
 // ── Untracked line counting ────────────────────────────────────────────────
