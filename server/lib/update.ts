@@ -128,6 +128,7 @@ export interface CheckUpdateDeps {
   exec?: ExecLike;
   argvRealPath?: string;
   globalPrefix?: string;
+  force?: boolean; // bypass the 6h cache — user explicitly opened Settings
 }
 
 export async function checkUpdate(deps: CheckUpdateDeps = {}): Promise<UpdateStatus> {
@@ -141,14 +142,17 @@ export async function checkUpdate(deps: CheckUpdateDeps = {}): Promise<UpdateSta
   const globalPrefix = deps.globalPrefix ?? (await defaultGlobalPrefix(exec));
   const installMethod = detectInstallMethod({ argvRealPath, globalPrefix });
 
-  // Serve from 6h cache when warm (seshmux isn't published yet, so this is usually a 404).
-  let latest = current;
-  if (cache && Date.now() - cache.ts < CACHE_TTL_MS) {
+  // Serve from the 6h cache when warm; `force` (Settings open) always hits the registry.
+  // Failed fetches are NEVER cached — caching latest=current on a boot-time network blip
+  // used to pin "up to date" for 6h no matter what got published meanwhile.
+  let latest: string | null;
+  if (!deps.force && cache && Date.now() - cache.ts < CACHE_TTL_MS) {
     latest = cache.latest;
   } else {
-    latest = await fetchLatest(fetchFn, current);
-    cache = { ts: Date.now(), latest };
+    latest = await fetchLatest(fetchFn);
+    if (latest) cache = { ts: Date.now(), latest };
   }
+  latest ??= current;
 
   return {
     current,
@@ -159,17 +163,18 @@ export async function checkUpdate(deps: CheckUpdateDeps = {}): Promise<UpdateSta
 }
 
 // Fetch the registry `latest` version. OFFLINE-SAFE: 404 / non-ok / network / timeout all
-// resolve to `current` (so the compare yields updateAvailable:false and nothing throws).
-async function fetchLatest(fetchFn: FetchLike, current: string): Promise<string> {
+// resolve to null (caller falls back to `current` → updateAvailable:false, nothing thrown,
+// nothing cached).
+async function fetchLatest(fetchFn: FetchLike): Promise<string | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetchFn(REGISTRY_URL, { signal: controller.signal });
-    if (!res.ok) return current; // 404 (unpublished) etc.
+    if (!res.ok) return null; // 404 (unpublished) etc.
     const body = (await res.json()) as { version?: string };
-    return typeof body.version === 'string' ? body.version : current;
+    return typeof body.version === 'string' ? body.version : null;
   } catch {
-    return current; // network / abort / parse error
+    return null; // network / abort / parse error
   } finally {
     clearTimeout(timer);
   }

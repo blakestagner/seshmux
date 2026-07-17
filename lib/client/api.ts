@@ -262,13 +262,13 @@ export function notify(title: string, body: string): Promise<{ ok: boolean; deli
 }
 
 // ── Self-update (Task 18) ───────────────────────────────────────────────────
-export function checkUpdate(): Promise<{
+export function checkUpdate(force = false): Promise<{
   current: string;
   latest: string;
   updateAvailable: boolean;
   installMethod: 'global' | 'npx' | 'local';
 }> {
-  return req('/api/update/check');
+  return req(force ? '/api/update/check?force=1' : '/api/update/check');
 }
 
 export function applyUpdate(): Promise<{ ok: boolean; log: string; previous: string }> {
