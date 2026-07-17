@@ -2,6 +2,33 @@ import { randomBytes } from 'node:crypto';
 import Fastify from 'fastify';
 import next from 'next';
 import { AuthError, requireAuth } from './lib/auth';
+import { dial, withTimeout } from './daemon-client';
+import { readEntries, removeByPtyId } from './lib/live-ledger';
+
+// F-new(a): on a clean server shutdown, drop ledger entries the daemon reports as
+// dead/exited right now, so a session that finished while the server was down can't
+// be resurrected next boot. Best-effort + time-bounded — it races the 250ms restart
+// flush window and must never delay the choreography; ledger writes are serialized,
+// so a partial sync is still consistent. Daemon unreachable → leave the ledger alone.
+async function syncLedgerAtShutdown(): Promise<void> {
+  try {
+    const conn = await dial();
+    try {
+      const { ptys } = await withTimeout(conn.list(), 500, 'list timed out');
+      const entries = await readEntries();
+      for (const en of entries) {
+        const hit = en.tmuxName
+          ? ptys.find((p) => p.tmuxName === en.tmuxName)
+          : ptys.find((p) => p.ptyId === en.ptyId);
+        if (hit && !hit.alive) await removeByPtyId(en.ptyId);
+      }
+    } finally {
+      conn.close();
+    }
+  } catch {
+    /* daemon unreachable — leave the ledger alone */
+  }
+}
 
 export async function startServer({ port = 4700, dev = false } = {}) {
   // Safety net: one missed rejection anywhere (a fire-and-forget `.then` body
@@ -123,6 +150,7 @@ export async function startServer({ port = 4700, dev = false } = {}) {
   // relaunch loop + ws reconnect without a published package.
   process.on('SIGUSR2', () => {
     hub.broadcastRestarting();
+    void syncLedgerAtShutdown();
     setTimeout(() => process.exit(75), 250);
   });
 
@@ -206,6 +234,7 @@ export async function startServer({ port = 4700, dev = false } = {}) {
   await f.register((await import('./routes/update')).default, {
     onApplied: async () => {
       hub.broadcastRestarting();
+      void syncLedgerAtShutdown();
       // Flush the ws frame + the HTTP response, then exit for the relaunch loop.
       setTimeout(() => process.exit(75), 250);
     },
@@ -240,6 +269,15 @@ export async function startServer({ port = 4700, dev = false } = {}) {
 const entryPath = (process.argv[1] ?? '').replace(/\\/g, '/');
 const isMain = entryPath.endsWith('server/index.ts') || entryPath.endsWith('server/index.js');
 if (isMain) {
+  // Direct `tsx server/index.ts` runs: a user Ctrl-C (SIGINT) / SIGTERM syncs the
+  // ledger before exiting, without changing the conventional exit codes. The
+  // supervised path (bin/seshmux.js) is covered by SIGUSR2/onApplied above.
+  process.once('SIGINT', () => {
+    void syncLedgerAtShutdown().finally(() => process.exit(130));
+  });
+  process.once('SIGTERM', () => {
+    void syncLedgerAtShutdown().finally(() => process.exit(143));
+  });
   const dev = process.env.NODE_ENV !== 'production';
   const port = Number(process.env.PORT) || 4700;
   startServer({ port, dev }).then(() => {

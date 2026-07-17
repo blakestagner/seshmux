@@ -26,6 +26,8 @@ import {
   type NIStatus,
 } from './lib/needs-input';
 import { startWatching, type WatchEvent, type Watcher } from './lib/store/watch';
+import { removeByPtyId } from './lib/live-ledger';
+import { bindSessionFromWatch } from './lib/ledger-binding';
 import { getProviders } from './lib/providers/types';
 import { claudeStoreRoot, claudeSubagentWatchConfig } from './lib/providers/claude';
 import chokidar from 'chokidar';
@@ -321,6 +323,9 @@ export async function createEventsHub(): Promise<EventsHub> {
           setStatus(ptyId, finalStatus);
         });
       } else if (e.event === 'exit') {
+        // Any PTY exit (clean finish or user kill) drops its ledger entry — the
+        // ONLY removal trigger. Tab-close never touches the ledger (UI dismissal).
+        void removeByPtyId(e.ptyId).catch(() => {});
         statusByPty.delete(e.ptyId);
         niStateByPty.delete(e.ptyId);
         attached.delete(e.ptyId);
@@ -437,8 +442,14 @@ export async function createEventsHub(): Promise<EventsHub> {
         // TTL floor. ctx-only events don't affect the scan.
         if (ev.event === 'session-new' || ev.event === 'session-touch') {
           // WHERE a provider caches its scan is its own business (invalidateCache
-          // seam) — getProviders() memoizes, so this resolves from cache.
-          void getProviders().then((ps) => ps.find((p) => p.id === ev.provider)?.invalidateCache?.());
+          // seam) — getProviders() memoizes, so this resolves from cache. Then
+          // (§1a) bind this session's id onto the newest unbound ledger entry for
+          // the same repo+provider — chained AFTER the invalidate so bind's
+          // scanProjects() sees the fresh (re-walked) scan, not a stale cache.
+          void getProviders()
+            .then((ps) => ps.find((p) => p.id === ev.provider)?.invalidateCache?.())
+            .then(() => bindSessionFromWatch(ev.provider, ev.projectId, ev.sessionId))
+            .catch(() => {});
         }
         broadcast(ev);
       },
