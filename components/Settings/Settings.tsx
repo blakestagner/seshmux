@@ -203,7 +203,8 @@ export default function Settings() {
     rescan();
     refreshHooks();
     (getUsage(30) as Promise<UsageSummary>).then(setUsage);
-    checkUpdate()
+    // force: opening Settings is an explicit "is there an update?" — skip the server's 6h cache
+    checkUpdate(true)
       .then(setUpd)
       .catch(() => setUpdFailed(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps

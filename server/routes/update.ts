@@ -12,7 +12,7 @@ import {
 } from '../lib/update';
 
 export interface UpdateRouteDeps {
-  checkUpdate?: () => Promise<UpdateStatus>;
+  checkUpdate?: (force?: boolean) => Promise<UpdateStatus>;
   applyUpdate?: (opts: { installMethod: UpdateStatus['installMethod']; current: string }) => Promise<ApplyUpdateResult>;
   // TODO(wire): daemon lead binds restart choreography here — broadcast server-restarting,
   // exit 75, relaunch loop picks up the new version. Only fired on a successful install.
@@ -20,10 +20,12 @@ export interface UpdateRouteDeps {
 }
 
 export default async function updateRoutes(f: FastifyInstance, deps: UpdateRouteDeps = {}) {
-  const check = deps.checkUpdate ?? (() => realCheck());
+  const check = deps.checkUpdate ?? ((force?: boolean) => realCheck({ force }));
   const apply = deps.applyUpdate ?? realApply;
 
-  f.get('/api/update/check', async () => check());
+  // force=1: user opened Settings — hit the registry instead of the 6h cache so a
+  // fresh publish shows up immediately.
+  f.get<{ Querystring: { force?: string } }>('/api/update/check', async (req) => check(req.query.force === '1'));
 
   f.post('/api/update/apply', async (_req, reply) => {
     const status = await check();

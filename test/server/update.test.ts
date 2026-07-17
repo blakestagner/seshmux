@@ -62,6 +62,22 @@ describe('checkUpdate matrix', () => {
     const r = await checkUpdate({ ...base, fetchFn: fakeFetch({ throws: true }) });
     expect(r.updateAvailable).toBe(false);
   });
+
+  // Regression: a transient fetch failure used to be CACHED as latest=current for 6h,
+  // so a machine that booted offline said "up to date" all day regardless of releases.
+  it('does not cache a failed fetch — next check sees the real latest', async () => {
+    await checkUpdate({ ...base, fetchFn: fakeFetch({ throws: true }) });
+    const r = await checkUpdate({ ...base, fetchFn: fakeFetch({ version: '1.1.0' }) });
+    expect(r).toMatchObject({ latest: '1.1.0', updateAvailable: true });
+  });
+
+  it('serves the 6h cache on plain checks, bypasses it with force', async () => {
+    await checkUpdate({ ...base, fetchFn: fakeFetch({ version: '1.0.0' }) }); // warm: up to date
+    const cached = await checkUpdate({ ...base, fetchFn: fakeFetch({ version: '1.1.0' }) });
+    expect(cached.updateAvailable).toBe(false); // cache hit, fresh publish invisible
+    const forced = await checkUpdate({ ...base, fetchFn: fakeFetch({ version: '1.1.0' }), force: true });
+    expect(forced).toMatchObject({ latest: '1.1.0', updateAvailable: true });
+  });
 });
 
 describe('detectInstallMethod', () => {
