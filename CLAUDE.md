@@ -23,6 +23,7 @@ Sessions from `~/.claude` and `~/.codex` are merged by repo cwd into Projects; e
 - **Visual appearance** → `components/ui/` primitives + `styles/tokens.scss` + `styles/typography.scss`. Feature components compose, never redraw.
 - **Needs-input detection** → `server/lib/needs-input.ts` (+ provider `needsInputPatterns`). The Claude TUI emits ZERO line feeds — `stripAnsi` reconstructs rows from cursor-moving CSI escapes. Test against real captured output, not hand-written strings with `\n` in them.
 - **Worktree finish / merge-keep-discard** → `server/lib/workspaces.ts` (see hard rule 7).
+- **Auto-restore / session ledger** → `server/lib/{json-store,live-ledger,ledger-binding,restore}.ts`. Accepted residuals (documented, not bugs): hand-run `claude --resume` outside seshmux can double-attach; a session finishing after clean shutdown (or an unclean server death) can phantom-restore within 48h; a restored agent may pick an in-flight action back up.
 
 ## Key seams (touch these deliberately)
 - `server/session-start.ts` — ALL PTY session spawning (shared by term + bridge routes).
