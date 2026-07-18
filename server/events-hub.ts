@@ -26,6 +26,8 @@ import {
   type NIStatus,
 } from './lib/needs-input';
 import { startWatching, type WatchEvent, type Watcher } from './lib/store/watch';
+import { removeByPtyId } from './lib/live-ledger';
+import { bindSessionFromWatch } from './lib/ledger-binding';
 import { getProviders } from './lib/providers/types';
 import { claudeStoreRoot, claudeSubagentWatchConfig } from './lib/providers/claude';
 import chokidar from 'chokidar';
@@ -135,6 +137,10 @@ export interface EventsHub {
   /** Resolve a pending approval from the UI reply; false if unknown/expired. */
   resolveApproval(requestId: string, approved: boolean): boolean;
   broadcastRestarting(): void;
+  /** Latch the startup-restore count for the server lifetime; replayed to every
+   *  events-WS client on connect (G1 — reconcile finishes before any browser
+   *  attaches, so the count would otherwise be missed). */
+  latchRestored(count: number): void;
   close(): Promise<void>;
 }
 
@@ -321,6 +327,9 @@ export async function createEventsHub(): Promise<EventsHub> {
           setStatus(ptyId, finalStatus);
         });
       } else if (e.event === 'exit') {
+        // Any PTY exit (clean finish or user kill) drops its ledger entry — the
+        // ONLY removal trigger. Tab-close never touches the ledger (UI dismissal).
+        void removeByPtyId(e.ptyId).catch(() => {});
         statusByPty.delete(e.ptyId);
         niStateByPty.delete(e.ptyId);
         attached.delete(e.ptyId);
@@ -437,8 +446,14 @@ export async function createEventsHub(): Promise<EventsHub> {
         // TTL floor. ctx-only events don't affect the scan.
         if (ev.event === 'session-new' || ev.event === 'session-touch') {
           // WHERE a provider caches its scan is its own business (invalidateCache
-          // seam) — getProviders() memoizes, so this resolves from cache.
-          void getProviders().then((ps) => ps.find((p) => p.id === ev.provider)?.invalidateCache?.());
+          // seam) — getProviders() memoizes, so this resolves from cache. Then
+          // (§1a) bind this session's id onto the newest unbound ledger entry for
+          // the same repo+provider — chained AFTER the invalidate so bind's
+          // scanProjects() sees the fresh (re-walked) scan, not a stale cache.
+          void getProviders()
+            .then((ps) => ps.find((p) => p.id === ev.provider)?.invalidateCache?.())
+            .then(() => bindSessionFromWatch(ev.provider, ev.projectId, ev.sessionId))
+            .catch(() => {});
         }
         broadcast(ev);
       },
@@ -486,11 +501,21 @@ export async function createEventsHub(): Promise<EventsHub> {
   // Adopt any PTYs that survived a server restart.
   void reattachAll();
 
+  // G1: the startup auto-restore count, latched for the server lifetime. reconcile
+  // finishes before any browser attaches, so a live broadcast alone would be missed
+  // — every new client replays it on connect (same mechanism as the status snapshot).
+  let restoredCount = 0;
+  function latchRestored(count: number) {
+    restoredCount = count;
+    broadcast({ event: 'restored', count });
+  }
+
   function addClient(ws: WebSocket) {
     // Replay-on-connect: register THEN snapshot synchronously (no await between),
     // so a status change can't race ahead of the snapshot.
     subscribers.add(ws);
     for (const [ptyId, status] of statusByPty) send(ws, { event: 'status', ptyId, status });
+    if (restoredCount > 0) send(ws, { event: 'restored', count: restoredCount });
     ws.on('close', () => subscribers.delete(ws));
     ws.on('error', () => subscribers.delete(ws));
   }
@@ -764,6 +789,7 @@ export async function createEventsHub(): Promise<EventsHub> {
     resolveApproval,
     waitForStatus,
     broadcastRestarting,
+    latchRestored,
     close,
   };
 }

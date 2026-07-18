@@ -57,7 +57,13 @@ export type EventMessage =
   // the server is about to restart for an update (Task 18). The daemon + PTYs
   // survive; the client should show a brief "updating" state and let the
   // auto-reconnect below bring it back.
-  | { event: 'server-restarting' };
+  | { event: 'server-restarting' }
+  // startup auto-restore result (auto-restore-sessions Stage 8): how many
+  // interrupted sessions the server re-spawned on boot. Latched server-side and
+  // replayed on every (re)connect (G1 — reconcile finishes before any browser
+  // attaches), so a client that connects late still sees it. The client gates
+  // the opt-in banner on settings.restoreNotice; the event itself always flows.
+  | { event: 'restored'; count: number };
 
 export interface EventsClient {
   close(): void;

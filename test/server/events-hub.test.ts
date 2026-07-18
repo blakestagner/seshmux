@@ -441,6 +441,46 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     }
   }, 10000);
 
+  // Stage 3: a PTY exit is the ONLY trigger that drops its live-ledger entry.
+  it('removes the ledger entry when a PTY exits', async () => {
+    const { createEventsHub } = await import('../../server/events-hub');
+    const { addEntry, readEntries, _resetLedgerForTest } = await import('../../server/lib/live-ledger');
+    _resetLedgerForTest(); // rebuild the store against this suite's SESHMUX_CONFIG_DIR
+    const hub = await createEventsHub();
+    try {
+      const { dial } = await import('../../server/daemon-client');
+      const spawnConn = await dial();
+      const { ptyId } = await spawnConn.spawn({ cwd: os.tmpdir(), args: catArgs(), cols: 80, rows: 24 });
+      spawnConn.close();
+
+      await addEntry({ ptyId, tmuxName: null, provider: 'claude', cwd: os.tmpdir(), startedAt: Date.now() });
+      expect((await readEntries()).some((e) => e.ptyId === ptyId)).toBe(true);
+
+      // Attach first so the monitor connection is subscribed to the exit broadcast.
+      await trackAndAwaitAttach(hub, ptyId, 'working');
+
+      const killConn = await dial();
+      await killConn.kill(ptyId);
+      killConn.close();
+
+      // The exit-driven removeByPtyId is async; poll until the entry is gone.
+      // 15s window: ConPTY teardown + exit broadcast on loaded win32 CI blew a 5s one.
+      let gone = false;
+      const start = Date.now();
+      while (Date.now() - start < 15000) {
+        if (!(await readEntries()).some((e) => e.ptyId === ptyId)) {
+          gone = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(gone).toBe(true);
+    } finally {
+      await hub.close();
+      _resetLedgerForTest();
+    }
+  }, 20000);
+
   // BUG-8: requestApproval must self-expire at expiresAt so a stale pendingApprovals
   // entry can't be resolved late (after the listener's own 120s timeout deny) and
   // report a false "approved" success.
@@ -557,6 +597,38 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       await hub.close();
     }
   }, 10000);
+
+  // Stage 6 (G1): the startup-restore count is latched for the server lifetime and
+  // replayed to every events-WS client on connect — reconcile finishes before any
+  // browser attaches, so a live-only broadcast would be missed.
+  describe('latchRestored (G1)', () => {
+    it('replays the latched count to a client that connects AFTER the latch', async () => {
+      const { createEventsHub } = await import('../../server/events-hub');
+      const hub = await createEventsHub();
+      try {
+        hub.latchRestored(3);
+        const seen: any[] = [];
+        hub.addClient(fakeWs(seen)); // connects after the latch
+        expect(seen.filter((e) => e.event === 'restored')).toEqual([{ event: 'restored', count: 3 }]);
+      } finally {
+        await hub.close();
+      }
+    }, 10000);
+
+    it('broadcasts once to a client already connected before the latch (not twice)', async () => {
+      const { createEventsHub } = await import('../../server/events-hub');
+      const hub = await createEventsHub();
+      try {
+        const seen: any[] = [];
+        hub.addClient(fakeWs(seen)); // connected before the latch — no replay yet
+        expect(seen.some((e) => e.event === 'restored')).toBe(false);
+        hub.latchRestored(2);
+        expect(seen.filter((e) => e.event === 'restored')).toEqual([{ event: 'restored', count: 2 }]);
+      } finally {
+        await hub.close();
+      }
+    }, 10000);
+  });
 
   // Spec 5 task 1: waitForStatus subscribes to the SAME setStatus/broadcast path
   // as the WS status feed — no polling, resolves on the real transition.

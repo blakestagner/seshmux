@@ -433,6 +433,18 @@ export function shouldMarkUnviewed(
   return !isActiveTab || documentHidden;
 }
 
+// Auto-restore banner gate (auto-restore-sessions Stage 8). OPT-IN — the
+// DELIBERATE opposite polarity of the `macNotifications !== false` toggles:
+// silent by default (spec §4), so the banner surfaces ONLY when the user
+// explicitly turned `restoreNotice` on AND at least one session was restored.
+// undefined / false / any non-`true` value → no banner.
+export function shouldShowRestoreBanner(
+  settings: Record<string, unknown> | undefined,
+  count: number,
+): boolean {
+  return settings?.restoreNotice === true && count > 0;
+}
+
 // BUG A part 1 (live fresh-spawn bind): a session-new/session-touch event carries
 // {projectId, sessionId} for a session that just started writing jsonl. Find the
 // live term tab it belongs to so page.tsx can dispatch setTabSession and arm the

@@ -8,6 +8,7 @@
 
 import path from 'node:path';
 import { dial } from './daemon-client';
+import { addEntry } from './lib/live-ledger';
 import { whichBin } from './lib/which';
 import { getProviders } from './lib/providers/types';
 import type { ProviderId } from './lib/providers/types';
@@ -150,6 +151,21 @@ export async function startSession(input: StartSessionInput): Promise<StartSessi
       tmuxName = nextTmuxName(projectPath, taken);
     }
     const { ptyId } = await conn.spawn({ cwd: projectPath, args, tmuxName });
+
+    // Record the live session in the ledger for startup auto-restore. Store the
+    // DAEMON-side tmux name (with the `seshmux-` prefix the daemon adds — exactly
+    // what list() reports) so tmux-tier reconcile can match it; the bare name we
+    // pass to spawn() never appears in list(). A resumeId means this session is
+    // born bound. A ledger-write failure must NEVER fail the spawn (catch + log).
+    await addEntry({
+      ptyId,
+      tmuxName: tmuxName ? `seshmux-${tmuxName}` : null,
+      provider: providerId,
+      cwd: projectPath,
+      label: path.basename(projectPath),
+      startedAt: Date.now(),
+      ...(resumeId ? { sessionId: resumeId } : {}),
+    }).catch((e) => console.error('[seshmux] ledger add failed:', e));
 
     if (firstPrompt && !seedViaArgv) {
       // Fallback: write after a settle so the TUI's input box is ready. A separate
