@@ -464,9 +464,10 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       killConn.close();
 
       // The exit-driven removeByPtyId is async; poll until the entry is gone.
+      // 15s window: ConPTY teardown + exit broadcast on loaded win32 CI blew a 5s one.
       let gone = false;
       const start = Date.now();
-      while (Date.now() - start < 5000) {
+      while (Date.now() - start < 15000) {
         if (!(await readEntries()).some((e) => e.ptyId === ptyId)) {
           gone = true;
           break;
@@ -478,7 +479,7 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
       await hub.close();
       _resetLedgerForTest();
     }
-  }, 10000);
+  }, 20000);
 
   // BUG-8: requestApproval must self-expire at expiresAt so a stale pendingApprovals
   // entry can't be resolved late (after the listener's own 120s timeout deny) and

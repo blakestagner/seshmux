@@ -214,14 +214,17 @@ describe('reconcile', () => {
     expect(await ledger.readEntries()).toHaveLength(0);
   });
 
-  it('C2: a non-ENOENT stat error (ENOTDIR) skips but KEEPS the entry', async () => {
-    // cwd whose parent is a file -> stat throws ENOTDIR, not ENOENT.
-    const asFile = path.join(dir, 'afile');
-    fs.writeFileSync(asFile, 'x');
-    await ledger.addEntry(entry({ ptyId: 'old', cwd: path.join(asFile, 'child'), sessionId: 'sess-1' }));
+  it('C2: a non-ENOENT stat error (EACCES) skips but KEEPS the entry', async () => {
+    // Injected stat: a real filesystem repro is OS-dependent (a file-as-parent
+    // path throws ENOTDIR on posix but plain ENOENT on win32 — it broke Windows
+    // CI). The code branches purely on e.code, so inject the errno.
+    await ledger.addEntry(entry({ ptyId: 'old', cwd: path.join(dir, 'blocked'), sessionId: 'sess-1' }));
     const startSessionFn = makeStartSession();
+    const statFn = async () => {
+      throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    };
 
-    const n = await reconcile({ ...baseDeps(), dialFn: makeDial([]), startSessionFn: startSessionFn as any });
+    const n = await reconcile({ ...baseDeps(), dialFn: makeDial([]), startSessionFn: startSessionFn as any, statFn: statFn as any });
 
     expect(n).toBe(0);
     expect(startSessionFn).not.toHaveBeenCalled();

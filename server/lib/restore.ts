@@ -69,6 +69,7 @@ export interface RestoreDeps {
   providersFn?: typeof getProviders;
   holdersDir?: string; // default join(configDir(), 'holders')
   pidAlive?: (pid: number) => boolean; // default process.kill(pid, 0)
+  statFn?: typeof stat; // injectable: OS errno mapping differs (win32 has no ENOTDIR here)
   now?: () => number;
   settleMs?: number; // default 750; 0 in tests
   maxRestores?: number; // default 10
@@ -117,6 +118,7 @@ async function runReconcile(deps: RestoreDeps): Promise<number> {
   const providersFn = deps.providersFn ?? getProviders;
   const holdersDir = deps.holdersDir ?? path.join(configDir(), 'holders');
   const pidAlive = deps.pidAlive ?? defaultPidAlive;
+  const statFn = deps.statFn ?? stat;
   const now = deps.now ?? (() => Date.now());
   const settleMs = deps.settleMs ?? DEFAULT_SETTLE_MS;
   const maxRestores = deps.maxRestores ?? DEFAULT_MAX_RESTORES;
@@ -174,7 +176,7 @@ async function runReconcile(deps: RestoreDeps): Promise<number> {
     //    skips-and-keeps (a transient failure must not delete the record).
     let cwdOk = false;
     try {
-      cwdOk = (await stat(entry.cwd)).isDirectory();
+      cwdOk = (await statFn(entry.cwd)).isDirectory();
     } catch (e: any) {
       if (e?.code === 'ENOENT') {
         await removeByPtyId(entry.ptyId);
