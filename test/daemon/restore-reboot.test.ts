@@ -210,9 +210,22 @@ posixDescribe('auto-restore reboot (integration)', () => {
     const { _resetReconcileForTest } = await import('../../server/lib/restore');
     _resetReconcileForTest();
     _resetLedgerForTest();
-    try {
-      fs.rmSync(ledgerPath(), { force: true });
-    } catch {}
+    // Retry the rm and FAIL LOUDLY if it never lands: a swallowed EMFILE here
+    // once leaked test 1's ledger entry into the negative control on macOS CI
+    // (2 entries where 1 was asserted) — a corrupt next test is worse than a
+    // clear cleanup failure.
+    let rmErr: unknown = null;
+    for (let i = 0; i < 10; i++) {
+      try {
+        fs.rmSync(ledgerPath(), { force: true });
+        rmErr = null;
+        break;
+      } catch (e) {
+        rmErr = e;
+        await sleep(200);
+      }
+    }
+    if (rmErr) throw rmErr;
     _resetLedgerForTest();
     await sleep(150);
   });
