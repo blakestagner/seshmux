@@ -92,6 +92,19 @@ export async function startServer({ port = 4700, dev = false } = {}) {
   const { setSpawnListener, startSession } = await import('./session-start');
   setSpawnListener((ptyId) => hub.trackPty(ptyId));
 
+  // Startup auto-restore: re-spawn interrupted sessions the daemon no longer owns.
+  // Fire-and-forget so listen() is never delayed — restore only needs the daemon +
+  // providers, not Fastify, so it runs concurrently with route registration below.
+  // MUST come AFTER setSpawnListener so restored spawns get monitor tracking
+  // (startSession calls onSpawned). A restored PTY racing the client's first
+  // rehydrate getLive() is harmless — the session just appears on the next reload.
+  void import('./lib/restore')
+    .then(async ({ reconcile }) => {
+      const n = await reconcile();
+      if (n > 0) hub.latchRestored(n);
+    })
+    .catch((e) => console.error('[seshmux] restore reconcile failed:', e));
+
   // Events WS — one connection per browser, multiplexes status/ctx/session/*.
   // Guarded by the auth hook (it's under /ws/). Replay-on-connect handled in hub.
   f.get('/ws/events', { websocket: true }, (socket) => {

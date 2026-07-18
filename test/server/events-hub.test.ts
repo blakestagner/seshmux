@@ -597,6 +597,38 @@ describe('events-hub — hook status precedence (Spec 2)', () => {
     }
   }, 10000);
 
+  // Stage 6 (G1): the startup-restore count is latched for the server lifetime and
+  // replayed to every events-WS client on connect — reconcile finishes before any
+  // browser attaches, so a live-only broadcast would be missed.
+  describe('latchRestored (G1)', () => {
+    it('replays the latched count to a client that connects AFTER the latch', async () => {
+      const { createEventsHub } = await import('../../server/events-hub');
+      const hub = await createEventsHub();
+      try {
+        hub.latchRestored(3);
+        const seen: any[] = [];
+        hub.addClient(fakeWs(seen)); // connects after the latch
+        expect(seen.filter((e) => e.event === 'restored')).toEqual([{ event: 'restored', count: 3 }]);
+      } finally {
+        await hub.close();
+      }
+    }, 10000);
+
+    it('broadcasts once to a client already connected before the latch (not twice)', async () => {
+      const { createEventsHub } = await import('../../server/events-hub');
+      const hub = await createEventsHub();
+      try {
+        const seen: any[] = [];
+        hub.addClient(fakeWs(seen)); // connected before the latch — no replay yet
+        expect(seen.some((e) => e.event === 'restored')).toBe(false);
+        hub.latchRestored(2);
+        expect(seen.filter((e) => e.event === 'restored')).toEqual([{ event: 'restored', count: 2 }]);
+      } finally {
+        await hub.close();
+      }
+    }, 10000);
+  });
+
   // Spec 5 task 1: waitForStatus subscribes to the SAME setStatus/broadcast path
   // as the WS status feed — no polling, resolves on the real transition.
   describe('waitForStatus (Spec 5)', () => {
