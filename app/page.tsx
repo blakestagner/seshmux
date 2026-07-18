@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { AppStateProvider, useAppState, activePair, activeTeam, shouldMarkUnviewed, findTabToBindSession, type Tab } from '../lib/client/store';
+import { AppStateProvider, useAppState, activePair, activeTeam, shouldMarkUnviewed, shouldShowRestoreBanner, findTabToBindSession, type Tab } from '../lib/client/store';
 import { getProjects, getConfig, getEnv, getLive, notify, resolveApproval, putConfig, getTeamMembers, type SearchHit, type LiveSession } from '../lib/client/api';
 import { openEventsSocket } from '../lib/client/ws';
 import type { EventMessage } from '../lib/client/ws';
@@ -14,6 +14,7 @@ import Settings from '../components/Settings/Settings';
 import Scratchpad from '../components/Scratchpad/Scratchpad';
 import Planoff from '../components/Planoff/Planoff';
 import Toast from '../components/Toast/Toast';
+import RestoredBanner from '../components/RestoredBanner/RestoredBanner';
 import ApprovalToast from '../components/ApprovalToast/ApprovalToast';
 import TerminalPane from '../components/TerminalPane/TerminalPane';
 import SubagentViewer from '../components/SubagentViewer/SubagentViewer';
@@ -116,6 +117,9 @@ function AppShell() {
   // auto-reconnect (the server replays events on reconnect, so the next
   // message proves the server is back) — no timer, no fake progress.
   const [restarting, setRestarting] = useState(false);
+  // Startup auto-restore count (latched + replayed server-side). The banner is
+  // gated on the opt-in `restoreNotice` setting at render; the event always flows.
+  const [restoredCount, setRestoredCount] = useState(0);
   const activeTab = state.tabs.find((t) => t.id === state.activeTab);
 
   // Mirrors Rail's handleTogglePin: optimistic dispatch + persist. Lives here
@@ -383,6 +387,12 @@ function AppShell() {
         }
         case 'ctx':
           dispatch({ type: 'setTermCtx', sessionId: e.sessionId, ctx: e.ctx });
+          break;
+        case 'restored':
+          // Latched + replayed on every reconnect; the render gate + the banner's
+          // own auto-dismiss handle showing it once (a re-replay after dismiss
+          // re-shows — accepted, per plan).
+          setRestoredCount(e.count);
           break;
         case 'approval':
           // MCP bridge cross-agent call awaiting approval — show the toast.
@@ -791,6 +801,9 @@ function AppShell() {
         onJump={jumpToWaiting}
         onClose={() => setWaitingToasts([])}
       />
+      {shouldShowRestoreBanner(state.config.settings, restoredCount) && (
+        <RestoredBanner count={restoredCount} onDone={() => setRestoredCount(0)} />
+      )}
       {approval ? (
         <ApprovalToast
           open

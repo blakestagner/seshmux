@@ -485,6 +485,9 @@ export default function Settings() {
           <EnvRow name="Notify when done" sub="notify when a session finishes, not just when it needs input" subMono={false}>
             <Toggle on={settings.notifyOnDone !== false} onChange={(on) => persistSetting('notifyOnDone', on)} />
           </EnvRow>
+          <EnvRow name="Restore notice" sub="banner when interrupted sessions are auto-restored" subMono={false}>
+            <Toggle on={settings.restoreNotice === true} onChange={(on) => persistSetting('restoreNotice', on)} />
+          </EnvRow>
           <EnvRow name="Sound">
             <Toggle on={!!settings.sound} onChange={(on) => persistSetting('sound', on)} />
           </EnvRow>
