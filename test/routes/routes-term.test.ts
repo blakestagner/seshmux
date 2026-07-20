@@ -2,8 +2,11 @@
 // injected (mirrors BridgeRouteDeps injection in test/routes-bridge.test.ts), so
 // this never touches the real events-hub/daemon.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Fastify from 'fastify';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import termRoutes, { defaultResolveSessionForCwd, type TermRouteDeps } from '../../server/routes/term';
 import type { StatusExplain } from '../../server/events-hub';
 
@@ -86,7 +89,9 @@ describe('GET /api/sessions/live', () => {
       resolveSessionForCwd: async (cwd) => (cwd === '/repo/a' ? { sessionId: 's1' } : {}),
     });
     const res = await f.inject({ method: 'GET', url: '/api/sessions/live' });
-    expect(res.json().live).toEqual([{ ptyId: 'pty-1', cwd: '/repo/a', tmuxName: null, sessionId: 's1' }]);
+    expect(res.json().live).toEqual([
+      { ptyId: 'pty-1', cwd: '/repo/a', tmuxName: null, sessionId: 's1', kind: 'agent' },
+    ]);
   });
 
   it('omits sessionId (not fails) when the resolver finds no match', async () => {
@@ -122,6 +127,68 @@ describe('GET /api/sessions/live', () => {
     const res = await f.inject({ method: 'GET', url: '/api/sessions/live' });
     expect(res.statusCode).toBe(200);
     expect(res.json().live).toEqual([]);
+  });
+});
+
+// Scratch annotation (scratch-terminal Spec, Stage 3): getLive marks scratch PTYs
+// kind:'scratch' + owner fields and SKIPS session-enrichment for them (a rehydrated
+// shell must never bind to a real session), while agents still enrich as before.
+describe('GET /api/sessions/live — scratch annotation', () => {
+  let dir: string;
+  let prevConfigDir: string | undefined;
+
+  function fakeDaemon(ptys: { ptyId: string; cwd: string; tmuxName: string | null; alive: boolean }[]) {
+    return { list: async () => ({ ptys }), close: () => {} };
+  }
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'smx-live-scratch-'));
+    prevConfigDir = process.env.SESHMUX_CONFIG_DIR;
+    process.env.SESHMUX_CONFIG_DIR = dir;
+    (await import('../../server/lib/scratch-store'))._resetScratchStoreForTest();
+  });
+
+  afterEach(async () => {
+    (await import('../../server/lib/scratch-store'))._resetScratchStoreForTest();
+    if (prevConfigDir === undefined) delete process.env.SESHMUX_CONFIG_DIR;
+    else process.env.SESHMUX_CONFIG_DIR = prevConfigDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('marks a scratch PTY kind:scratch with owner fields and no session ids; still enriches the sibling agent', async () => {
+    const s = await import('../../server/lib/scratch-store');
+    await s.addScratch('scratch-1', { ownerPtyId: 'owner-1', ownerTmuxName: 'seshmux-repo-1', cwd: '/repo/a', createdAt: 1 });
+
+    let resolveCalls = 0;
+    const f = makeApp({
+      dialFn: (async () => fakeDaemon([
+        { ptyId: 'owner-1', cwd: '/repo/a', tmuxName: 'seshmux-repo-1', alive: true },
+        { ptyId: 'scratch-1', cwd: '/repo/a', tmuxName: null, alive: true },
+      ])) as never,
+      resolveSessionForCwd: async () => { resolveCalls++; return { projectId: 'p1', sessionId: 's1' }; },
+    });
+
+    const res = await f.inject({ method: 'GET', url: '/api/sessions/live' });
+    const live = res.json().live as any[];
+
+    const scratch = live.find((l) => l.ptyId === 'scratch-1');
+    expect(scratch).toEqual({
+      ptyId: 'scratch-1',
+      cwd: '/repo/a',
+      tmuxName: null,
+      kind: 'scratch',
+      ownerPtyId: 'owner-1',
+      ownerTmuxName: 'seshmux-repo-1',
+    });
+    expect(scratch.sessionId).toBeUndefined();
+    expect(scratch.projectId).toBeUndefined();
+
+    const agent = live.find((l) => l.ptyId === 'owner-1');
+    expect(agent).toMatchObject({ kind: 'agent', sessionId: 's1', projectId: 'p1' });
+
+    // The scratch cwd shares the agent's, so the memoized resolve runs at most once —
+    // and NEVER for the scratch's own binding.
+    expect(resolveCalls).toBe(1);
   });
 });
 

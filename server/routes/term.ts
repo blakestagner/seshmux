@@ -17,6 +17,7 @@ import { DaemonConnection, dial, withTimeout } from '../daemon-client';
 import { getProviders, type ProviderId } from '../lib/providers/types';
 import { derivedWorkspaceParent } from '../lib/store/scan';
 import { startSession } from '../session-start';
+import { readScratchMap } from '../lib/scratch-store';
 import type { StatusExplain } from '../events-hub';
 
 // Spec 6: injected like bridge's startSession — keeps this route hermetically
@@ -148,18 +149,35 @@ export default async function termRoutes(f: FastifyInstance, deps: TermRouteDeps
       conn = await (deps.dialFn ?? dial)();
       const { ptys } = await conn.list();
       const alive = ptys.filter((p) => p.alive);
+      // Scratch shells are annotated, NOT session-enriched: a rehydrated shell must
+      // never bind to a real session (that would arm the chips, fire getTeamMembers,
+      // and tile it into GridView). One map read per request; keys are scratch pty ids.
+      const scratch = await readScratchMap();
       // N PTYs in the same repo share one resolve — the scan behind it is
       // provider-wide, so per-PTY calls with the same cwd were pure duplication.
       const byCwd = new Map<string, Promise<{ projectId?: string; sessionId?: string; branch?: string | null }>>();
       const live = await Promise.all(
         alive.map(async (p) => {
+          const rec = scratch[p.ptyId];
+          if (rec) {
+            // Additive fields; a client predating scratch-terminals ignores `kind`
+            // (treats every entry as an agent) — no projectId/sessionId is emitted.
+            return {
+              ptyId: p.ptyId,
+              cwd: p.cwd,
+              tmuxName: p.tmuxName,
+              kind: 'scratch' as const,
+              ownerPtyId: rec.ownerPtyId,
+              ownerTmuxName: rec.ownerTmuxName,
+            };
+          }
           let r = byCwd.get(p.cwd);
           if (!r) {
             r = resolveSessionForCwd(p.cwd);
             byCwd.set(p.cwd, r);
           }
           const { projectId, sessionId, branch } = await r;
-          return { ptyId: p.ptyId, cwd: p.cwd, tmuxName: p.tmuxName, projectId, sessionId, branch };
+          return { ptyId: p.ptyId, cwd: p.cwd, tmuxName: p.tmuxName, projectId, sessionId, branch, kind: 'agent' as const };
         }),
       );
       return { live };

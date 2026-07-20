@@ -193,6 +193,13 @@ export async function startServer({ port = 4700, dev = false } = {}) {
     getStatusExplain: (ptyId: string) => hub.getStatusExplain(ptyId),
   });
 
+  // Scratch terminals (scratch-terminal Spec): POST/DELETE /api/term/scratch.
+  // Sweep orphaned scratch shells BEFORE the route can serve a getLive() — so a
+  // browser rehydrating right after boot never re-attaches a shell whose owner is
+  // already gone. Never throws (mirrors workspaces.reconcile().catch()).
+  await (await import('./lib/scratch')).sweepOrphanScratch().catch(() => {});
+  await f.register((await import('./routes/scratch-term')).default);
+
   // Workspaces (v1.x Spec 1): one-click isolated git worktree + branch per
   // session. Boot reconcile first (crash between `git worktree add` and the
   // json write, or vice versa, can orphan either side) so the rail never
