@@ -5,8 +5,10 @@ import {
   closePanel,
   pruneTab,
   resolveActive,
+  routeScratchLive,
   type PanelId,
   type RightPaneRecord,
+  type LiveLike,
 } from '../../lib/client/right-pane';
 
 const allGatesPass: Record<PanelId, boolean> = { agents: true, team: true, changes: true, terminal: true };
@@ -142,5 +144,61 @@ describe('resolveActive', () => {
     // gate recovers, original active shows again — pane object never mutated
     expect(resolveActive(pane, allGatesPass)).toBe('changes');
     expect(pane.open).toEqual(['agents', 'changes']);
+  });
+});
+
+describe('routeScratchLive', () => {
+  const agent = (ptyId: string, tmuxName: string | null = null): LiveLike => ({
+    ptyId,
+    tmuxName,
+    kind: 'agent',
+  });
+
+  it('matches a scratch to its owner by ownerPtyId → term-<ownerPtyId> mapping', () => {
+    const live: LiveLike[] = [
+      agent('owner-1'),
+      { ptyId: 'scratch-1', tmuxName: null, kind: 'scratch', ownerPtyId: 'owner-1', ownerTmuxName: null },
+    ];
+    const { agents, scratchByOwnerTab } = routeScratchLive(live);
+    expect(agents.map((a) => a.ptyId)).toEqual(['owner-1']);
+    expect(scratchByOwnerTab).toEqual({ 'term-owner-1': 'scratch-1' });
+  });
+
+  it('matches by ownerTmuxName after a daemon restart reassigns the owner ptyId', () => {
+    // Owner rehydrated under a FRESH ptyId; only its tmuxName is stable. The
+    // scratch record still carries the OLD ownerPtyId — tmux fallback saves it.
+    const live: LiveLike[] = [
+      agent('owner-new', 'seshmux-abc'),
+      { ptyId: 'scratch-1', tmuxName: null, kind: 'scratch', ownerPtyId: 'owner-old', ownerTmuxName: 'seshmux-abc' },
+    ];
+    const { scratchByOwnerTab } = routeScratchLive(live);
+    expect(scratchByOwnerTab).toEqual({ 'term-owner-new': 'scratch-1' });
+  });
+
+  it('drops an orphan scratch whose owner is not in the live set', () => {
+    const live: LiveLike[] = [
+      agent('owner-1'),
+      { ptyId: 'scratch-x', tmuxName: null, kind: 'scratch', ownerPtyId: 'gone', ownerTmuxName: 'also-gone' },
+    ];
+    const { agents, scratchByOwnerTab } = routeScratchLive(live);
+    expect(agents.map((a) => a.ptyId)).toEqual(['owner-1']);
+    expect(scratchByOwnerTab).toEqual({});
+  });
+
+  it('treats a kind-less entry (older server) as an agent, never a scratch', () => {
+    const live: LiveLike[] = [{ ptyId: 'legacy', tmuxName: null }];
+    const { agents, scratchByOwnerTab } = routeScratchLive(live);
+    expect(agents.map((a) => a.ptyId)).toEqual(['legacy']);
+    expect(scratchByOwnerTab).toEqual({});
+  });
+
+  it('does not match a null tmuxName owner to a null ownerTmuxName (no accidental match)', () => {
+    // ownerPtyId miss + both tmuxNames null must NOT collapse into a match.
+    const live: LiveLike[] = [
+      agent('owner-1', null),
+      { ptyId: 'scratch-1', tmuxName: null, kind: 'scratch', ownerPtyId: 'gone', ownerTmuxName: null },
+    ];
+    const { scratchByOwnerTab } = routeScratchLive(live);
+    expect(scratchByOwnerTab).toEqual({});
   });
 });

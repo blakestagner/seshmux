@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AppStateProvider, useAppState, activePair, activeTeam, shouldMarkUnviewed, shouldShowRestoreBanner, findTabToBindSession, type Tab } from '../lib/client/store';
-import { getProjects, getConfig, getEnv, getLive, notify, resolveApproval, putConfig, getTeamMembers, type SearchHit, type LiveSession } from '../lib/client/api';
+import { getProjects, getConfig, getEnv, getLive, notify, resolveApproval, putConfig, getTeamMembers, startScratchTerminal, killScratchTerminal, type SearchHit, type LiveSession } from '../lib/client/api';
 import { openEventsSocket } from '../lib/client/ws';
 import type { EventMessage } from '../lib/client/ws';
 import TopNav from '../components/TopNav/TopNav';
@@ -23,6 +23,7 @@ import GridView from '../components/GridView/GridView';
 import AgentsView from '../components/AgentsView/AgentsView';
 import TeamPanel from '../components/TeamPanel/TeamPanel';
 import RightPane from '../components/RightPane/RightPane';
+import ScratchTerminal from '../components/ScratchTerminal/ScratchTerminal';
 import EmptyComposer from '../components/EmptyComposer/EmptyComposer';
 import type { ProviderId } from '../lib/client/types';
 import { DetectedProvidersProvider, providersFromEnv } from '../lib/client/providers';
@@ -37,6 +38,7 @@ import {
   closePanel,
   pruneTab,
   resolveActive,
+  routeScratchLive,
   type PanelId,
   type RightPaneRecord,
 } from '../lib/client/right-pane';
@@ -110,6 +112,12 @@ function AppShell() {
   // mutually-exclusive slot; a per-session ping counter still drives the
   // subagent chip + open viewer's live refetch.
   const [rightPane, setRightPane] = useState<RightPaneRecord>({});
+  // Scratch-terminal Stage 5: tabId → scratch PTY id. Kept OUT of right-pane.ts
+  // (the panel model stays panel-only) — the pane record just knows a 'terminal'
+  // panel is open; this map holds which shell backs it. The server owns the
+  // shell's lifetime (decision 2): tab dismissal drops this mapping without
+  // killing, an explicit × kills, and owner-PTY exit kills server-side.
+  const [scratchByTab, setScratchByTab] = useState<Record<string, string>>({});
   const [subagentPings, setSubagentPings] = useState<Record<string, number>>({});
   // Chip member count, keyed by leadSessionId (mirrors teamPings) — lifted from
   // TeamPanel's own roster fetch the FIRST time it resolves, so it only populates
@@ -307,7 +315,11 @@ function AppShell() {
         } catch {
           /* corrupt entry → treat as none */
         }
-        for (const s of live) {
+        // Scratch shells never become their own tab — routeScratchLive splits them
+        // out and maps each surviving one to its owner tab's right pane (matched by
+        // ownerPtyId, or ownerTmuxName after a daemon-restart ptyId reassignment).
+        const { agents, scratchByOwnerTab } = routeScratchLive(live);
+        for (const s of agents) {
           if (dismissed.includes(s.ptyId)) continue;
           // Prefer the server-resolved owning project id: a worktree PTY's cwd never
           // equals any project.path (folded into the parent), so the path match alone
@@ -333,6 +345,15 @@ function AppShell() {
               .then((info) => info && dispatch({ type: 'setTabTeam', tabId, teamName: info.teamName }))
               .catch(() => {});
           }
+        }
+        // Re-attach each surviving scratch into its owner tab's right pane (open
+        // + active), but only where the owner tab was actually opened above — a
+        // dismissed owner keeps its shell alive server-side without re-showing it.
+        for (const [tabId, scratchPtyId] of Object.entries(scratchByOwnerTab)) {
+          const ownerPtyId = tabId.slice('term-'.length);
+          if (dismissed.includes(ownerPtyId)) continue;
+          setScratchByTab((m) => ({ ...m, [tabId]: scratchPtyId }));
+          setRightPane((r) => openPanel(r, tabId, 'terminal'));
         }
         // Restore the pre-reload active tab (openTerm activated the LAST
         // rehydrated tab otherwise). Only if its PTY is still alive; then
@@ -470,13 +491,23 @@ function AppShell() {
   // closeTab is dispatched from Tabs.tsx and TerminalPane.handleFinish (not
   // routed through page.tsx), so prune the right-pane record via effect: any tab
   // that's no longer live loses its pane state, so reopening the same session
-  // starts from a fresh record (edge D). (Stage 5 extends this to drop the
-  // scratch mapping too — deliberately NOT killing the shell here, decision 2.)
+  // starts from a fresh record (edge D). Also drop the scratch mapping for that
+  // tab — but deliberately do NOT kill the shell (decision 2: a tab dismissal is
+  // a UI action, the agent PTY survives it and so does its scratch; the server
+  // map still owns it, and reopening the owner tab + the chip re-adopts it via
+  // the idempotent spawn route).
   useEffect(() => {
+    const liveIds = new Set(state.tabs.map((t) => t.id));
     setRightPane((r) => {
-      const liveIds = new Set(state.tabs.map((t) => t.id));
       let next = r;
       for (const id of Object.keys(r)) if (!liveIds.has(id)) next = pruneTab(next, id);
+      return next;
+    });
+    setScratchByTab((m) => {
+      const stale = Object.keys(m).filter((id) => !liveIds.has(id));
+      if (stale.length === 0) return m;
+      const next = { ...m };
+      for (const id of stale) delete next[id];
       return next;
     });
   }, [state.tabs]);
@@ -544,8 +575,43 @@ function AppShell() {
   }
   // A panel's own close button (× on the strip tab, or a panel header's close):
   // remove it from the pane, active falls back to the last remaining panel.
+  // Closing the terminal panel is an EXPLICIT kill (one of the two sanctioned
+  // kill triggers, decision 2): terminate the shell, drop its mapping, then
+  // close the panel. Reopening the chip spawns a fresh shell (server map pruned).
   function handleClosePanel(tabId: string, id: PanelId) {
+    if (id === 'terminal') {
+      const scratchPtyId = scratchByTab[tabId];
+      if (scratchPtyId) killScratchTerminal(scratchPtyId).catch(() => {});
+      setScratchByTab((m) => {
+        if (!(tabId in m)) return m;
+        const next = { ...m };
+        delete next[tabId];
+        return next;
+      });
+    }
     setRightPane((r) => closePanel(r, tabId, id));
+  }
+
+  // The `>_` chip: open the scratch panel, spawning a shell if this tab has none
+  // yet. The spawn route is idempotent per owner, so reopening an owner tab and
+  // clicking the chip re-adopts a live scratch (decision 2 reopen path). Already
+  // has a scratch → toggle the panel like the other chips.
+  async function handleOpenTerminal(tab: Tab) {
+    if (!tab.ptyId) return;
+    if (scratchByTab[tab.id]) {
+      setRightPane((r) => togglePanel(r, tab.id, 'terminal'));
+      return;
+    }
+    try {
+      const { ptyId } = await startScratchTerminal(tab.ptyId);
+      setScratchByTab((m) => ({ ...m, [tab.id]: ptyId }));
+      setRightPane((r) => openPanel(r, tab.id, 'terminal'));
+    } catch (e) {
+      // Fail closed (decision 1: gone cwd / owner missing → 400). No dedicated
+      // error surface on the generic chip yet; log it (parity with a failed
+      // bridge, which also only console.errors when its title has no room).
+      console.error('scratch terminal failed', e);
+    }
   }
 
   // Plain function (NOT a nested component) so key={tab.id} reconciliation is
@@ -590,6 +656,7 @@ function AppShell() {
           teamMemberCount={tab.sessionId ? teamMemberCounts[tab.sessionId] : undefined}
           onOpenTeam={tab.isTeamLead ? () => handleTogglePanel(tab.id, 'team') : undefined}
           onOpenChanges={tab.projectId ? () => handleTogglePanel(tab.id, 'changes') : undefined}
+          onOpenTerminal={tab.ptyId ? () => handleOpenTerminal(tab) : undefined}
         />
       );
     }
@@ -711,7 +778,9 @@ function AppShell() {
                 agents: !!activeTab.sessionId && !!activeTab.projectId && activeTab.provider !== 'codex',
                 team: !!team,
                 changes: !!activeTab.projectId,
-                terminal: false, // Stage 5 flips this
+                // A scratch shell only needs a live owner PTY; cwd validity is
+                // checked server-side at spawn (decision 1, fail closed).
+                terminal: !!activeTab.ptyId,
               };
               const pane = rightPane[activeTab.id];
               const shown = resolveActive(pane, gates);
@@ -759,11 +828,25 @@ function AppShell() {
                         onClose={() => handleClosePanel(activeTab.id, 'changes')}
                       />
                     );
-                  case 'terminal':
-                    return null; // Stage 5
+                  case 'terminal': {
+                    // Guard: gate passed + panel open but no shell mapped yet
+                    // (shouldn't happen post-spawn/rehydrate) → render nothing,
+                    // the empty strip tab stays until closed.
+                    const scratchPtyId = scratchByTab[activeTab.id];
+                    return scratchPtyId ? (
+                      <ScratchTerminal ptyId={scratchPtyId} visible={shown === 'terminal'} />
+                    ) : null;
+                  }
                 }
               };
-              const panels = stripTabs.map((t) => ({ id: t.id, node: panelNode(t.id) }));
+              // The terminal panel is the ONLY keepMounted one: its shell must
+              // survive a tab switch (hidden via display:none), unlike the
+              // agents/team/changes panels which remount/refetch on re-activate.
+              const panels = stripTabs.map((t) => ({
+                id: t.id,
+                node: panelNode(t.id),
+                keepMounted: t.id === 'terminal',
+              }));
               return (
                 <div
                   ref={viewerSplitRef}

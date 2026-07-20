@@ -68,3 +68,37 @@ export function resolveActive(
   }
   return null;
 }
+
+// Scratch-terminal Stage 5: split a getLive() payload into the agent PTYs (which
+// become term tabs) and a tabId→scratchPtyId map (which re-attach into their
+// owner tab's right pane, NEVER as standalone tabs). Kept minimal + pure so
+// page.tsx's rehydrate stays declarative and this is unit-testable without React.
+//
+// Owner match is by ownerPtyId first, then by ownerTmuxName === agent.tmuxName —
+// a tmux-tier owner gets a FRESH ptyId after a daemon restart (rehydrateTmux), so
+// bare-ptyId matching alone would orphan-drop a scratch whose owner survived. The
+// server's startup sweep rewrites the ownerPtyId in that case, but the tmux
+// fallback here keeps the client correct even before/without that rewrite.
+// Unmatched scratch entries are dropped (the server sweep owns real orphans).
+// Tab id mirrors store.ts openTerm: 'term-' + owner.ptyId.
+export interface LiveLike {
+  ptyId: string;
+  tmuxName: string | null;
+  kind?: 'agent' | 'scratch';
+  ownerPtyId?: string;
+  ownerTmuxName?: string | null;
+}
+export function routeScratchLive<T extends LiveLike>(
+  live: T[],
+): { agents: T[]; scratchByOwnerTab: Record<string, string> } {
+  const agents = live.filter((l) => l.kind !== 'scratch');
+  const scratchByOwnerTab: Record<string, string> = {};
+  for (const s of live) {
+    if (s.kind !== 'scratch') continue;
+    const owner =
+      agents.find((a) => a.ptyId === s.ownerPtyId) ??
+      (s.ownerTmuxName ? agents.find((a) => a.tmuxName != null && a.tmuxName === s.ownerTmuxName) : undefined);
+    if (owner) scratchByOwnerTab['term-' + owner.ptyId] = s.ptyId;
+  }
+  return { agents, scratchByOwnerTab };
+}

@@ -72,6 +72,16 @@ export type TerminalPaneProps = {
   // (page.tsx owns the split, same slot as the subagent viewer). Absent (grid
   // tiles) → the stats render as a plain non-clickable span.
   onOpenChanges?: () => void;
+  // Clicking the `>_` chip opens (idempotently spawns) a scratch shell in this
+  // session's cwd, in the right-pane tab strip. Absent → no chip (grid tiles,
+  // and the scratch pane's own TerminalPane, which passes no owner context).
+  onOpenTerminal?: () => void;
+  // Right-pane tab strip visibility (scratch-terminal edge G): the keepMounted
+  // scratch panel stays in the tree but hidden (display:none) when another tab
+  // is active. Flipping this back to true re-fits xterm on the next frame, since
+  // a tab switch neither resizes the container (RO stays silent) nor changes
+  // state.view (the other reassert trigger). Default true → agent panes unaffected.
+  visible?: boolean;
 };
 
 // Aperture terminal theme — values from tokens.scss --term-* / --accent.
@@ -97,6 +107,8 @@ export default function TerminalPane({
   teamMemberCount,
   onOpenTeam,
   onOpenChanges,
+  onOpenTerminal,
+  visible = true,
 }: TerminalPaneProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<'live' | 'done'>('live');
@@ -117,6 +129,15 @@ export default function TerminalPane({
   useEffect(() => {
     requestAnimationFrame(() => pushSizeRef.current?.());
   }, [state.view]);
+
+  // Fit-on-reveal (scratch-terminal edge G): a right-pane tab switch un-hides
+  // this pane without resizing its container (RO silent) or touching state.view,
+  // so xterm keeps its stale geometry — MIN_FIT_COLS froze it while display:none.
+  // Reassert size on the next frame once the reveal has laid out. No-op for
+  // always-visible agent panes (visible defaults true and never flips).
+  useEffect(() => {
+    if (visible) requestAnimationFrame(() => pushSizeRef.current?.());
+  }, [visible]);
 
   useEffect(() => {
     let disposed = false;
@@ -541,6 +562,10 @@ export default function TerminalPane({
   // least once and its roster resolved (page.tsx lifts just the count, not
   // the fetch).
   const canShowTeam = variant !== 'grid' && !!isTeamLead && !!onOpenTeam;
+  // Scratch-terminal chip: a generic `>_` glyph (rule 5 — no logo assets, but a
+  // shell isn't provider-specific anyway). Only in the single-pane statusbar of
+  // a session-bearing terminal (page.tsx gates onOpenTerminal on activeTab.ptyId).
+  const canShowTerminal = variant !== 'grid' && !!onOpenTerminal;
 
   async function handleFinish(mode: WorkspaceFinishMode, force: boolean) {
     if (!wsRecord || finishBusy) return;
@@ -714,6 +739,16 @@ export default function TerminalPane({
                 <span className={styles.diffChip}>{stats}</span>
               );
             })()}
+          </>
+        ) : null}
+        {/* Scratch terminal chip: opens a plain shell in this session's cwd in
+            the right-pane tab strip (page.tsx owns spawn + panel). Generic glyph. */}
+        {canShowTerminal ? (
+          <>
+            <span className={styles.divider} aria-hidden="true" />
+            <Button variant="chip" title="Open scratch terminal" onClick={() => onOpenTerminal?.()}>
+              {'>_'}
+            </Button>
           </>
         ) : null}
         {/* PRs created in this session: 1 = direct-open chip, >1 = dropdown. */}
