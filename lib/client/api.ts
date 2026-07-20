@@ -149,10 +149,36 @@ export function startSession(opts: {
 
 // projectId = the OWNING project's id (a worktree PTY folds to its parent project) —
 // prefer it over matching project.path === cwd, which misses folded worktrees.
-export type LiveSession = { ptyId: string; cwd: string; tmuxName: string | null; projectId?: string; sessionId?: string; branch?: string | null };
+// kind/ownerPtyId/ownerTmuxName are additive (scratch-terminal): a server predating
+// scratch omits `kind`, and the client treats a missing kind as 'agent'. A scratch
+// entry carries NO projectId/sessionId (the server skips session-enrichment for it).
+export type LiveSession = {
+  ptyId: string;
+  cwd: string;
+  tmuxName: string | null;
+  projectId?: string;
+  sessionId?: string;
+  branch?: string | null;
+  kind?: 'agent' | 'scratch';
+  ownerPtyId?: string;
+  ownerTmuxName?: string | null;
+};
 
 export function getLive(): Promise<{ live: LiveSession[] }> {
   return req('/api/sessions/live');
+}
+
+// ── Scratch terminal (a plain shell bound to a session's cwd) ────────────────
+// Spawn is idempotent per owner: a live scratch for this owner is re-adopted
+// (returns its ptyId + existing:true) rather than spawning a second shell.
+export function startScratchTerminal(ownerPtyId: string): Promise<{ ptyId: string; existing: boolean }> {
+  return req('/api/term/scratch', { method: 'POST', body: JSON.stringify({ ownerPtyId }) });
+}
+
+// The ONLY client-facing PTY kill route — scratch-guarded server-side (404 on a
+// non-scratch ptyId), so it can never terminate an agent session.
+export function killScratchTerminal(ptyId: string): Promise<void> {
+  return req(`/api/term/scratch/${encodeURIComponent(ptyId)}`, { method: 'DELETE' });
 }
 
 // ── Agent bridge (Task 16.5 handoff/review, 16.8 plan-off) ──────────────────

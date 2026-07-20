@@ -28,6 +28,8 @@ import {
 import { startWatching, type WatchEvent, type Watcher } from './lib/store/watch';
 import { removeByPtyId } from './lib/live-ledger';
 import { bindSessionFromWatch } from './lib/ledger-binding';
+import { scratchPtyIds as defaultScratchPtyIds } from './lib/scratch-store';
+import { handleScratchOnExit } from './lib/scratch';
 import { getProviders } from './lib/providers/types';
 import { claudeStoreRoot, claudeSubagentWatchConfig } from './lib/providers/claude';
 import chokidar from 'chokidar';
@@ -144,7 +146,17 @@ export interface EventsHub {
   close(): Promise<void>;
 }
 
-export async function createEventsHub(): Promise<EventsHub> {
+// Scratch-terminal wiring, injectable for hermetic tests (defaults wire the real
+// scratch-store + kill-on-owner-exit). server/index.ts calls createEventsHub()
+// with no args, so the defaults are the production path.
+export interface EventsHubDeps {
+  scratchPtyIds?: () => Promise<Set<string>>;
+  onOwnerExit?: (ptyId: string) => Promise<void>;
+}
+
+export async function createEventsHub(deps: EventsHubDeps = {}): Promise<EventsHub> {
+  const scratchIds = deps.scratchPtyIds ?? defaultScratchPtyIds;
+  const onOwnerExit = deps.onOwnerExit ?? handleScratchOnExit;
   const subscribers = new Set<WebSocket>();
   const statusByPty = new Map<string, NIStatus>();
   const niStateByPty = new Map<string, NIState>();
@@ -293,6 +305,13 @@ export async function createEventsHub(): Promise<EventsHub> {
     }
     conn.onEvent((e) => {
       if (e.event === 'data' && typeof e.data === 'string') {
+        // The daemon fans EVERY PTY's data out to every subscribed socket (one
+        // shared monitor socket, not per-PTY), so "the monitor filters by attach"
+        // must be enforced HERE, not just by not-attaching: only classify PTYs we
+        // deliberately attached. Scratch shells are never attached (attachPty
+        // skip-set), so their output never becomes a status/dot/toast. Exits are
+        // still handled below for ALL PTYs (ledger + scratch cleanup need them).
+        if (!attached.has(e.ptyId)) return;
         const st = stateFor(e.ptyId);
         // classifyExplain() delegates the actual status decision to classify()
         // (byte-identical mutation/return), so wrapping it here to capture
@@ -337,6 +356,12 @@ export async function createEventsHub(): Promise<EventsHub> {
         explainByPty.delete(e.ptyId);
         broadcast({ event: 'status', ptyId: e.ptyId, status: 'idle' });
         settleWaiters(e.ptyId, 'idle');
+        // Scratch bookkeeping: if THIS pty is a scratch, prune its record; if it
+        // OWNS scratch(es), kill them (its dev-server shell dies with the agent).
+        // Fire-and-forget, never blocks the event loop, never throws. A genuine
+        // PTY exit only — a UI tab dismissal never exits, so decision 2 (keep the
+        // shell on dismissal) is preserved.
+        void onOwnerExit(e.ptyId);
       }
     });
     conn.onClose(() => {
@@ -350,8 +375,16 @@ export async function createEventsHub(): Promise<EventsHub> {
     return conn;
   }
 
-  async function attachPty(ptyId: string) {
+  async function attachPty(ptyId: string, skip?: Set<string>) {
     if (attached.has(ptyId)) return;
+    // Never attach (or classify) a scratch shell. reattachAll reads the skip-set
+    // ONCE and threads it here so a burst reattach does one file read, not N; the
+    // trackPty (spawn) path passes no skip and reads its own — agents only there,
+    // but the guard keeps it airtight if anything ever tracks a scratch id. This
+    // MUST precede attached.add: adding first would leave a scratch marked attached
+    // (the data-path gate keys on `attached`), defeating the exclusion.
+    const skipSet = skip ?? (await scratchIds().catch(() => new Set<string>()));
+    if (skipSet.has(ptyId)) return;
     // Add BEFORE the awaits: dedupes concurrent attaches for the same PTY, and —
     // critically — lets the exit handler's `attached.delete` signal that the PTY
     // died mid-attach. The old order re-added after the await, resurrecting a
@@ -387,7 +420,11 @@ export async function createEventsHub(): Promise<EventsHub> {
     try {
       const m = await ensureMonitor();
       const { ptys } = await m.list();
-      for (const p of ptys) if (p.alive) await attachPty(p.ptyId);
+      // One skip-set read for the whole burst; scratch shells are never attached
+      // (so never classified) on the restart-reattach path — the case the spec
+      // targets (a browser reconnecting after a server update).
+      const skip = await scratchIds().catch(() => new Set<string>());
+      for (const p of ptys) if (p.alive && !skip.has(p.ptyId)) await attachPty(p.ptyId, skip);
     } catch {
       /* daemon not up yet — trackPty/tick will retry */
     }
