@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AppStateProvider, useAppState, activePair, activeTeam, shouldMarkUnviewed, shouldShowRestoreBanner, findTabToBindSession, type Tab } from '../lib/client/store';
 import { getProjects, getConfig, getEnv, getLive, notify, resolveApproval, putConfig, getTeamMembers, type SearchHit, type LiveSession } from '../lib/client/api';
 import { openEventsSocket } from '../lib/client/ws';
@@ -22,6 +22,7 @@ import ChangesPanel from '../components/ChangesPanel/ChangesPanel';
 import GridView from '../components/GridView/GridView';
 import AgentsView from '../components/AgentsView/AgentsView';
 import TeamPanel from '../components/TeamPanel/TeamPanel';
+import RightPane from '../components/RightPane/RightPane';
 import EmptyComposer from '../components/EmptyComposer/EmptyComposer';
 import type { ProviderId } from '../lib/client/types';
 import { DetectedProvidersProvider, providersFromEnv } from '../lib/client/providers';
@@ -30,7 +31,24 @@ import Button from '../components/ui/Button/Button';
 import { clampSize, readPersistedSize, clampSplit } from '../lib/client/drag-resize';
 import { persistDebounced } from '../lib/client/persist';
 import { useDragResize } from '../lib/client/use-drag-resize';
+import {
+  openPanel,
+  togglePanel,
+  closePanel,
+  pruneTab,
+  resolveActive,
+  type PanelId,
+  type RightPaneRecord,
+} from '../lib/client/right-pane';
 import styles from './page.module.scss';
+
+// Right-pane tab labels (Stage 2). Insertion-ordered `open` drives strip order.
+const PANEL_LABELS: Record<PanelId, string> = {
+  agents: 'Subagents',
+  team: 'Team',
+  changes: 'Changes',
+  terminal: 'Terminal',
+};
 
 // Rail drag-resize bounds. MIN matches Rail.module.scss's fixed 288px (the
 // pre-resize width) so the rail never gets smaller than it always was.
@@ -86,21 +104,13 @@ function AppShell() {
   const [waitingToasts, setWaitingToasts] = useState<{ ptyId: string; repo: string }[]>([]);
   const [custOpen, setCustOpen] = useState<{ projectId?: string; projectName?: string } | null>(null);
   const [approval, setApproval] = useState<Extract<EventMessage, { event: 'approval' }> | null>(null);
-  // Subagent viewer: which term tab has its viewer open (synthetic right-pane, NOT a Tab —
-  // keeps tab semantics/rollup untouched, mirrors how `pair` is derived locally). Plus a
-  // per-session ping counter bumped on each {event:'subagents'} so the chip + open viewer
-  // refetch live.
-  const [openViewerFor, setOpenViewerFor] = useState<string | null>(null);
+  // Right-pane panel model (scratch-terminal Stage 2): a per-tab {open, active}
+  // record (lib/client/right-pane.ts) replaces the three exclusive open*For
+  // flags. Agents/team/changes now coexist as a tab strip instead of a single
+  // mutually-exclusive slot; a per-session ping counter still drives the
+  // subagent chip + open viewer's live refetch.
+  const [rightPane, setRightPane] = useState<RightPaneRecord>({});
   const [subagentPings, setSubagentPings] = useState<Record<string, number>>({});
-  // Teams v1.1: TeamPanel is opt-in via a statusbar chip (tmux teammateMode already
-  // tiles teammates inside the lead terminal — the auto-split was redundant screen
-  // space). openTeamFor mirrors openViewerFor exactly (keyed by tab id, default
-  // closed); the two are mutually exclusive — opening one closes the other, same
-  // precedence as the pair-split winning over both (see `team` below).
-  const [openTeamFor, setOpenTeamFor] = useState<string | null>(null);
-  // Changes panel (branch diff file tree): third occupant of the same exclusive
-  // right-pane slot, keyed by tab id like the two above.
-  const [openChangesFor, setOpenChangesFor] = useState<string | null>(null);
   // Chip member count, keyed by leadSessionId (mirrors teamPings) — lifted from
   // TeamPanel's own roster fetch the FIRST time it resolves, so it only populates
   // once the panel has been opened at least once (no new fetch added).
@@ -457,6 +467,20 @@ function AppShell() {
     };
   }, [dispatch]);
 
+  // closeTab is dispatched from Tabs.tsx and TerminalPane.handleFinish (not
+  // routed through page.tsx), so prune the right-pane record via effect: any tab
+  // that's no longer live loses its pane state, so reopening the same session
+  // starts from a fresh record (edge D). (Stage 5 extends this to drop the
+  // scratch mapping too — deliberately NOT killing the shell here, decision 2.)
+  useEffect(() => {
+    setRightPane((r) => {
+      const liveIds = new Set(state.tabs.map((t) => t.id));
+      let next = r;
+      for (const id of Object.keys(r)) if (!liveIds.has(id)) next = pruneTab(next, id);
+      return next;
+    });
+  }, [state.tabs]);
+
   // Activate the OLDEST waiting session and pop it — the toast stays up with
   // the rest so repeated clicks chain through the queue. A vanished tab
   // (closed while waiting) just pops and the next click moves on.
@@ -511,23 +535,17 @@ function AppShell() {
     setApproval(null);
   }
 
-  // Chip handlers: only one right-pane panel open at a time, so opening either
-  // closes the other (exclusivity requirement — mirrors the pair-split winning
-  // over the term/viewer split above it).
-  function toggleTeamPanel(tabId: string) {
-    setOpenViewerFor(null);
-    setOpenChangesFor(null);
-    setOpenTeamFor((cur) => (cur === tabId ? null : tabId));
+  // All four statusbar chips route here — each TOGGLES its panel in the tab
+  // strip (decision 6: the subagent viewer was open-only before; clicking the
+  // agents chip while it's active now closes it, the ONE sanctioned behavior
+  // change). Panels coexist; toggling the active one collapses it.
+  function handleTogglePanel(tabId: string, id: PanelId) {
+    setRightPane((r) => togglePanel(r, tabId, id));
   }
-  function openSubagentViewer(tabId: string) {
-    setOpenTeamFor(null);
-    setOpenChangesFor(null);
-    setOpenViewerFor(tabId);
-  }
-  function toggleChangesPanel(tabId: string) {
-    setOpenViewerFor(null);
-    setOpenTeamFor(null);
-    setOpenChangesFor((cur) => (cur === tabId ? null : tabId));
+  // A panel's own close button (× on the strip tab, or a panel header's close):
+  // remove it from the pane, active falls back to the last remaining panel.
+  function handleClosePanel(tabId: string, id: PanelId) {
+    setRightPane((r) => closePanel(r, tabId, id));
   }
 
   // Plain function (NOT a nested component) so key={tab.id} reconciliation is
@@ -566,12 +584,12 @@ function AppShell() {
           provider={tab.provider}
           branch={tab.branch}
           ctx={tab.ctx}
-          onOpenSubagents={canViewSubagents ? () => openSubagentViewer(tab.id) : undefined}
+          onOpenSubagents={canViewSubagents ? () => handleTogglePanel(tab.id, 'agents') : undefined}
           subagentPing={tab.sessionId ? subagentPings[tab.sessionId] : undefined}
           isTeamLead={tab.isTeamLead}
           teamMemberCount={tab.sessionId ? teamMemberCounts[tab.sessionId] : undefined}
-          onOpenTeam={tab.isTeamLead ? () => toggleTeamPanel(tab.id) : undefined}
-          onOpenChanges={tab.projectId ? () => toggleChangesPanel(tab.id) : undefined}
+          onOpenTeam={tab.isTeamLead ? () => handleTogglePanel(tab.id, 'team') : undefined}
+          onOpenChanges={tab.projectId ? () => handleTogglePanel(tab.id, 'changes') : undefined}
         />
       );
     }
@@ -678,28 +696,74 @@ function AppShell() {
             </div>
           ) : activeTab && activeTab.kind === 'term' ? (
             // Term tabs ALWAYS render inside the split host so the terminal's tree
-            // position (and its live xterm/PTY) never remounts when the subagent viewer
-            // or team panel opens/closes — only the conditional right pane mounts/
-            // unmounts. The accent divider appears only WITH a right pane (viewerSplit
-            // modifier). Teams v1.1: the team split is opt-in (statusbar chip, default
-            // closed — tmux teammateMode already tiles teammates inside the terminal),
-            // so it shares this same right-pane slot with the subagent viewer instead
-            // of forcing its own always-on split; `team` (pair-gated above) supplies
-            // the leadSessionId once openTeamFor confirms the user actually opened it.
+            // position (and its live xterm/PTY) never remounts when a right-pane
+            // panel opens/closes — only the conditional RightPane mounts/unmounts.
+            // The accent divider appears only WITH a right pane (splitSolo drops
+            // it otherwise). Panels (agents/team/changes; terminal in Stage 5) now
+            // coexist as a tab strip: the per-tab {open, active} record decides
+            // what shows, gate-resolved every render so a panel whose gate fails
+            // (team dissolves, session lost) falls through instead of blanking.
             (() => {
-              const teamOpen = !!team && openTeamFor === activeTab.id;
-              const viewerOpen =
-                !teamOpen &&
-                openViewerFor === activeTab.id &&
-                !!activeTab.sessionId &&
-                !!activeTab.projectId;
-              const changesOpen =
-                !teamOpen && !viewerOpen && openChangesFor === activeTab.id && !!activeTab.projectId;
-              const rightOpen = teamOpen || viewerOpen || changesOpen;
+              // Gates mirror the previous per-panel open conditions exactly. `team`
+              // is pair-gated above (null when a bridge pair is active), so this
+              // branch only runs with no pair — same precedence as before.
+              const gates: Record<PanelId, boolean> = {
+                agents: !!activeTab.sessionId && !!activeTab.projectId && activeTab.provider !== 'codex',
+                team: !!team,
+                changes: !!activeTab.projectId,
+                terminal: false, // Stage 5 flips this
+              };
+              const pane = rightPane[activeTab.id];
+              const shown = resolveActive(pane, gates);
+              const rightOpen = shown !== null;
               // Percentage flex-basis (not px) since container width is unknown at
               // render; min-width enforces TERM_MIN/VIEWER_MIN without measuring.
               // clampSize guards against a stored extreme hiding a pane on reload.
               const leftPct = clampSize(viewerRatio, 0.15, 0.85) * 100;
+              // Strip tabs = open panels whose gate currently passes, insertion
+              // order. A panel in `open` whose gate fails gets no tab while failed.
+              const stripTabs = (pane?.open ?? [])
+                .filter((id) => gates[id])
+                .map((id) => ({ id, label: PANEL_LABELS[id], closable: id === 'terminal' }));
+              // Node per gated-open panel; only the active one actually mounts
+              // (RightPane renders non-keepMounted panels only when active), so
+              // ChangesPanel's poll / SubagentViewer's fetch keep today's semantics.
+              const panelNode = (id: PanelId): ReactNode => {
+                switch (id) {
+                  case 'agents':
+                    return (
+                      <SubagentViewer
+                        projectId={activeTab.projectId!}
+                        sessionId={activeTab.sessionId!}
+                        refreshKey={subagentPings[activeTab.sessionId!]}
+                        onClose={() => handleClosePanel(activeTab.id, 'agents')}
+                      />
+                    );
+                  case 'team':
+                    return (
+                      <TeamPanel
+                        leadSessionId={team!.leadSessionId}
+                        projectId={team!.tab.projectId ?? ''}
+                        refreshKey={teamPings[team!.leadSessionId]}
+                        touchPings={touchPings}
+                        onMembersResolved={(count) =>
+                          setTeamMemberCounts((prev) => ({ ...prev, [team!.leadSessionId]: count }))
+                        }
+                      />
+                    );
+                  case 'changes':
+                    return (
+                      <ChangesPanel
+                        projectId={activeTab.projectId!}
+                        branch={activeTab.branch}
+                        onClose={() => handleClosePanel(activeTab.id, 'changes')}
+                      />
+                    );
+                  case 'terminal':
+                    return null; // Stage 5
+                }
+              };
+              const panels = stripTabs.map((t) => ({ id: t.id, node: panelNode(t.id) }));
               return (
                 <div
                   ref={viewerSplitRef}
@@ -711,71 +775,27 @@ function AppShell() {
                   >
                     {renderPane(activeTab)}
                   </div>
-                  {teamOpen ? (
+                  {rightOpen ? (
                     <>
+                      {/* ONE divider, hoisted out of the old three duplicated branches. */}
                       <div
                         className={styles.splitHandle}
                         onPointerDown={viewerDrag.onPointerDown}
                         onDoubleClick={() => setViewerRatio(DEFAULT_RATIO)}
                         role="separator"
                         aria-orientation="vertical"
-                        aria-label="Resize terminal / team split"
+                        aria-label="Resize terminal / panel split"
                       />
                       <div
                         className={`${styles.splitSide} ${styles.splitSideRight}`}
                         style={{ flex: '1 1 0', minWidth: `${VIEWER_MIN}px` }}
                       >
-                        <TeamPanel
-                          leadSessionId={team!.leadSessionId}
-                          projectId={team!.tab.projectId ?? ''}
-                          refreshKey={teamPings[team!.leadSessionId]}
-                          touchPings={touchPings}
-                          onMembersResolved={(count) =>
-                            setTeamMemberCounts((prev) => ({ ...prev, [team!.leadSessionId]: count }))
-                          }
-                        />
-                      </div>
-                    </>
-                  ) : viewerOpen ? (
-                    <>
-                      <div
-                        className={styles.splitHandle}
-                        onPointerDown={viewerDrag.onPointerDown}
-                        onDoubleClick={() => setViewerRatio(DEFAULT_RATIO)}
-                        role="separator"
-                        aria-orientation="vertical"
-                        aria-label="Resize terminal / subagent split"
-                      />
-                      <div
-                        className={`${styles.splitSide} ${styles.splitSideRight}`}
-                        style={{ flex: '1 1 0', minWidth: `${VIEWER_MIN}px` }}
-                      >
-                        <SubagentViewer
-                          projectId={activeTab.projectId!}
-                          sessionId={activeTab.sessionId!}
-                          refreshKey={subagentPings[activeTab.sessionId!]}
-                          onClose={() => setOpenViewerFor(null)}
-                        />
-                      </div>
-                    </>
-                  ) : changesOpen ? (
-                    <>
-                      <div
-                        className={styles.splitHandle}
-                        onPointerDown={viewerDrag.onPointerDown}
-                        onDoubleClick={() => setViewerRatio(DEFAULT_RATIO)}
-                        role="separator"
-                        aria-orientation="vertical"
-                        aria-label="Resize terminal / changes split"
-                      />
-                      <div
-                        className={`${styles.splitSide} ${styles.splitSideRight}`}
-                        style={{ flex: '1 1 0', minWidth: `${VIEWER_MIN}px` }}
-                      >
-                        <ChangesPanel
-                          projectId={activeTab.projectId!}
-                          branch={activeTab.branch}
-                          onClose={() => setOpenChangesFor(null)}
+                        <RightPane
+                          tabs={stripTabs}
+                          active={shown}
+                          onSelect={(id) => setRightPane((r) => openPanel(r, activeTab.id, id))}
+                          onClose={(id) => handleClosePanel(activeTab.id, id)}
+                          panels={panels}
                         />
                       </div>
                     </>

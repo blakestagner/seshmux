@@ -1,0 +1,55 @@
+@use '../../../styles/typography' as *;
+
+// TabStrip primitive — layout/spacing/state only (hard rule 1); text via the
+// terminal-frame tab mixins (t-tab / t-tab-active). Shorter than the top Tabs
+// strip (34px vs 46px) since it sits INSIDE the right pane, not the app frame.
+
+.strip {
+  height: 34px;
+  flex: 0 0 34px;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.strip::-webkit-scrollbar {
+  height: 0;
+}
+
+.tab {
+  @include t-tab;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  max-width: 200px;
+  white-space: nowrap;
+  color: var(--text-dim);
+  background: transparent;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+.tab:hover {
+  background: var(--bg-hover);
+}
+
+.active {
+  @include t-tab-active;
+  background: var(--bg);
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.closeWrap {
+  display: inline-flex;
+}
