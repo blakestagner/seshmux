@@ -223,18 +223,16 @@ function truncateDiff(diff: string): { diff: string; truncated: boolean } {
   return { diff: lines.slice(0, MAX_DIFF_LINES).join('\n'), truncated: true };
 }
 
-const MAX_FILE_BYTES = 1_000_000;
+export const MAX_FILE_BYTES = 1_000_000;
 
 /**
- * Working-tree file content for the panel's Full view. Containment fails
- * CLOSED (hard-rule-7 spirit): relative path only, resolved result must stay
- * under realpath(dir) — symlinked files/dirs that escape are rejected, git
- * cannot be asked to answer for them.
+ * repo-relative path → absolute, or null if it escapes. Fails CLOSED
+ * (hard-rule-7 spirit): relative path only, resolved result must stay under
+ * realpath(dir) — symlinked files/dirs that escape are rejected, git cannot
+ * be asked to answer for them. Shared with git-search's replace path, where
+ * "fails closed" means a refused write rather than a refused read.
  */
-export async function readWorkingFile(
-  dir: string,
-  relPath: string,
-): Promise<{ content: string; truncated: boolean } | { binary: true } | null> {
+export async function resolveContained(dir: string, relPath: string): Promise<string | null> {
   if (!relPath || path.isAbsolute(relPath) || relPath.split(/[\\/]/).includes('..')) return null;
   let real: string;
   let rootReal: string;
@@ -245,6 +243,16 @@ export async function readWorkingFile(
     return null;
   }
   if (real !== rootReal && !real.startsWith(rootReal + path.sep)) return null;
+  return real;
+}
+
+/** Working-tree file content for the panel's Full view. */
+export async function readWorkingFile(
+  dir: string,
+  relPath: string,
+): Promise<{ content: string; truncated: boolean } | { binary: true } | null> {
+  const real = await resolveContained(dir, relPath);
+  if (!real) return null;
   const st = await stat(real).catch(() => null);
   if (!st?.isFile() || st.size > MAX_FILE_BYTES * 4) return null; // absurd size: don't even read
   const buf = await readFile(real).catch(() => null);

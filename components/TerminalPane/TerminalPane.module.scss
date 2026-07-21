@@ -126,6 +126,17 @@
   gap: 6px;
 }
 
+// File glyph prefix — dimmer than the counts, it's an affordance not data.
+// Sized to the statusbar text and flex-centered: left to inherit, ▤ came out
+// taller than the digits beside it and sat high on the line.
+.diffChipGlyph {
+  @include t-glyph-statusbar;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-faint);
+  margin-right: -2px;
+}
+
 .diffAdded {
   color: var(--live);
 }

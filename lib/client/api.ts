@@ -305,7 +305,17 @@ export function applyUpdate(): Promise<{ ok: boolean; log: string; previous: str
 // One-click isolated git worktree + branch per session. Create reuses the
 // SAME startSession result shape (ptyId/tabMeta) — server-side it flows
 // through the shared startSession(), never a second spawn path.
-export type WorkspaceRecord = { dir: string; branch: string; project: string; createdAt: number; filesChanged: number };
+export type WorkspaceRecord = {
+  dir: string;
+  branch: string;
+  project: string;
+  createdAt: number;
+  filesChanged: number;
+  // Worktree git knows about but seshmux did not create (`git worktree add`
+  // by hand or by an agent). Shown, but the finish actions refuse it — the
+  // server has no record and won't delete a directory it doesn't own.
+  external?: boolean;
+};
 
 export function createWorkspace(
   projectId: string,
@@ -315,8 +325,47 @@ export function createWorkspace(
   return req('/api/workspaces', { method: 'POST', body: JSON.stringify({ projectId, provider, mode }) });
 }
 
+// Always hits the server. Callers gating a DESTRUCTIVE action must use this
+// one: the finish prompt's typed-confirm keys off filesChanged, and a stale
+// (too-low) count would let a dirty discard through unconfirmed.
 export function listWorkspaces(projectId: string): Promise<WorkspaceRecord[]> {
   return req(`/api/workspaces?project=${encodeURIComponent(projectId)}`);
+}
+
+// Shared-result variant for the POLLING callers (every terminal pane on mount
+// and window focus, plus the rail's expanded projects). Those all ask the same
+// question at the same moment, and each answer costs a `git worktree list` plus
+// a `git status` per owned worktree — in a grid of panes that fan-out is N
+// identical requests per focus event. One in-flight promise serves them all.
+// Deliberately NOT used by refreshWsRecord (see above).
+const wsInFlight = new Map<string, { at: number; promise: Promise<WorkspaceRecord[]> }>();
+const WS_SHARE_MS = 2000;
+
+export function listWorkspacesShared(projectId: string): Promise<WorkspaceRecord[]> {
+  const hit = wsInFlight.get(projectId);
+  if (hit && Date.now() - hit.at < WS_SHARE_MS) return hit.promise;
+  const promise = listWorkspaces(projectId);
+  wsInFlight.set(projectId, { at: Date.now(), promise });
+  // A rejection must not be cached — the next poll should retry, not replay
+  // the same failure for the rest of the window.
+  void promise.catch(() => {
+    if (wsInFlight.get(projectId)?.promise === promise) wsInFlight.delete(projectId);
+  });
+  return promise;
+}
+
+// Spawn a session in a worktree that already exists (rail worktree row). The
+// server accepts `dir` only if git reports it as a worktree of this project.
+export function openWorkspaceSession(
+  projectId: string,
+  dir: string,
+  provider?: ProviderId,
+  mode?: SessionMode,
+): Promise<{ ptyId: string; tabMeta: TabMeta; workspace: { dir: string; branch: string; project: string } }> {
+  return req('/api/workspaces/open', {
+    method: 'POST',
+    body: JSON.stringify({ projectId, dir, provider, mode }),
+  });
 }
 
 export type WorkspaceFinishMode = 'merge' | 'keep' | 'discard';
@@ -562,4 +611,47 @@ export function getGitFile(
   const params = new URLSearchParams({ project: projectId, path });
   if (branch) params.set('branch', branch);
   return req(`/api/git/file?${params}`);
+}
+
+// ── repo search / replace (changes panel search mode) ───────────────────────
+export type SearchFlags = {
+  caseSensitive: boolean;
+  wholeWord: boolean;
+  regex: boolean;
+};
+export type SearchQuery = SearchFlags & { query: string; include: string; exclude: string; includeIgnored: boolean };
+export type SearchMatch = { line: number; text: string };
+export type SearchFile = { path: string; matches: SearchMatch[]; truncated?: boolean };
+export type SearchResult = { files: SearchFile[]; total: number; truncated: boolean; error?: string };
+export type ReplaceEdit = { path: string; line: number; expected: string; matchIndex?: number };
+export type ReplaceResult = { changed: string[]; skipped: { path: string; line: number; reason: string }[] };
+
+export function searchFiles(
+  projectId: string,
+  branch: string | null | undefined,
+  q: SearchQuery,
+  signal?: AbortSignal,
+): Promise<SearchResult> {
+  const params = new URLSearchParams({ project: projectId, q: q.query });
+  if (branch) params.set('branch', branch);
+  if (q.caseSensitive) params.set('case', '1');
+  if (q.wholeWord) params.set('word', '1');
+  if (q.regex) params.set('regex', '1');
+  if (q.include) params.set('include', q.include);
+  if (q.exclude) params.set('exclude', q.exclude);
+  if (q.includeIgnored) params.set('ignored', '1');
+  return req(`/api/git/search?${params}`, { signal });
+}
+
+export function replaceInFiles(
+  projectId: string,
+  branch: string | null | undefined,
+  q: SearchQuery,
+  replacement: string,
+  edits: ReplaceEdit[],
+): Promise<ReplaceResult> {
+  return req('/api/git/replace', {
+    method: 'POST',
+    body: JSON.stringify({ project: projectId, branch, ...q, replacement, edits }),
+  });
 }

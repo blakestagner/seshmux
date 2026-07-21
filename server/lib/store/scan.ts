@@ -4,8 +4,8 @@
 // knows how to read a directory of dash-encoded project dirs each holding `<id>.jsonl`.
 
 import { open, readdir, realpath, stat } from 'node:fs/promises';
-import { join } from 'node:path';
-import { listAll as listAllWorkspaces } from '../workspaces';
+import { dirname, join, sep } from 'node:path';
+import { git, listAll as listAllWorkspaces } from '../workspaces';
 import { Lru } from './lru';
 
 // A session head lives in the first handful of lines; cap the bytes we read so a
@@ -279,6 +279,14 @@ async function canonCwd(cwd: string): Promise<string> {
   }
 }
 
+// Inverse of workspaces.ts's gitPath(): git ALWAYS reports forward slashes,
+// even on native Windows, so any path taken from git output must be converted
+// before it is compared against (or used as a map key alongside) a node-native
+// path. Identity on posix, where sep is already '/'.
+function nativePath(gitFormPath: string): string {
+  return process.platform === 'win32' ? gitFormPath.split('/').join(sep) : gitFormPath;
+}
+
 // worktree dir -> parent repo absolute path (workspaces.json is the lookup —
 // Spec 1's "Scanning seam"). Never throws; an unreadable/missing
 // workspaces.json just means no grouping happens.
@@ -323,7 +331,86 @@ const CLAUDE_WORKTREE_RE =
 // folded project id to the PARENT repo path, so project-scope customization/marketplace
 // writes intentionally land in the parent repo's .claude — not in a transient worktree.
 export function derivedWorkspaceParent(cwd: string): string | null {
-  return CLAUDE_WORKTREE_RE.exec(cwd)?.[1] ?? null;
+  return CLAUDE_WORKTREE_RE.exec(cwd)?.[1] ?? worktreeParentCached(cwd);
+}
+
+// ── git-truth worktree fold ────────────────────────────────────────────────
+// The two mechanisms above only recognize worktrees by WHERE THEY LIVE:
+// workspaces.json (dirs seshmux created) and the `.claude/worktrees/` pattern.
+// A worktree made with plain `git worktree add ../anywhere` matches neither, so
+// its sessions surfaced as their own top-level project instead of folding into
+// the repo they belong to. Only git can answer for those, so ask git.
+//
+// `rev-parse --git-common-dir --show-toplevel` answers both halves in one call:
+// common-dir is always the MAIN repo's .git (even from inside a linked
+// worktree), so dirname(common-dir) is the parent repo, and it differs from
+// show-toplevel exactly when the cwd is in a linked worktree.
+//
+// Cached because this runs per project dirent per scan and a scan is frequent.
+// Negative results are cached too — most cwds are ordinary repos and re-probing
+// them every scan is the cost that actually matters.
+//
+// ponytail: derivedWorkspaceParent() stays SYNC (restore.ts, codex.ts and
+// ledger-binding.ts all call it in sync paths), so it reads this cache rather
+// than probing. It therefore folds a git-discovered worktree only once a scan
+// has warmed the entry — which computeRootScan does for every project cwd, so
+// in practice the first scan warms it and those callers agree from then on.
+// Making it async would ripple through all three call sites for a fold that
+// only affects grouping display; revisit if a sync caller ever needs it cold.
+const WORKTREE_PARENT_TTL_MS = 60_000;
+const worktreeParents = new Map<string, { parent: string | null; at: number }>();
+const worktreeProbes = new Map<string, Promise<string | null>>();
+
+function worktreeParentCached(cwd: string): string | null {
+  const hit = worktreeParents.get(cwd);
+  return hit && Date.now() - hit.at < WORKTREE_PARENT_TTL_MS ? hit.parent : null;
+}
+
+/**
+ * Parent repo of `cwd` when it sits inside a linked git worktree, else null.
+ * Fails open: a non-repo, a git that can't answer, or a git too old for
+ * --path-format all return null, which just means "no fold" — the same result
+ * as before this existed.
+ */
+export async function worktreeParent(cwd: string): Promise<string | null> {
+  const hit = worktreeParents.get(cwd);
+  if (hit && Date.now() - hit.at < WORKTREE_PARENT_TTL_MS) return hit.parent;
+  // Dedupe concurrent probes: computeRootScan maps over dirents in parallel and
+  // several can share a cwd, which would otherwise be N identical subprocesses.
+  const inFlight = worktreeProbes.get(cwd);
+  if (inFlight) return inFlight;
+
+  const probe = (async () => {
+    let parent: string | null = null;
+    try {
+      const out = await git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel']);
+      const [commonDir, toplevel] = out.split('\n').map((l) => l.trim());
+      if (commonDir && toplevel) {
+        const mainRepo = dirname(commonDir); // <main>/.git -> <main>
+        // Comparing the two raw is safe — both come from the same git output,
+        // so they share a separator form. Equal = this IS the main worktree
+        // (or a subdir of it): nothing to fold.
+        //
+        // The RETURNED value is not safe raw. git emits forward slashes even
+        // on native Windows ("C:/Users/…") while every other cwd in this file
+        // is native form via canonCwd(), and this value becomes a byPath map
+        // KEY in computeRootScan — mismatched forms hash apart and the fold
+        // silently stops happening. Exactly the bug workspaces.ts's gitPath()
+        // exists for ("the same silent prune hit EVERY workspace on native
+        // Windows, on every boot"). Convert to native, then canonCwd so 8.3
+        // short names match the recorded-cwd side too.
+        if (mainRepo !== toplevel) parent = await canonCwd(nativePath(mainRepo));
+      }
+    } catch {
+      /* not a repo / git unavailable — no fold */
+    }
+    if (worktreeParents.size > 500) worktreeParents.clear(); // ponytail: crude bound
+    worktreeParents.set(cwd, { parent, at: Date.now() });
+    worktreeProbes.delete(cwd);
+    return parent;
+  })();
+  worktreeProbes.set(cwd, probe);
+  return probe;
 }
 
 // Encoded-id sibling of derivedWorkspaceParent, for callers that only have a store
@@ -479,10 +566,14 @@ async function computeRootScan(root: string, provider: ProviderId): Promise<Root
         } catch {
           missing = true;
         }
-        // parentPath set = this dirent's cwd is a known workspace worktree dir —
-        // folded into the parent project below, never listed on its own (no rail
-        // sprout of one project group per workspace).
-        const parentPath = parentOf.get(path) ?? derivedWorkspaceParent(path) ?? null;
+        // parentPath set = this dirent's cwd is a worktree — folded into the
+        // parent project below, never listed on its own (no rail sprout of one
+        // project group per workspace). Three sources, cheapest first: the
+        // seshmux ledger, the .claude/worktrees path pattern, and finally git
+        // itself for worktrees created anywhere else. The git probe is cached
+        // and only reached when the first two miss.
+        const parentPath =
+          parentOf.get(path) ?? CLAUDE_WORKTREE_RE.exec(path)?.[1] ?? (await worktreeParent(path)) ?? null;
         return {
           id: d.name,
           provider,

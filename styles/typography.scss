@@ -188,3 +188,32 @@
 @mixin t-glyph-lg {
   font-size: 24px;
 }
+
+// Panel-header glyph buttons (changes panel ⌕ / ✕). Sized here rather than
+// inherited: the panel body is 10.5px mono, and glyphs left to inherit came
+// out at different optical sizes next to each other.
+@mixin t-glyph-panel {
+  font-size: 15px;
+  line-height: 1;
+}
+
+// ⌕ (U+2315) draws small inside its em box — at the same font-size as ✕ it
+// reads roughly half the size. Sized up to match optically, same reason
+// t-search-glyph is 24px next to 13px input text in TopNav.
+@mixin t-glyph-panel-search {
+  font-size: 22px;
+  line-height: 1;
+}
+
+// Statusbar chip glyph (▤ on the diff chip) — pinned to the statusbar's own
+// text size so the icon and the +0/−0 counts read as one line.
+@mixin t-glyph-statusbar {
+  font-size: 11.5px;
+  line-height: 1;
+}
+
+// Search-result file badge (VS Code's match-count pill).
+@mixin t-badge-count {
+  font-size: 9.5px;
+  font-weight: 600;
+}

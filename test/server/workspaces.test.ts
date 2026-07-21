@@ -524,7 +524,10 @@ describe('concurrent workspace create + orphan adoption (D5-2)', () => {
     // dir + git registration stay intact.
     const wsFile = join(configDir, 'workspaces.json');
     writeFileSync(wsFile, JSON.stringify([]));
-    expect(await ws.list(repo)).toHaveLength(0);
+    // listOwned = the ledger, which is what reconcile prunes/adopts. list()
+    // would report the worktree as `external` here (git still knows it), which
+    // is exactly the crash-window state this test is setting up.
+    expect(await ws.listOwned(repo)).toHaveLength(0);
 
     await ws.reconcile();
 
@@ -548,6 +551,10 @@ describe('workspaces.reconcile', () => {
 
     await ws.reconcile();
 
+    expect(await ws.listOwned(repo)).toHaveLength(0);
+    // git still holds admin data for the deleted dir and reports it `prunable`.
+    // It must NOT surface as an external worktree — the row would point at a
+    // directory that isn't there.
     expect(await ws.list(repo)).toHaveLength(0);
   });
 
@@ -568,5 +575,44 @@ describe('workspaces.reconcile', () => {
     await ws.create(repo);
     await ws.reconcile();
     expect(await ws.list(repo)).toHaveLength(1);
+  });
+});
+
+// A worktree made with plain `git worktree add` — by the user, or by an agent
+// asked to make one — has no ledger record and lives nowhere near
+// worktreesRoot(), so directory scanning could never find it. list() asks git.
+describe('workspaces.list — worktrees created outside seshmux', () => {
+  it('reports them as external, keeps them out of the ledger, and refuses to remove them', async () => {
+    const ws = await freshWorkspaces();
+    const outside = join(repo, '..', `ext-${Date.now()}`);
+    git(repo, ['worktree', 'add', '-b', 'hand-made', outside]);
+
+    const listed = await ws.list(repo);
+    expect(listed).toHaveLength(1);
+    expect(listed[0].branch).toBe('hand-made');
+    expect(listed[0].external).toBe(true);
+
+    // The ledger stays the record of what seshmux OWNS...
+    expect(await ws.listOwned(repo)).toHaveLength(0);
+    // ...so the destructive path still refuses it. Nothing seshmux did not
+    // create can be deleted by seshmux (hard rule 7 — fail closed).
+    await expect(ws.remove(listed[0].dir, { mode: 'discard', force: true })).rejects.toThrow();
+    expect(existsSync(listed[0].dir)).toBe(true);
+
+    git(repo, ['worktree', 'remove', '--force', listed[0].dir]);
+  });
+
+  it('lists seshmux-created and hand-made worktrees together', async () => {
+    const ws = await freshWorkspaces();
+    const own = await ws.create(repo);
+    const outside = join(repo, '..', `ext2-${Date.now()}`);
+    git(repo, ['worktree', 'add', '-b', 'hand-made-2', outside]);
+
+    const listed = await ws.list(repo);
+    expect(listed).toHaveLength(2);
+    expect(listed.find((r) => r.branch === own.branch)?.external).toBeUndefined();
+    expect(listed.find((r) => r.branch === 'hand-made-2')?.external).toBe(true);
+
+    git(repo, ['worktree', 'remove', '--force', outside]);
   });
 });
