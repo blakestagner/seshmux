@@ -101,6 +101,27 @@ describe('search', () => {
     expect(res.files).toEqual([]);
   });
 
+  // git grep -E speaks POSIX ERE; highlighting and replace speak JS RegExp.
+  // Anything the two disagree on is refused up front rather than returned as
+  // matches that replace can't reproduce.
+  it('refuses a POSIX bracket class rather than matching it as something else', async () => {
+    const res = await search(dir, { ...BASE, query: 'needle[[:digit:]]', regex: true });
+    expect(res.error).toMatch(/POSIX/);
+    expect(res.files).toEqual([]);
+  });
+
+  it('refuses a pattern git accepts but JS cannot compile', async () => {
+    // Valid ERE (a literal `{` interval that JS rejects as a quantifier).
+    const res = await search(dir, { ...BASE, query: 'a{2,1}', regex: true });
+    expect(res.error).toBeTruthy();
+  });
+
+  it('leaves a bracket-class-looking pattern alone in literal mode', async () => {
+    // Not a regex search, so the ERE/JS divergence can't arise — no error.
+    const res = await search(dir, { ...BASE, query: '[[:digit:]]' });
+    expect(res.error).toBeUndefined();
+  });
+
   it('returns an empty result (not a throw) when nothing matches', async () => {
     await expect(search(dir, { ...BASE, query: 'zzzznope' })).resolves.toMatchObject({ total: 0, files: [] });
   });

@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify from 'fastify';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import gitRoutes, { type GitRouteDeps } from '../../server/routes/git';
@@ -179,5 +179,77 @@ describe('GET /api/git/file', () => {
     const f = makeApp();
     const res = await f.inject({ method: 'GET', url: '/api/git/file?project=x' });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+// resolveTarget used to route to a worktree only for `agent/*` branches —
+// seshmux's own naming convention. Worktrees are now discovered from git and
+// can carry ANY branch name, and for those the gate silently fell through to
+// the main checkout: search read the wrong tree and replace WROTE to it.
+describe('worktree targeting (arbitrary branch names)', () => {
+  let wt: string;
+
+  beforeAll(() => {
+    wt = join(repo, '..', `smx-gitroute-wt-${Date.now()}`);
+    git(repo, ['worktree', 'add', '-b', 'hand-made', wt]);
+    writeFileSync(join(wt, 'only-here.txt'), 'needle in the worktree\n');
+  });
+
+  afterAll(() => {
+    git(repo, ['worktree', 'remove', '--force', wt]);
+  });
+
+  const withWorktree = () => ({
+    listWorkspaces: async () => [
+      { dir: wt, branch: 'hand-made', project: repo, createdAt: 0, external: true },
+    ],
+  });
+
+  it('searches inside the worktree, not the main checkout', async () => {
+    const f = makeApp(withWorktree());
+    const res = await f.inject({
+      method: 'GET',
+      url: '/api/git/search?project=x&branch=hand-made&q=needle',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().files.map((r: { path: string }) => r.path)).toEqual(['only-here.txt']);
+  });
+
+  it('reads a file that exists ONLY in the worktree', async () => {
+    const f = makeApp(withWorktree());
+    const res = await f.inject({
+      method: 'GET',
+      url: '/api/git/file?project=x&branch=hand-made&path=only-here.txt',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().content).toContain('needle');
+  });
+
+  it('replace writes into the worktree, leaving the main checkout untouched', async () => {
+    const f = makeApp(withWorktree());
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/git/replace',
+      payload: {
+        project: 'x',
+        branch: 'hand-made',
+        query: 'needle',
+        replacement: 'PIN',
+        edits: [{ path: 'only-here.txt', line: 1, expected: 'needle in the worktree' }],
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().changed).toEqual(['only-here.txt']);
+    expect(readFileSync(join(wt, 'only-here.txt'), 'utf8')).toBe('PIN in the worktree\n');
+    expect(existsSync(join(repo, 'only-here.txt'))).toBe(false); // never touched the main tree
+  });
+
+  it('still targets the main checkout for a branch that is not a worktree', async () => {
+    const f = makeApp(withWorktree());
+    const res = await f.inject({
+      method: 'GET',
+      url: '/api/git/search?project=x&branch=main&q=needle',
+    });
+    expect(res.json().files).toEqual([]); // only-here.txt does not exist in the main tree
   });
 });

@@ -4,7 +4,7 @@
 // knows how to read a directory of dash-encoded project dirs each holding `<id>.jsonl`.
 
 import { open, readdir, realpath, stat } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { git, listAll as listAllWorkspaces } from '../workspaces';
 import { Lru } from './lru';
 
@@ -279,6 +279,14 @@ async function canonCwd(cwd: string): Promise<string> {
   }
 }
 
+// Inverse of workspaces.ts's gitPath(): git ALWAYS reports forward slashes,
+// even on native Windows, so any path taken from git output must be converted
+// before it is compared against (or used as a map key alongside) a node-native
+// path. Identity on posix, where sep is already '/'.
+function nativePath(gitFormPath: string): string {
+  return process.platform === 'win32' ? gitFormPath.split('/').join(sep) : gitFormPath;
+}
+
 // worktree dir -> parent repo absolute path (workspaces.json is the lookup —
 // Spec 1's "Scanning seam"). Never throws; an unreadable/missing
 // workspaces.json just means no grouping happens.
@@ -379,8 +387,19 @@ export async function worktreeParent(cwd: string): Promise<string | null> {
       const [commonDir, toplevel] = out.split('\n').map((l) => l.trim());
       if (commonDir && toplevel) {
         const mainRepo = dirname(commonDir); // <main>/.git -> <main>
-        // Equal = this IS the main worktree (or a subdir of it): nothing to fold.
-        if (mainRepo !== toplevel) parent = mainRepo;
+        // Comparing the two raw is safe — both come from the same git output,
+        // so they share a separator form. Equal = this IS the main worktree
+        // (or a subdir of it): nothing to fold.
+        //
+        // The RETURNED value is not safe raw. git emits forward slashes even
+        // on native Windows ("C:/Users/…") while every other cwd in this file
+        // is native form via canonCwd(), and this value becomes a byPath map
+        // KEY in computeRootScan — mismatched forms hash apart and the fold
+        // silently stops happening. Exactly the bug workspaces.ts's gitPath()
+        // exists for ("the same silent prune hit EVERY workspace on native
+        // Windows, on every boot"). Convert to native, then canonCwd so 8.3
+        // short names match the recorded-cwd side too.
+        if (mainRepo !== toplevel) parent = await canonCwd(nativePath(mainRepo));
       }
     } catch {
       /* not a repo / git unavailable — no fold */

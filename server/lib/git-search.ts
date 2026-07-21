@@ -90,9 +90,46 @@ export function parseGrepZ(out: string): { path: string; line: number; text: str
   return rows;
 }
 
+// POSIX bracket expressions: valid in git grep -E, silently WRONG in JS
+// (`[[:digit:]]` compiles as a character class of ':', 'd', 'i', 'g', 't').
+const POSIX_CLASS_RE = /\[\[:[a-z]+:\]\]/;
+
+/**
+ * Why a regex query can't be served, or null if it can.
+ *
+ * Searching runs the pattern through `git grep -E` (POSIX ERE) while
+ * highlighting and replacing run the SAME string through JS's RegExp. The two
+ * dialects are not the same language, so a pattern accepted by one can behave
+ * differently — or not compile at all — in the other. Left alone that shows up
+ * as rows highlighted on the wrong span, and a replace that silently reports
+ * "no match" for a result the user is looking at.
+ *
+ * Rather than translate between dialects, refuse anything the two don't agree
+ * on and say why. JS is the stricter, more familiar of the two here, so the
+ * effective contract is "JS regex syntax", which is also what the replace and
+ * highlight paths can actually honour.
+ */
+export function regexDialectError(query: string): string | null {
+  if (POSIX_CLASS_RE.test(query)) {
+    return 'POSIX classes like [[:digit:]] are not supported — use \\d, \\w, or [a-z]';
+  }
+  try {
+    new RegExp(query);
+    return null;
+  } catch (e) {
+    return `invalid regex: ${(e as Error).message}`;
+  }
+}
+
 export async function search(dir: string, opts: SearchOpts): Promise<SearchResult> {
   const empty: SearchResult = { files: [], total: 0, truncated: false };
   if (!opts.query) return empty;
+  if (opts.regex) {
+    // Checked BEFORE git runs: a pattern git would happily match but JS can't
+    // reproduce must never reach the results list, or replace can't honour it.
+    const bad = regexDialectError(opts.query);
+    if (bad) return { ...empty, error: bad };
+  }
 
   const args = ['grep', '-n', '-I', '-z', '--untracked'];
   if (opts.includeIgnored) args.push('--no-exclude-standard');

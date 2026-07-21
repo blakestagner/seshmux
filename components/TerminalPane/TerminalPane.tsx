@@ -20,6 +20,7 @@ import {
   bridgeReview,
   getTermHistory,
   listWorkspaces,
+  listWorkspacesShared,
   finishWorkspace,
   getSubagents,
   getGitChanges,
@@ -473,7 +474,7 @@ export default function TerminalPane({
     if (!isWorkspace || !projectId) return;
     let cancelled = false;
     const refresh = () => {
-      listWorkspaces(projectId)
+      listWorkspacesShared(projectId)
         .then((records) => {
           if (cancelled) return;
           setWsRecord(records.find((r) => r.branch === branch) ?? null);

@@ -12,7 +12,7 @@ import {
   getSessions,
   startSession,
   createWorkspace,
-  listWorkspaces,
+  listWorkspacesShared,
   openWorkspaceSession,
   getEnvTeams,
   startTeam,
@@ -250,7 +250,7 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
     let cancelled = false;
     const refresh = () => {
       for (const id of openProjectIds.split(',')) {
-        listWorkspaces(id)
+        listWorkspacesShared(id)
           .then((records) => {
             if (!cancelled) setWorktrees((prev) => ({ ...prev, [id]: records }));
           })

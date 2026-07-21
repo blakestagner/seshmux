@@ -416,8 +416,18 @@ export async function listGitWorktrees(repoPath: string): Promise<{ dir: string;
     for (const line of block.split('\n')) {
       if (line.startsWith('worktree ')) dir = line.slice('worktree '.length).trim();
       else if (line.startsWith('branch ')) branch = line.slice('branch '.length).trim().replace(/^refs\/heads\//, '');
-      // detached: no branch to show and nothing sane to finish. prunable: the
-      // worktree dir is gone. locked: another checkout holds it.
+      // Two exclusions, and only two. `detached`: no branch to name it by and
+      // nothing sane to finish. `prunable`: the dir is gone, so a row for it
+      // would point at nothing (and `prunable` is emitted AFTER `branch`, which
+      // is why this parses blocks rather than streaming lines).
+      //
+      // `locked` is deliberately NOT excluded — an earlier version of this
+      // comment claimed it was. A locked worktree's directory is present and
+      // perfectly usable; `git worktree lock` only bars prune/remove. Hiding it
+      // would drop a real checkout the user can work in, and the destructive
+      // path needs no help here: external worktrees have no ledger record so
+      // remove() already refuses them, and for an owned one git itself refuses
+      // to remove a locked worktree. Fails closed either way.
       else if (line.startsWith('prunable') || line.startsWith('detached')) usable = false;
     }
     if (dir && branch && usable) found.push({ dir, branch });

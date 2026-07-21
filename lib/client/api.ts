@@ -325,8 +325,33 @@ export function createWorkspace(
   return req('/api/workspaces', { method: 'POST', body: JSON.stringify({ projectId, provider, mode }) });
 }
 
+// Always hits the server. Callers gating a DESTRUCTIVE action must use this
+// one: the finish prompt's typed-confirm keys off filesChanged, and a stale
+// (too-low) count would let a dirty discard through unconfirmed.
 export function listWorkspaces(projectId: string): Promise<WorkspaceRecord[]> {
   return req(`/api/workspaces?project=${encodeURIComponent(projectId)}`);
+}
+
+// Shared-result variant for the POLLING callers (every terminal pane on mount
+// and window focus, plus the rail's expanded projects). Those all ask the same
+// question at the same moment, and each answer costs a `git worktree list` plus
+// a `git status` per owned worktree — in a grid of panes that fan-out is N
+// identical requests per focus event. One in-flight promise serves them all.
+// Deliberately NOT used by refreshWsRecord (see above).
+const wsInFlight = new Map<string, { at: number; promise: Promise<WorkspaceRecord[]> }>();
+const WS_SHARE_MS = 2000;
+
+export function listWorkspacesShared(projectId: string): Promise<WorkspaceRecord[]> {
+  const hit = wsInFlight.get(projectId);
+  if (hit && Date.now() - hit.at < WS_SHARE_MS) return hit.promise;
+  const promise = listWorkspaces(projectId);
+  wsInFlight.set(projectId, { at: Date.now(), promise });
+  // A rejection must not be cached — the next poll should retry, not replay
+  // the same failure for the rest of the window.
+  void promise.catch(() => {
+    if (wsInFlight.get(projectId)?.promise === promise) wsInFlight.delete(projectId);
+  });
+  return promise;
 }
 
 // Spawn a session in a worktree that already exists (rail worktree row). The
