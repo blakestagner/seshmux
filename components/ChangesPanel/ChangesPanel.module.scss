@@ -31,6 +31,15 @@
   white-space: nowrap;
 }
 
+// Header glyph buttons. Two sizes, one optical result — see t-glyph-panel-search.
+.headGlyph {
+  @include t-glyph-panel;
+}
+
+.headGlyphSearch {
+  @include t-glyph-panel-search;
+}
+
 .totals {
   @include t-mono-micro;
   display: inline-flex;
@@ -41,6 +50,8 @@
 .tree {
   @include t-mono-micro;
   overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 8px 0;
 }
 
@@ -194,4 +205,203 @@
 .diffText {
   white-space: pre;
   flex: 1 1 auto;
+}
+
+// ── Search view (SearchView.tsx) ───────────────────────────────────────────
+
+// Panel body below the header. Positioned so the file view can overlay the
+// search results instead of unmounting them (see ChangesPanel's render): the
+// results keep their scroll position for the trip back.
+.body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.fileOverlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.search {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.searchForm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+// The expand caret sits outside the field stack so both fields align.
+.searchRowWrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.searchFields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.searchField {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.searchInput {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.searchFlags {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.searchLabel {
+  @include t-meta;
+  color: var(--text-dim);
+}
+
+.searchOption {
+  @include t-meta;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+}
+
+.searchResults {
+  @include t-mono-micro;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  padding: 8px 0;
+}
+
+.searchSummary {
+  padding: 2px 12px 8px;
+  color: var(--text-dim);
+}
+
+.searchError {
+  padding: 12px;
+  color: var(--hot);
+}
+
+.resultFile {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 12px;
+  color: var(--text);
+}
+
+.resultFile:hover,
+.resultMatch:hover {
+  background: var(--bg-hover);
+}
+
+// Directory trailing the filename — first to lose space when the row is tight.
+.resultDir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+}
+
+// The filename never truncates before its directory does.
+.resultFile .name {
+  flex: 0 0 auto;
+}
+
+// VS Code's match-count pill. Accent-filled so the file row's right edge
+// carries the weight and the paths stay scannable down the left.
+.count {
+  @include t-badge-count;
+  margin-left: auto;
+  flex: 0 0 auto;
+  min-width: 16px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  text-align: center;
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+// Indent guide under each file group (VS Code's tree line), so a long run of
+// matches still reads as belonging to the file above it.
+.resultMatch {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 1px 12px 1px 0;
+  margin-left: 18px;
+  border-left: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+// Match line: one line, clipped — the panel is narrow and horizontal scroll
+// per row would fight the results list's vertical scroll.
+.matchText {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+// The hit is the only thing at full text color — the rest of the line is
+// context, and dimming it is what makes a wall of results scannable.
+.hit {
+  background: var(--search-hit-bg);
+  color: var(--text);
+  border-radius: 2px;
+}
+
+// Replace preview: old struck through, new beside it (VS Code's before/after).
+.hitOld {
+  background: var(--search-old-bg);
+  color: var(--text);
+  border-radius: 2px 0 0 2px;
+}
+
+.hitNew {
+  background: var(--search-new-bg);
+  color: var(--text);
+  border-radius: 0 2px 2px 0;
+  text-decoration: none;
+}
+
+// Replace buttons stay out of the way until the row is hovered.
+.rowAction {
+  flex: 0 0 auto;
+  opacity: 0;
+}
+
+.resultFile:hover .rowAction,
+.resultMatch:hover .rowAction,
+.rowAction:focus-visible {
+  opacity: 1;
 }

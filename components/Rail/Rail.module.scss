@@ -265,6 +265,60 @@
   color: var(--accent);
 }
 
+// Boxed group so the worktree rows can't be misread as a badge on the session
+// row that happens to follow them.
+.worktreeGroup {
+  margin: 2px 6px 8px;
+  padding: 4px 0 2px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-raised);
+}
+
+.worktreeGroupHead {
+  @include t-rail-agent;
+  padding: 2px 12px 4px;
+  color: var(--text-faint);
+}
+
+// Worktree rows — the repo's other checkouts, above the session list. Denser
+// than .sess (one line, no dot/meta): these are places to start work, not work
+// that already happened.
+.worktreeRow {
+  @include t-mono-micro;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  text-align: left;
+  border-radius: 9px;
+  color: var(--text-dim);
+}
+
+.worktreeRow:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.worktreeRow:disabled {
+  opacity: 0.5;
+}
+
+.worktreeBranch {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// Marks a worktree seshmux did not create — it will not offer to delete it.
+.worktreeExternal {
+  @include t-rail-agent;
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-faint);
+}
+
 // Provider identity color (design CL/CX) — identity, never status.
 .claude {
   color: var(--claude);

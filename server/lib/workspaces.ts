@@ -23,6 +23,10 @@ export interface WorkspaceRecord {
   branch: string;
   project: string; // parent repo absolute path
   createdAt: number;
+  // Set on worktrees git reports that seshmux did NOT create (no ledger
+  // record) — `git worktree add` run by hand or by an agent. Listed and
+  // usable, but not finishable: remove() only accepts recorded dirs.
+  external?: boolean;
 }
 
 export type RemoveMode = 'merge' | 'keep' | 'discard';
@@ -371,13 +375,80 @@ async function createOne(repoPath: string): Promise<{ dir: string; branch: strin
   return { dir: realDir, branch };
 }
 
-/** All workspace records for a given parent repo path. */
-export async function list(repoPath: string): Promise<WorkspaceRecord[]> {
+/** Workspace records seshmux itself created for a parent repo. */
+export async function listOwned(repoPath: string): Promise<WorkspaceRecord[]> {
   const all = await readAll();
   // Match either form: records written before project paths were canonicalized hold the raw
   // caller path, new + adopted ones hold the realpath.
   const real = await canon(repoPath);
   return all.filter((r) => r.project === repoPath || r.project === real);
+}
+
+/**
+ * Every worktree git reports for a repo, main tree EXCLUDED. Authoritative
+ * where the workspaces.json ledger is not: a worktree the user (or an agent
+ * run outside seshmux) made with `git worktree add ../foo` has no record and
+ * lives nowhere near worktreesRoot(), so no amount of directory scanning finds
+ * it. Read-only — this never writes the ledger, which stays the record of what
+ * seshmux OWNS.
+ */
+export async function listGitWorktrees(repoPath: string): Promise<{ dir: string; branch: string }[]> {
+  let out: string;
+  try {
+    out = await git(repoPath, ['worktree', 'list', '--porcelain']);
+  } catch {
+    return []; // not a repo / git unreachable — nothing to report
+  }
+  // Parsed as blank-line-separated BLOCKS, not line by line: `prunable` (the
+  // dir is gone but git still has the admin data) is emitted AFTER `branch`,
+  // so a streaming parser would have already emitted the record. Those are
+  // phantoms — listing one puts a row in the UI whose dir doesn't exist.
+  const found: { dir: string; branch: string }[] = [];
+  const blocks = out.split(/\n\s*\n/).filter((b) => b.trim());
+  // Skip block 0: git always emits the main worktree first, and that's the repo
+  // itself. Indexed rather than slicing `found` at the end — a detached or
+  // prunable main tree never makes it into `found`, and slicing there would
+  // then silently swallow a real worktree instead.
+  for (const block of blocks.slice(1)) {
+    let dir: string | null = null;
+    let branch: string | null = null;
+    let usable = true;
+    for (const line of block.split('\n')) {
+      if (line.startsWith('worktree ')) dir = line.slice('worktree '.length).trim();
+      else if (line.startsWith('branch ')) branch = line.slice('branch '.length).trim().replace(/^refs\/heads\//, '');
+      // detached: no branch to show and nothing sane to finish. prunable: the
+      // worktree dir is gone. locked: another checkout holds it.
+      else if (line.startsWith('prunable') || line.startsWith('detached')) usable = false;
+    }
+    if (dir && branch && usable) found.push({ dir, branch });
+  }
+  return found;
+}
+
+/**
+ * All workspaces for a repo: the ones seshmux created (full records) plus any
+ * OTHER worktree git knows about, flagged `external`. External entries are
+ * listed so the UI can see them, never adopted into workspaces.json — remove()
+ * keys on the ledger and so still refuses them, which is the fail-closed
+ * behavior we want on a path that deletes directories (hard rule 7).
+ */
+export async function list(repoPath: string): Promise<WorkspaceRecord[]> {
+  const owned = await listOwned(repoPath);
+  const ownedDirs = new Set(await Promise.all(owned.map((r) => canon(r.dir))));
+  const project = await canon(repoPath);
+  const external: WorkspaceRecord[] = [];
+  for (const wt of await listGitWorktrees(repoPath)) {
+    const dir = await canon(wt.dir);
+    if (ownedDirs.has(dir)) continue;
+    let createdAt = Date.now();
+    try {
+      createdAt = Math.floor((await stat(dir)).birthtimeMs || Date.now());
+    } catch {
+      /* keep now() */
+    }
+    external.push({ dir, branch: wt.branch, project, createdAt, external: true });
+  }
+  return [...owned, ...external];
 }
 
 /** All workspace records, regardless of parent (scan.ts grouping lookup). */

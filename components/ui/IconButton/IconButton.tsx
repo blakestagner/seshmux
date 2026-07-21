@@ -16,6 +16,10 @@ export type IconButtonProps = {
   // reason) — falls back to `label` when omitted.
   disabledReason?: string;
   onClick?: MouseEventHandler<HTMLButtonElement>;
+  // Layout-only passthrough (flex/glyph size) for callers aligning a row of
+  // icons — chrome (hover/active/disabled) stays owned here. Same contract as
+  // TextInput's className.
+  className?: string;
   children?: ReactNode;
 };
 
@@ -28,6 +32,7 @@ export default function IconButton({
   disabled = false,
   disabledReason,
   onClick,
+  className,
   children,
 }: IconButtonProps) {
   const boxed = variant === 'boxed' ? styles.boxed : '';
@@ -39,7 +44,7 @@ export default function IconButton({
       aria-label={title}
       title={title}
       disabled={disabled}
-      className={`${styles.iconBtn} ${boxed} ${revealOnHover ? styles.reveal : ''} ${active ? styles.active : ''} ${disabled ? styles.disabled : ''}`}
+      className={`${styles.iconBtn} ${boxed} ${revealOnHover ? styles.reveal : ''} ${active ? styles.active : ''} ${disabled ? styles.disabled : ''}${className ? ` ${className}` : ''}`}
       style={sizeStyle}
       onClick={onClick}
     >

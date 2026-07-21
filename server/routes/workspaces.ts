@@ -109,6 +109,37 @@ export default async function workspaceRoutes(f: FastifyInstance, deps: Workspac
     },
   );
 
+  // POST /api/workspaces/open { projectId, dir, provider?, mode? } -> spawn a
+  // session in a worktree that ALREADY exists (created here or by `git worktree
+  // add` elsewhere). Same shared startSession() as every other spawn path.
+  //
+  // `dir` is a TRUST BOUNDARY — it arrives from a request body and becomes a
+  // shell's cwd. It is accepted only if it matches a worktree git itself
+  // reports for this project; no path arithmetic, no prefix check.
+  f.post<{ Body: { projectId?: string; dir?: string; provider?: ProviderId; mode?: SessionMode } }>(
+    '/api/workspaces/open',
+    async (req, reply) => {
+      const { projectId, dir, provider, mode } = req.body ?? {};
+      if (typeof projectId !== 'string' || !projectId || typeof dir !== 'string' || !dir) {
+        reply.code(400);
+        return { error: 'projectId and dir are required' };
+      }
+      const repo = await repoOrNull(projectId);
+      if (!repo) {
+        reply.code(404);
+        return { error: 'project not found' };
+      }
+      const match = (await doList(repo)).find((r) => r.dir === dir);
+      if (!match) {
+        reply.code(404);
+        return { error: 'not a worktree of this project' };
+      }
+      const spawnProvider = provider ?? (await resolveDominantProvider(projectId));
+      const result = await doStart({ projectPath: match.dir, provider: spawnProvider, mode: mode ?? 'new' });
+      return { ...result, workspace: { dir: match.dir, branch: match.branch, project: repo } };
+    },
+  );
+
   // GET /api/workspaces?project=<projectId> -> workspace records + dirty count.
   f.get<{ Querystring: { project?: string } }>('/api/workspaces', async (req, reply) => {
     const projectId = req.query.project;
@@ -122,8 +153,12 @@ export default async function workspaceRoutes(f: FastifyInstance, deps: Workspac
       return { error: 'project not found' };
     }
     const records = await doList(repo);
+    // dirtyCount is a `git status` per worktree, and this route is polled by
+    // every terminal pane on mount + window focus. External worktrees can't be
+    // finished (no record → remove() refuses), and the count exists only to
+    // gate the finish prompt's typed confirm — so don't pay for theirs.
     const withDirty = await Promise.all(
-      records.map(async (r) => ({ ...r, filesChanged: await doDirtyCount(r.dir) })),
+      records.map(async (r) => ({ ...r, filesChanged: r.external ? 0 : await doDirtyCount(r.dir) })),
     );
     return withDirty;
   });

@@ -226,6 +226,47 @@ describe('scanProjects .claude/worktrees pattern grouping', () => {
     expect(sessions.find((s) => s.id === 'wt-1')!.cwd).toBe(wtDir);
   });
 
+  // A worktree made with plain `git worktree add ../elsewhere` is in neither
+  // workspaces.json nor the .claude/worktrees path pattern, so before the git
+  // probe its sessions surfaced as their own top-level project.
+  it('folds a worktree created outside seshmux (git worktree add) into its parent', async () => {
+    const parentDirName = encodeProjectId(repo);
+    writeSessionFile(join(storeRoot, parentDirName), 'parent-1', repo, 'main', 'do the main thing');
+
+    const wtDir = realpathSync.native(mkdtempSync(join(tmpdir(), 'seshmux-ext-wt-')));
+    rmSync(wtDir, { recursive: true, force: true }); // git wants to create it
+    git(repo, ['worktree', 'add', '-b', 'hand-made', wtDir]);
+    writeSessionFile(join(storeRoot, encodeProjectId(wtDir)), 'ext-1', wtDir, 'hand-made', 'work in the worktree');
+
+    const projects = await scanProjects(storeRoot, 'claude');
+
+    const matches = projects.filter((p) => p.path === repo);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].sessionCount).toBe(2);
+    expect(projects.some((p) => p.path === wtDir)).toBe(false); // not its own group
+
+    // Folding the project list without the sessions would make the rail count
+    // right while hiding the session it counted.
+    const sessions = await listSessions(matches[0].id, { root: storeRoot, provider: 'claude' });
+    expect(sessions.map((s) => s.id)).toContain('ext-1');
+    expect(sessions.find((s) => s.id === 'ext-1')!.branch).toBe('hand-made');
+
+    git(repo, ['worktree', 'remove', '--force', wtDir]);
+  });
+
+  it('does NOT fold an unrelated repo that merely sits beside the parent', async () => {
+    const other = realpathSync.native(mkdtempSync(join(tmpdir(), 'seshmux-other-')));
+    initRepo(other);
+    writeSessionFile(join(storeRoot, encodeProjectId(other)), 'other-1', other, 'main', 'unrelated work');
+    writeSessionFile(join(storeRoot, encodeProjectId(repo)), 'parent-1', repo, 'main', 'main work');
+
+    const projects = await scanProjects(storeRoot, 'claude');
+    expect(projects.some((p) => p.path === other)).toBe(true);
+    expect(projects.find((p) => p.path === other)!.sessionCount).toBe(1);
+
+    rmSync(other, { recursive: true, force: true });
+  });
+
   it('a session cwd DEEPER inside a worktree (worktrees/x/subdir) still folds to the parent', async () => {
     const deepCwd = join(repo, '.claude', 'worktrees', 'x', 'packages', 'app');
     writeSessionFile(join(storeRoot, encodeProjectId(deepCwd)), 'deep-1', deepCwd, 'b', 'deep thing');

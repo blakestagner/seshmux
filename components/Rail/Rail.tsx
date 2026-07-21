@@ -8,8 +8,16 @@ import { persistDebounced } from '../../lib/client/persist';
 import TextInput from '../ui/TextInput/TextInput';
 import StatusDot from '../ui/StatusDot/StatusDot';
 import IconButton from '../ui/IconButton/IconButton';
-import { getSessions, startSession, createWorkspace, getEnvTeams, startTeam } from '../../lib/client/api';
-import type { TeamStartPayload } from '../../lib/client/api';
+import {
+  getSessions,
+  startSession,
+  createWorkspace,
+  listWorkspaces,
+  openWorkspaceSession,
+  getEnvTeams,
+  startTeam,
+} from '../../lib/client/api';
+import type { TeamStartPayload, WorkspaceRecord } from '../../lib/client/api';
 import type { SessionMeta, Project, Config, ProviderId } from '../../lib/client/types';
 import { useAppState } from '../../lib/client/store';
 import { useDetectedProviders, provFilterOptions, showsProviderIdentity } from '../../lib/client/providers';
@@ -219,6 +227,58 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
         label: `${p.name} · ${workspace.branch}`,
         provider: tabMeta.provider,
         branch: workspace.branch,
+      });
+    } catch {
+      // Surfacing errors as a toast lands with the events-ws wave (Task 15).
+    } finally {
+      setWorkspaceBusy(null);
+    }
+  }
+
+  // Worktrees per project, from git (see workspaces.listGitWorktrees) — so a
+  // worktree an agent or the user made with `git worktree add` shows up here
+  // too, not just the ones seshmux created. Fetched only for EXPANDED projects
+  // and refreshed on window focus, the same lazy cadence the workspace chip
+  // uses; a rail-wide poll would be a `git worktree list` per project per tick.
+  const [worktrees, setWorktrees] = useState<Record<string, WorkspaceRecord[]>>({});
+  const openProjectIds = projects
+    .filter((p) => (p as Project & { open?: boolean }).open)
+    .map((p) => p.id)
+    .join(',');
+  useEffect(() => {
+    if (!openProjectIds) return;
+    let cancelled = false;
+    const refresh = () => {
+      for (const id of openProjectIds.split(',')) {
+        listWorkspaces(id)
+          .then((records) => {
+            if (!cancelled) setWorktrees((prev) => ({ ...prev, [id]: records }));
+          })
+          .catch(() => {
+            /* best-effort: the rail works without worktree rows */
+          });
+      }
+    };
+    refresh();
+    window.addEventListener('focus', refresh);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', refresh);
+    };
+  }, [openProjectIds]);
+
+  async function doOpenWorktree(p: Project, wt: WorkspaceRecord) {
+    if (workspaceBusy) return;
+    setWorkspaceBusy(p.id);
+    try {
+      const { tabMeta } = await openWorkspaceSession(p.id, wt.dir);
+      dispatch({
+        type: 'openTerm',
+        ptyId: tabMeta.ptyId,
+        projectId: p.id,
+        label: `${p.name} · ${wt.branch}`,
+        provider: tabMeta.provider,
+        branch: wt.branch,
       });
     } catch {
       // Surfacing errors as a toast lands with the events-ws wave (Task 15).
@@ -664,6 +724,41 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                         onChange={(v) => setProjFilterState((prev) => ({ ...prev, [p.id]: v }))}
                         placeholder="filter…"
                       />
+                    </div>
+                  ) : null}
+                  {/* Worktrees of this repo — seshmux's own (agent/…) and any
+                      created with `git worktree add` outside it. Clicking one
+                      starts a session in that worktree.
+                      Boxed under its own heading: bare rows sat directly above
+                      the first session row and read as a badge belonging to
+                      THAT session, which is exactly backwards — a worktree is a
+                      place to start a session, not a property of one. */}
+                  {(worktrees[p.id] ?? []).length > 0 ? (
+                    <div className={styles.worktreeGroup}>
+                      <div className={styles.worktreeGroupHead}>worktrees</div>
+                      {(worktrees[p.id] ?? []).map((wt) => (
+                    <button
+                      key={wt.dir}
+                      type="button"
+                      className={styles.worktreeRow}
+                      title={`${wt.dir}\nStart a session in this worktree`}
+                      disabled={workspaceBusy === p.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void doOpenWorktree(p, wt);
+                      }}
+                    >
+                      <span className={styles.workspaceMark} aria-hidden="true">
+                        ⑃
+                      </span>
+                      <span className={styles.worktreeBranch}>{wt.branch}</span>
+                      {wt.external ? (
+                        <span className={styles.worktreeExternal} title="Created outside seshmux">
+                          ext
+                        </span>
+                      ) : null}
+                    </button>
+                      ))}
                     </div>
                   ) : null}
                   {shown.map((s) => (

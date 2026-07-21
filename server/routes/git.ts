@@ -9,6 +9,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { changes, fileDiff, readWorkingFile } from '../lib/git-stats';
+import { search, replace, type ReplaceEdit, type SearchOpts } from '../lib/git-search';
 import { defaultBranch, list as listWorkspacesDefault, type WorkspaceRecord } from '../lib/workspaces';
 import { defaultResolveRepo } from './bridge';
 
@@ -114,6 +115,59 @@ export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps =
         return { error: 'file not found' };
       }
       return file;
+    },
+  );
+
+  // Repo-wide search (git grep) for the changes panel's search mode. Same
+  // resolveTarget as the diff routes, so an agent/* branch searches inside
+  // its own worktree rather than the main checkout.
+  f.get<{ Querystring: Record<string, string | undefined> }>('/api/git/search', async (req, reply) => {
+    const q = req.query;
+    if (!q.project || !q.q) {
+      reply.code(400);
+      return { error: 'project and q are required' };
+    }
+    const target = await resolveTarget(q.project, q.branch);
+    if (!target) {
+      reply.code(404);
+      return { error: 'project not found' };
+    }
+    return search(target.dir, {
+      query: q.q,
+      caseSensitive: q.case === '1',
+      wholeWord: q.word === '1',
+      regex: q.regex === '1',
+      include: q.include ?? '',
+      exclude: q.exclude ?? '',
+      includeIgnored: q.ignored === '1',
+    });
+  });
+
+  // The one write path in this file. Every edit carries the line text the user
+  // saw; git-search skips anything that no longer matches (see replace()).
+  f.post<{ Body: { project?: string; branch?: string; edits?: ReplaceEdit[]; replacement?: string } & Partial<SearchOpts> }>(
+    '/api/git/replace',
+    async (req, reply) => {
+      const b = req.body ?? {};
+      if (!b.project || !b.query || !Array.isArray(b.edits) || b.edits.length === 0) {
+        reply.code(400);
+        return { error: 'project, query and edits are required' };
+      }
+      const target = await resolveTarget(b.project, b.branch);
+      if (!target) {
+        reply.code(404);
+        return { error: 'project not found' };
+      }
+      return replace(target.dir, b.edits, {
+        query: b.query,
+        caseSensitive: !!b.caseSensitive,
+        wholeWord: !!b.wholeWord,
+        regex: !!b.regex,
+        include: '',
+        exclude: '',
+        includeIgnored: false,
+        replacement: b.replacement ?? '',
+      });
     },
   );
 }

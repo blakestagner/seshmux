@@ -437,11 +437,16 @@ export default function TerminalPane({
   const other = otherProvider ? PROV[otherProvider] : null;
   const canBridge = !!project && !!other;
 
-  // Workspace chip + finish flow (Spec 1). The naming convention (agent/<slug>-<n>,
-  // see server/lib/workspaces.ts) IS the marker — no separate tab flag needed.
-  // Record lookup (dir + dirty count) is by branch match against the project's
-  // workspace list; polled lazily (mount + window focus), not on every keystroke.
-  const isWorkspace = !!branch?.startsWith('agent/');
+  // Workspace chip + finish flow (Spec 1). Record lookup (dir + dirty count) is
+  // by branch match against the project's worktree list; polled lazily (mount +
+  // window focus), not on every keystroke.
+  //
+  // The gate used to be `branch.startsWith('agent/')` — seshmux's own naming
+  // convention. That made every worktree created outside seshmux (an agent
+  // running `git worktree add`, or the user by hand) invisible here. The list
+  // now comes from git itself, so ask for any branch and let the match decide;
+  // a plain main-repo session simply finds nothing and shows no chip.
+  const isWorkspace = !!branch;
   const [wsRecord, setWsRecord] = useState<WorkspaceRecord | null>(null);
   const [finishOpen, setFinishOpen] = useState(false);
   const [finishBusy, setFinishBusy] = useState(false);
@@ -715,8 +720,10 @@ export default function TerminalPane({
           </>
         ) : null}
         {/* Diff stats: +N/-N vs the default branch. Clickable chip (opens the
-            changes panel) in the single-pane statusbar; plain span in grid. */}
-        {gitStats && (gitStats.added > 0 || gitStats.removed > 0) ? (
+            changes panel) in the single-pane statusbar; plain span in grid.
+            Rendered even at +0/−0 — the chip is also the ONLY way into the file
+            browser/search, which is just as useful on a clean branch. */}
+        {gitStats ? (
           <>
             {variant !== 'grid' ? <span className={styles.divider} aria-hidden="true" /> : null}
             {(() => {
@@ -732,7 +739,16 @@ export default function TerminalPane({
                 </>
               );
               return variant !== 'grid' && onOpenChanges ? (
-                <Button variant="chip" className={styles.diffChip} title="View changed files" onClick={onOpenChanges}>
+                <Button
+                  variant="chip"
+                  className={styles.diffChip}
+                  title="Browse and search files"
+                  onClick={onOpenChanges}
+                >
+                  {/* Generic file glyph (hard rule 5) — signals the chip opens something. */}
+                  <span className={styles.diffChipGlyph} aria-hidden="true">
+                    ▤
+                  </span>
                   {stats}
                 </Button>
               ) : (
@@ -761,16 +777,25 @@ export default function TerminalPane({
         {/* Bridge actions cluster on the right, before the tail. In grid the
             two buttons collapse to glyph + provider via CSS. */}
         {bridgeActions}
-        {isWorkspace ? (
+        {/* Gated on the RECORD, not on `isWorkspace`: that's now true for any
+            branch (see above), so an ordinary main-repo session would otherwise
+            label itself "workspace · master". A match means git really does
+            report this branch as a worktree of the project. */}
+        {wsRecord ? (
           <span className={styles.tail}>
             <span className={styles.workspaceTail}>
-              workspace · {branch}
-              {wsRecord ? ` · ${wsRecord.filesChanged} file${wsRecord.filesChanged === 1 ? '' : 's'} changed` : ''}
+              {wsRecord.external ? 'worktree' : 'workspace'} · {branch}
+              {wsRecord.external ? '' : ` · ${wsRecord.filesChanged} file${wsRecord.filesChanged === 1 ? '' : 's'} changed`}
             </span>
             <Button
               variant="chip"
               className={styles.finishBtn}
-              title="Finish workspace"
+              disabled={wsRecord.external}
+              title={
+                wsRecord.external
+                  ? 'Created outside seshmux — finish it with git, or from the session that made it'
+                  : 'Finish workspace'
+              }
               onClick={() => {
                 // Freshen the dirty count right before the decision point —
                 // the lazy mount/focus poll above is not enough to gate a
@@ -783,7 +808,7 @@ export default function TerminalPane({
           </span>
         ) : null}
       </div>
-      {isWorkspace ? (
+      {wsRecord && !wsRecord.external ? (
         <WorkspaceFinishPrompt
           open={finishOpen}
           branch={branch ?? ''}

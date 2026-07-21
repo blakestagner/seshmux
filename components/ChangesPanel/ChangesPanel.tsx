@@ -17,25 +17,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getGitChanges, getGitFile, getGitFileDiff, type FileChange, type GitChanges } from '../../lib/client/api';
 import { buildTree, collapsedByDefault, type TreeNode } from '../../lib/client/git-tree';
 import { parseUnifiedDiff, type DiffLine } from '../../lib/client/diff';
-import { glyphFor, type FileGlyphCategory } from '../../lib/client/file-glyphs';
+import { glyphFor } from '../../lib/client/file-glyphs';
 import { languageFor, loadHighlighter, escapeHtml, type Highlighter } from '../../lib/client/highlight';
 import Button from '../ui/Button/Button';
 import IconButton from '../ui/IconButton/IconButton';
 import Segmented from '../ui/Segmented/Segmented';
+import SearchView from './SearchView';
+import { FT_CLASS } from './ft-class';
 import styles from './ChangesPanel.module.scss';
-
-const FT_CLASS: Record<FileGlyphCategory, string> = {
-  styles: styles.ftStyles,
-  scriptTs: styles.ftScriptTs,
-  scriptJs: styles.ftScriptJs,
-  test: styles.ftTest,
-  config: styles.ftConfig,
-  docs: styles.ftDocs,
-  image: styles.ftImage,
-  shell: styles.ftShell,
-  markup: styles.ftMarkup,
-  dim: styles.ftDim,
-};
 
 const VIEW_OPTIONS = [
   { id: 'diff', label: 'diff' },
@@ -181,6 +170,8 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
     null,
   );
   const [hl, setHl] = useState<Highlighter | null>(null);
+  // Search mode replaces the tree (the file view still wins over both).
+  const [searching, setSearching] = useState(false);
   // Which file's diff response is allowed to land — a slow fetch for file A
   // must not paint under file B's header after the user navigated on.
   const openPathRef = useRef<string | null>(null);
@@ -254,7 +245,9 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
       });
   };
 
-  const openFileDiff = (node: TreeNode) => {
+  // Opens either a tree node or a bare path (search results, which don't carry
+  // change info — those land in the full-file view like any unchanged file).
+  const openFileDiff = (node: { path: string; change?: FileChange | null }) => {
     const change = node.change ?? null;
     setOpenFile({ path: node.path, change });
     setDiffLines(null);
@@ -323,8 +316,11 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
           </>
         ) : (
           <>
-            <span className={styles.title}>changes{branch ? ` · ${branch}` : ''}</span>
-            {data ? (
+            <span className={styles.title}>
+              {searching ? 'search' : 'changes'}
+              {branch ? ` · ${branch}` : ''}
+            </span>
+            {!searching && data ? (
               <span className={styles.totals}>
                 <span className={styles.added}>
                   +{data.added}
@@ -333,56 +329,77 @@ export default function ChangesPanel({ projectId, branch, onClose }: ChangesPane
                 <span className={styles.removed}>−{data.removed}</span>
               </span>
             ) : null}
+            <IconButton
+              label={searching ? 'Back to file tree' : 'Search files'}
+              active={searching}
+              className={styles.headGlyphSearch}
+              onClick={() => setSearching((v) => !v)}
+            >
+              ⌕
+            </IconButton>
           </>
         )}
-        <IconButton label="Close changes panel" onClick={onClose}>
+        <IconButton label="Close changes panel" className={styles.headGlyph} onClick={onClose}>
           ✕
         </IconButton>
       </div>
-      {openFile ? (
-        viewMode === 'full' ? (
-          fullFile === null ? (
-            <div className={styles.empty}>loading…</div>
-          ) : fullFile === 'binary' ? (
-            <div className={styles.empty}>binary file</div>
-          ) : fullFile === 'missing' ? (
-            <div className={styles.empty}>file not found</div>
-          ) : (
-            <>
-              <FullView content={fullFile.content} lang={lang} hl={hl} addedLines={addedLines} />
-              {fullFile.truncated ? (
-                <div className={styles.empty}>file truncated — showing the first 5,000 lines</div>
-              ) : null}
-            </>
-          )
-        ) : diffLines === null ? (
-          <div className={styles.empty}>loading…</div>
-        ) : diffLines.length === 0 ? (
-          <div className={styles.empty}>no diff (binary or unchanged)</div>
+      <div className={styles.body}>
+        {/* Search stays MOUNTED AND IN LAYOUT under the file view: clicking a
+            result and coming back must restore the query, flags, results and
+            the scroll position. Hiding it with display:none would have dropped
+            the scroll (the box leaves layout), so the file view overlays it. */}
+        {searching ? (
+          <SearchView projectId={projectId} branch={branch} onOpenFile={(path) => openFileDiff({ path })} />
         ) : (
-          <>
-            <DiffView lines={diffLines} lang={lang} hl={hl} />
-            {diffTruncated ? <div className={styles.empty}>diff truncated — showing the first 5,000 lines</div> : null}
-          </>
-        )
-      ) : (
-        <div className={styles.tree}>
-          {nodes.length === 0 ? (
-            <div className={styles.empty}>{data ? 'no files' : 'loading…'}</div>
-          ) : (
-            nodes.map((n) => (
-              <Row
-                key={`${n.children.length ? 'd' : 'f'}:${n.path}`}
-                node={n}
-                depth={0}
-                collapsed={collapsed}
-                onToggle={toggle}
-                onOpenFile={openFileDiff}
-              />
-            ))
-          )}
-        </div>
-      )}
+          <div className={styles.tree}>
+            {nodes.length === 0 ? (
+              <div className={styles.empty}>{data ? 'no files' : 'loading…'}</div>
+            ) : (
+              nodes.map((n) => (
+                <Row
+                  key={`${n.children.length ? 'd' : 'f'}:${n.path}`}
+                  node={n}
+                  depth={0}
+                  collapsed={collapsed}
+                  onToggle={toggle}
+                  onOpenFile={openFileDiff}
+                />
+              ))
+            )}
+          </div>
+        )}
+        {openFile ? (
+          <div className={styles.fileOverlay}>
+            {viewMode === 'full' ? (
+              fullFile === null ? (
+                <div className={styles.empty}>loading…</div>
+              ) : fullFile === 'binary' ? (
+                <div className={styles.empty}>binary file</div>
+              ) : fullFile === 'missing' ? (
+                <div className={styles.empty}>file not found</div>
+              ) : (
+                <>
+                  <FullView content={fullFile.content} lang={lang} hl={hl} addedLines={addedLines} />
+                  {fullFile.truncated ? (
+                    <div className={styles.empty}>file truncated — showing the first 5,000 lines</div>
+                  ) : null}
+                </>
+              )
+            ) : diffLines === null ? (
+              <div className={styles.empty}>loading…</div>
+            ) : diffLines.length === 0 ? (
+              <div className={styles.empty}>no diff (binary or unchanged)</div>
+            ) : (
+              <>
+                <DiffView lines={diffLines} lang={lang} hl={hl} />
+                {diffTruncated ? (
+                  <div className={styles.empty}>diff truncated — showing the first 5,000 lines</div>
+                ) : null}
+              </>
+            )}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

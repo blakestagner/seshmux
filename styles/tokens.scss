@@ -72,6 +72,13 @@
   // full-width added/removed rows read as blocks without shouting.
   --diff-add-bg: rgba(75, 184, 122, 0.12);
   --diff-del-bg: rgba(217, 112, 95, 0.12);
+  // Search-result highlights (changes panel search). NOT the diff tints: those
+  // are whispers meant to wash a whole row, and at 12% a few characters inside
+  // a monospace line were invisible. A hit is a point, so it gets a real box;
+  // the replace preview reuses the del/add hues at the same strength.
+  --search-hit-bg: rgba(251, 191, 36, 0.3);
+  --search-old-bg: rgba(217, 112, 95, 0.3);
+  --search-new-bg: rgba(75, 184, 122, 0.3);
   --role-user: #79b8ff;
   --shadow-dropdown: 0 12px 32px rgba(0, 0, 0, 0.35);
   // Neutral-tinted terminal bg harmonized with the new #0f0f12 dark family
@@ -132,6 +139,11 @@
   // Diff view row tints — slightly stronger than dark: pale tints wash out on white.
   --diff-add-bg: rgba(47, 158, 99, 0.14);
   --diff-del-bg: rgba(193, 88, 74, 0.14);
+  // Search highlights — see the dark block. Amber on white needs more alpha to
+  // separate from the page than it does on #0f0f12.
+  --search-hit-bg: rgba(230, 160, 20, 0.35);
+  --search-old-bg: rgba(193, 88, 74, 0.26);
+  --search-new-bg: rgba(47, 158, 99, 0.28);
   // ponytail: mockup uses #79b8ff for both themes, but it fails contrast on the
   // light near-white bg — light gets the readable blue (matches --term-user light).
   --role-user: #1e6fc4;
