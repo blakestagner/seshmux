@@ -17,9 +17,11 @@ export type TabStripProps = {
   active: string | null;
   onSelect(id: string): void;
   onClose?(id: string): void; // renders × only on closable tabs
+  // Trailing action after the last tab (the right pane's "new terminal" +).
+  action?: { label: string; glyph: string; onClick(): void };
 };
 
-export default function TabStrip({ tabs, active, onSelect, onClose }: TabStripProps) {
+export default function TabStrip({ tabs, active, onSelect, onClose, action }: TabStripProps) {
   return (
     <div className={styles.strip} role="tablist">
       {tabs.map((t) => (
@@ -55,6 +57,13 @@ export default function TabStrip({ tabs, active, onSelect, onClose }: TabStripPr
           ) : null}
         </div>
       ))}
+      {action ? (
+        <span className={styles.action} role="presentation">
+          <IconButton label={action.label} onClick={action.onClick}>
+            {action.glyph}
+          </IconButton>
+        </span>
+      ) : null}
     </div>
   );
 }

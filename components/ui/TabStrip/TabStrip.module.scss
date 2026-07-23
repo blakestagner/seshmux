@@ -53,3 +53,12 @@
 .closeWrap {
   display: inline-flex;
 }
+
+// Trailing action (+ new terminal). Sits after the last tab, never scrolls
+// away from it — the strip scrolls as one row.
+.action {
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  flex: 0 0 auto;
+}

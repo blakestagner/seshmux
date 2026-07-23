@@ -10,10 +10,25 @@
 // uncommitted included.
 
 import type { FastifyInstance } from 'fastify';
-import { changes, fileDiff, readWorkingFile } from '../lib/git-stats';
+import {
+  changes,
+  fileDiff,
+  listDir,
+  readWorkingFile,
+  resolveContained,
+  saveUpload,
+  writeWorkingFile,
+} from '../lib/git-stats';
+import { killPort, listeningPorts } from '../lib/ports';
+import { reveal } from '../lib/reveal';
+import { syntaxCheck } from '../lib/syntax-check';
 import { search, replace, type ReplaceEdit, type SearchOpts } from '../lib/git-search';
 import { defaultBranch, list as listWorkspacesDefault, type WorkspaceRecord } from '../lib/workspaces';
 import { defaultResolveRepo } from './bridge';
+
+// Dropped-file ceiling. Generous (video/zip drops are real) but bounded — the
+// body is buffered in memory. ponytail: streaming upload if anyone hits this.
+const MAX_UPLOAD_BYTES = 128 * 1024 * 1024;
 
 export interface GitRouteDeps {
   // projectId -> absolute repo path. Defaults to the resolver bridge.ts
@@ -21,11 +36,15 @@ export interface GitRouteDeps {
   // mis-decodes hyphenated repo names). Injectable for tests.
   resolveRepo?: (projectId: string) => string | null | Promise<string | null>;
   listWorkspaces?: (repo: string) => Promise<WorkspaceRecord[]>;
+  // Injected so tests can exercise the route without a real Finder/Explorer
+  // window opening on whoever is running the suite.
+  revealFn?: (target: string, select?: boolean) => Promise<boolean>;
 }
 
 export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps = {}) {
   const resolveRepo = deps.resolveRepo ?? defaultResolveRepo;
   const listWorkspaces = deps.listWorkspaces ?? listWorkspacesDefault;
+  const revealFn = deps.revealFn ?? reveal;
 
   // The resolver runs provider store scans — far too heavy per 10s poll, and
   // the id→path mapping essentially never changes. Memoize per registration.
@@ -138,6 +157,189 @@ export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps =
         return { error: 'file not found' };
       }
       return file;
+    },
+  );
+
+  // Lazy expand of a collapsed ignored directory in the file tree. Read-only,
+  // contained to the target dir (listDir resolves symlinks and refuses escapes).
+  f.get<{ Querystring: { project?: string; branch?: string; path?: string } }>(
+    '/api/git/dir',
+    async (req, reply) => {
+      const { project, branch, path: relPath } = req.query;
+      if (!project || !relPath) {
+        reply.code(400);
+        return { error: 'project and path are required' };
+      }
+      const target = await resolveTarget(project, branch);
+      if (!target) {
+        reply.code(404);
+        return { error: 'project not found' };
+      }
+      const entries = await listDir(target.dir, relPath);
+      if (!entries) {
+        reply.code(404);
+        return { error: 'directory not found' };
+      }
+      return { entries };
+    },
+  );
+
+  // Listening TCP ports owned by processes running inside this dir (or any
+  // subdir — monorepo apps report the subdir that owns the port).
+  f.get<{ Querystring: { project?: string; branch?: string } }>('/api/git/ports', async (req, reply) => {
+    const { project, branch } = req.query;
+    if (!project) {
+      reply.code(400);
+      return { error: 'project is required' };
+    }
+    const target = await resolveTarget(project, branch);
+    if (!target) {
+      reply.code(404);
+      return { error: 'project not found' };
+    }
+    return { ports: await listeningPorts(target.dir), supported: process.platform !== 'win32' };
+  });
+
+  // Drag-and-drop upload: raw body (one file per request, the browser hands us
+  // File objects one at a time anyway) so no multipart dependency is needed.
+  // Encapsulated to this plugin — it does not change body parsing elsewhere.
+  f.addContentTypeParser('*', { parseAs: 'buffer', bodyLimit: MAX_UPLOAD_BYTES }, (_req, body, done) =>
+    done(null, body),
+  );
+  f.post<{ Querystring: { project?: string; branch?: string; dir?: string; name?: string } }>(
+    '/api/git/upload',
+    { bodyLimit: MAX_UPLOAD_BYTES },
+    async (req, reply) => {
+      const { project, branch, dir: relDir, name } = req.query;
+      if (!project || !name) {
+        reply.code(400);
+        return { error: 'project and name are required' };
+      }
+      const target = await resolveTarget(project, branch);
+      if (!target) {
+        reply.code(404);
+        return { error: 'project not found' };
+      }
+      const body = req.body;
+      if (!Buffer.isBuffer(body)) {
+        reply.code(400);
+        return { error: 'body must be the raw file bytes' };
+      }
+      const saved = await saveUpload(target.dir, relDir ?? '', name, body);
+      if (!saved) {
+        reply.code(400);
+        return { error: 'destination is outside the project or not a directory' };
+      }
+      return saved;
+    },
+  );
+
+  // Save an edited file from the Full view. Overwrite only — see writeWorkingFile.
+  f.put<{ Body: { project?: string; branch?: string; path?: string; content?: string; mtimeMs?: number } }>(
+    '/api/git/file',
+    { bodyLimit: MAX_UPLOAD_BYTES },
+    async (req, reply) => {
+      const b = req.body ?? {};
+      if (!b.project || !b.path || typeof b.content !== 'string' || typeof b.mtimeMs !== 'number') {
+        reply.code(400);
+        return { error: 'project, path, content and mtimeMs are required' };
+      }
+      const target = await resolveTarget(b.project, b.branch);
+      if (!target) {
+        reply.code(404);
+        return { error: 'project not found' };
+      }
+      const res = await writeWorkingFile(target.dir, b.path, b.content, b.mtimeMs);
+      if ('error' in res) {
+        reply.code(res.error === 'stale' ? 409 : 404);
+        return {
+          error:
+            res.error === 'stale'
+              ? 'file changed on disk since it was opened — reopen it and redo the edit'
+              : 'file not found',
+        };
+      }
+      return res;
+    },
+  );
+
+  // Syntax check for the editor's squiggles. Read-only: the draft is checked
+  // in memory, nothing touches disk.
+  f.post<{ Body: { project?: string; branch?: string; path?: string; content?: string } }>(
+    '/api/git/check',
+    { bodyLimit: MAX_UPLOAD_BYTES },
+    async (req, reply) => {
+      const b = req.body ?? {};
+      if (!b.project || !b.path || typeof b.content !== 'string') {
+        reply.code(400);
+        return { error: 'project, path and content are required' };
+      }
+      const target = await resolveTarget(b.project, b.branch);
+      if (!target) {
+        reply.code(404);
+        return { error: 'project not found' };
+      }
+      return syntaxCheck(target.dir, b.path, b.content);
+    },
+  );
+
+  // Open this project (or one file inside it) in the OS file manager. `path`
+  // is optional and goes through the SAME containment resolve as every other
+  // path here, so this can only ever reveal something inside the repo.
+  f.post<{ Body: { project?: string; branch?: string; path?: string } }>(
+    '/api/git/reveal',
+    async (req, reply) => {
+      const b = req.body ?? {};
+      if (!b.project) {
+        reply.code(400);
+        return { error: 'project is required' };
+      }
+      const target = await resolveTarget(b.project, b.branch);
+      if (!target) {
+        reply.code(404);
+        return { error: 'project not found' };
+      }
+      // No path -> the repo root itself. A path must resolve inside it; a
+      // miss is a 404 rather than a silent fallback to the root, so a stale
+      // row can never quietly open the wrong thing.
+      const abs = await resolveContained(target.dir, b.path || '.');
+      if (!abs) {
+        reply.code(404);
+        return { error: 'path not found' };
+      }
+      const ok = await revealFn(abs, !!b.path);
+      if (!ok) {
+        reply.code(501);
+        return { error: 'no file manager available on the seshmux host' };
+      }
+      return { ok: true };
+    },
+  );
+
+  // Kill whatever is listening on a port inside this project (SIGTERM).
+  f.post<{ Body: { project?: string; branch?: string; port?: number; pid?: number } }>(
+    '/api/git/ports/kill',
+    async (req, reply) => {
+      const b = req.body ?? {};
+      if (!b.project || typeof b.port !== 'number' || typeof b.pid !== 'number') {
+        reply.code(400);
+        return { error: 'project, port and pid are required' };
+      }
+      const target = await resolveTarget(b.project, b.branch);
+      if (!target) {
+        reply.code(404);
+        return { error: 'project not found' };
+      }
+      const res = await killPort(target.dir, b.port, b.pid);
+      if (res === 'not-found') {
+        reply.code(404);
+        return { error: 'nothing listening on that port in this project' };
+      }
+      if (res === 'failed') {
+        reply.code(500);
+        return { error: 'kill failed (permission denied or already gone)' };
+      }
+      return { ok: true };
     },
   );
 

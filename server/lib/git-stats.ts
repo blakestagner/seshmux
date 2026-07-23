@@ -13,7 +13,7 @@
 // reported as the new path (status R, the DETECTED line counts, so a pure
 // `git mv` counts ~0, not the whole file) plus the old path as a delete.
 
-import { open, readFile, realpath, stat } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { git } from './workspaces';
 
@@ -30,6 +30,7 @@ export interface GitChanges {
   removed: number;
   files: FileChange[];
   tree?: string[]; // full tracked file list + untracked, only when requested
+  root?: string; // absolute dir the tree is relative to (tree requests only)
   degraded?: boolean; // git failed — zeros payload, keep your last good value
 }
 
@@ -250,7 +251,7 @@ export async function resolveContained(dir: string, relPath: string): Promise<st
 export async function readWorkingFile(
   dir: string,
   relPath: string,
-): Promise<{ content: string; truncated: boolean } | { binary: true } | null> {
+): Promise<{ content: string; truncated: boolean; mtimeMs: number } | { binary: true } | null> {
   const real = await resolveContained(dir, relPath);
   if (!real) return null;
   const st = await stat(real).catch(() => null);
@@ -260,8 +261,102 @@ export async function readWorkingFile(
   if (buf.subarray(0, 8192).includes(0)) return { binary: true };
   const text = buf.subarray(0, MAX_FILE_BYTES).toString('utf8');
   const lines = text.split('\n');
-  if (lines.length <= MAX_DIFF_LINES && buf.length <= MAX_FILE_BYTES) return { content: text, truncated: false };
-  return { content: lines.slice(0, MAX_DIFF_LINES).join('\n'), truncated: true };
+  // mtime goes out with the content so an edit can be refused if the file
+  // moved under the editor (an agent writes these files while you read them).
+  if (lines.length <= MAX_DIFF_LINES && buf.length <= MAX_FILE_BYTES)
+    return { content: text, truncated: false, mtimeMs: st.mtimeMs };
+  return { content: lines.slice(0, MAX_DIFF_LINES).join('\n'), truncated: true, mtimeMs: st.mtimeMs };
+}
+
+/**
+ * Overwrite an existing working-tree file from the panel's editor.
+ *
+ * Data-loss path, so it fails closed on every count: the target must resolve
+ * INSIDE the dir, must already exist as a regular file (this route never
+ * creates — drag-and-drop does that), and its mtime must still match what the
+ * editor loaded. An agent writing the same file mid-edit therefore loses
+ * nothing: the save is refused and the user re-reads.
+ */
+export async function writeWorkingFile(
+  dir: string,
+  relPath: string,
+  content: string,
+  expectMtimeMs: number,
+): Promise<{ mtimeMs: number } | { error: 'missing' | 'stale' }> {
+  const real = await resolveContained(dir, relPath);
+  if (!real) return { error: 'missing' };
+  const st = await stat(real).catch(() => null);
+  if (!st?.isFile()) return { error: 'missing' };
+  // Whole-millisecond compare: some filesystems round the mtime they report
+  // back, and a sub-ms delta is never a real concurrent write.
+  if (Math.abs(st.mtimeMs - expectMtimeMs) >= 1) return { error: 'stale' };
+  await writeFile(real, content, 'utf8');
+  const after = await stat(real);
+  return { mtimeMs: after.mtimeMs };
+}
+
+/**
+ * One directory's entries, repo-relative, dirs suffixed with '/' (same shape
+ * as the collapsed ignored entries in `tree`, so the client can merge them in
+ * and keep expanding). Backs the panel's lazy expand of ignored dirs —
+ * plain readdir, since git deliberately doesn't list inside them.
+ */
+export async function listDir(dir: string, relPath: string): Promise<string[] | null> {
+  const real = await resolveContained(dir, relPath);
+  if (!real) return null;
+  const entries = await readdir(real, { withFileTypes: true }).catch(() => null);
+  if (!entries) return null;
+  const base = relPath.replace(/\/+$/, '');
+  return entries
+    .map((e) => `${base}/${e.name}${e.isDirectory() ? '/' : ''}`)
+    .sort();
+}
+
+/**
+ * Write a dropped file into `relDir` inside the target dir. The one write path
+ * here, so it fails closed: the destination must resolve INSIDE the repo,
+ * `name` is reduced to a basename (no traversal, no absolute), and an existing
+ * file is never overwritten — a suffix is added instead. Returns the absolute
+ * path written, or null if the destination is outside / not a directory.
+ */
+export async function saveUpload(
+  dir: string,
+  relDir: string,
+  name: string,
+  data: Buffer,
+): Promise<{ path: string; relPath: string } | null> {
+  const base = path.basename(name);
+  if (!base || base === '.' || base === '..') return null;
+  // Lexical containment first so a not-yet-existing destination (the terminal's
+  // .seshmux/dropped/) can be created; realpath containment is re-checked after
+  // the mkdir, which is what actually catches a symlink pointing outside.
+  const root = path.resolve(dir);
+  const lexical = path.resolve(root, relDir || '.');
+  if (lexical !== root && !lexical.startsWith(root + path.sep)) return null;
+  await mkdir(lexical, { recursive: true }).catch(() => {});
+  const destDir = await resolveContained(dir, relDir || '.');
+  if (!destDir) return null;
+  const st = await stat(destDir).catch(() => null);
+  if (!st?.isDirectory()) return null;
+
+  // relPath is measured against the RESOLVED root: destDir came back through
+  // realpath (/var → /private/var on macOS), and mixing the two forms produced
+  // a "relative" path full of ../../.
+  const rootReal = await realpath(root).catch(() => root);
+  const ext = path.extname(base);
+  const stem = base.slice(0, base.length - ext.length);
+  let target = path.join(destDir, base);
+  for (let n = 1; n < 1000; n++) {
+    // wx: create-or-fail. The existence check IS the write — a plain
+    // stat-then-write would race two simultaneous drops of the same name.
+    const fh = await open(target, 'wx').catch(() => null);
+    if (fh) {
+      await fh.writeFile(data).finally(() => fh.close());
+      return { path: target, relPath: path.relative(rootReal, target) };
+    }
+    target = path.join(destDir, `${stem}-${n}${ext}`);
+  }
+  return null;
 }
 
 // ── changes(): the chip + panel data ───────────────────────────────────────
@@ -346,8 +441,27 @@ async function computeChanges(dir: string, baseRef: string | null, wantTree: boo
       files,
     };
     if (wantTree) {
-      const tracked = splitZ(await git(dir, ['ls-files', '-z']));
-      result.tree = [...new Set([...tracked, ...untracked])].sort();
+      // Ignored entries belong in the tree too — the panel is a file browser,
+      // and .env / dist / build output are exactly what people want to open.
+      // --directory collapses an ignored DIRECTORY into one `node_modules/`
+      // entry (trailing slash = "not expanded, ask /api/git/dir"); without it
+      // a monorepo would ship 100k paths in every tree payload.
+      const [tracked, ignored] = await Promise.all([
+        git(dir, ['ls-files', '-z']),
+        git(dir, [
+          'ls-files',
+          '-o',
+          '-i',
+          '--exclude-standard',
+          '--directory',
+          '--no-empty-directory',
+          '-z',
+        ]).catch(() => ''),
+      ]);
+      result.tree = [...new Set([...splitZ(tracked), ...untracked, ...splitZ(ignored)])].sort();
+      // Absolute root so the panel can hand a real path to a drag (the terminal
+      // needs something the shell can resolve, not a repo-relative fragment).
+      result.root = path.resolve(dir);
     }
     return result;
   } catch {

@@ -200,3 +200,9 @@
     color: var(--hot);
   }
 }
+
+// A file/path drag hovering the terminal — dropping types the path at the cursor.
+.dropTarget {
+  outline: 1px dashed var(--accent);
+  outline-offset: -2px;
+}

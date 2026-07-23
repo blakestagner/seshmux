@@ -62,3 +62,43 @@ describe('deleted file vs new directory with the same name (review fix)', () => 
     expect(nodes[0]).toBe(dir); // dir sorts first
   });
 });
+
+// Ignored dirs arrive from git as a single trailing-slash entry (`node_modules/`)
+// and their contents are fetched only on expand — the node must still look and
+// sort like a directory while it has no children, and start collapsed.
+describe('lazy (ignored) dirs', () => {
+  it('renders a trailing-slash entry as an empty dir node marked lazy', () => {
+    const nodes = buildTree(['a.ts', 'node_modules/', '.env'], []);
+    expect(names(nodes)).toEqual(['node_modules', '.env', 'a.ts']); // dir first
+    const nm = nodes[0];
+    expect(nm.lazy).toBe(true);
+    expect(nm.children).toEqual([]);
+    expect(collapsedByDefault(nodes).has('node_modules')).toBe(true);
+  });
+
+  // Regression: an ignored dir can ALSO hold a force-added tracked file, so it
+  // arrives with a child already. The panel must still treat it as unexpanded
+  // (it gates the fetch on lazy, not on children.length) or it shows the one
+  // tracked file and silently hides the rest of the directory.
+  it('stays lazy when a tracked file already lives inside the ignored dir', () => {
+    const nodes = buildTree(['dist/', 'dist/keep.js', 'src/a.ts'], []);
+    const dist = nodes.find((n) => n.path === 'dist')!;
+    expect(dist.lazy).toBe(true);
+    expect(names(dist.children)).toEqual(['keep.js']);
+  });
+
+  it('does not duplicate a dir listed both with and without its slash', () => {
+    const nodes = buildTree(['a/', 'a/', 'a/b.txt'], []);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].lazy).toBe(true);
+    expect(names(nodes[0].children)).toEqual(['b.txt']);
+  });
+
+  it('keeps the lazy flag once children are merged in', () => {
+    const nodes = buildTree(['node_modules/', 'node_modules/pkg/', 'node_modules/x.js'], []);
+    const nm = nodes[0];
+    expect(nm.lazy).toBe(true);
+    expect(names(nm.children)).toEqual(['pkg', 'x.js']);
+    expect(nm.children[0].lazy).toBe(true);
+  });
+});

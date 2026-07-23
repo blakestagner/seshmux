@@ -1,6 +1,6 @@
 'use client';
 
-import type { ChangeEventHandler } from 'react';
+import type { ChangeEventHandler, KeyboardEventHandler } from 'react';
 import styles from './TextInput.module.scss';
 
 export type TextInputProps = {
@@ -16,9 +16,23 @@ export type TextInputProps = {
   // TextInput in a custom layout — chrome (border/bg/radius/padding) stays
   // owned by TextInput.module.scss, never overridden by consumers.
   className?: string;
+  // Behaviour passthroughs (never chrome): submit-on-Enter, and a <datalist>
+  // id for inputs that offer suggestions.
+  onKeyDown?: KeyboardEventHandler<HTMLInputElement>;
+  list?: string;
 };
 
-export default function TextInput({ value, onChange, placeholder, kbdHint, multiline, disabled, className }: TextInputProps) {
+export default function TextInput({
+  value,
+  onChange,
+  placeholder,
+  kbdHint,
+  multiline,
+  disabled,
+  className,
+  onKeyDown,
+  list,
+}: TextInputProps) {
   if (multiline) {
     const onArea: ChangeEventHandler<HTMLTextAreaElement> = (e) => onChange(e.target.value);
     return (
@@ -40,6 +54,8 @@ export default function TextInput({ value, onChange, placeholder, kbdHint, multi
         type="text"
         value={value}
         onChange={handleChange}
+        onKeyDown={onKeyDown}
+        list={list}
         placeholder={placeholder}
         disabled={disabled}
       />

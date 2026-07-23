@@ -13,15 +13,28 @@
  * needs no shell at all. tsx is launched via its resolved CLI entry rather than
  * the node_modules/.bin shim so there is no .cmd to interpreter-wrap (cf.
  * daemon/win-args.js): CreateProcess can always start process.execPath.
+ *
+ * The auth token is pinned HERE, once per `npm run dev`, rather than being
+ * regenerated inside the server. server/index.ts mints a fresh random token per
+ * PROCESS, and tsx watch restarts the process on every server/ save — which
+ * silently invalidated the token embedded in an already-open browser tab, so
+ * every /api call 401'd with "invalid or missing token" and the websockets
+ * failed until a manual reload. Still random, still per-run, never on disk;
+ * it just survives the restarts that a file save causes.
  */
 const { spawn } = require('node:child_process');
+const { randomBytes } = require('node:crypto');
 
 const child = spawn(
   process.execPath,
   [require.resolve('tsx/cli'), 'watch', '--clear-screen=false', 'server/index.ts'],
   {
     stdio: 'inherit',
-    env: { ...process.env, PORT: process.env.PORT || '4800' },
+    env: {
+      ...process.env,
+      PORT: process.env.PORT || '4800',
+      SESHMUX_TOKEN: process.env.SESHMUX_TOKEN || randomBytes(32).toString('hex'),
+    },
   },
 );
 

@@ -34,15 +34,22 @@ export function defaultShell(): string {
 export interface ScratchDeps {
   dialFn?: typeof dial;
   shell?: () => string;
+  // Skip the one-per-owner re-adoption below and always spawn another shell.
+  // This is what ⌘T in the right-pane strip asks for; every OTHER caller wants
+  // the idempotent path, so it stays opt-in.
+  fresh?: boolean;
 }
 
 /**
  * Spawn (or re-adopt) the scratch shell for an owner agent PTY.
  *
- * One-per-owner (decision 4): a live existing scratch is returned as-is
- * (`existing: true`) — the POST route is idempotent, which is what lets a
- * reopened owner tab re-adopt its live shell. A dead hit is pruned and we spawn
- * fresh. Fail-closed on a removed cwd (decision 1): a shell in the wrong
+ * One-per-owner by default (decision 4): a live existing scratch is returned
+ * as-is (`existing: true`) — the POST route is idempotent, which is what lets a
+ * reopened owner tab re-adopt its live shell. `fresh` opts out and always
+ * spawns another shell, so one owner can hold several (⌘T). A dead hit is
+ * pruned and we spawn fresh.
+ *
+ * Fail-closed on a removed cwd (decision 1): a shell in the wrong
  * checkout is a footgun, so a missing/non-dir cwd throws rather than falling
  * back to the parent repo or home.
  */
@@ -59,7 +66,7 @@ export async function startScratchTerminal(
     if (!owner) throw new Error('owner session not found: ' + ownerPtyId);
 
     // Idempotency: return the owner's existing LIVE scratch without spawning.
-    const existingId = await findByOwner(ownerPtyId, owner.tmuxName);
+    const existingId = deps.fresh ? null : await findByOwner(ownerPtyId, owner.tmuxName);
     if (existingId) {
       if (ptys.some((p) => p.ptyId === existingId && p.alive)) {
         return { ptyId: existingId, existing: true };
