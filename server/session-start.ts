@@ -11,6 +11,7 @@ import { dial } from './daemon-client';
 import { addEntry } from './lib/live-ledger';
 import { whichBin } from './lib/which';
 import { getProviders } from './lib/providers/types';
+import { encodeProjectId } from './lib/store/scan';
 import type { ProviderId } from './lib/providers/types';
 import { detectEnv } from './lib/detect';
 
@@ -34,6 +35,12 @@ export interface TabMeta {
   ptyId: string;
   provider: ProviderId;
   projectPath: string;
+  // The id this cwd will have once a session exists in it — the SAME encoding
+  // the provider scans produce, so a tab opened for a brand-new folder is
+  // already keyed the way session-new/rail/git routes will key it. Without it
+  // the client had to invent an id (it used the raw path), and the arriving
+  // session-new event then matched no tab.
+  projectId: string;
   mode: string;
   tmux: boolean;
   linked?: boolean;
@@ -190,6 +197,7 @@ export async function startSession(input: StartSessionInput): Promise<StartSessi
       ptyId,
       provider: providerId,
       projectPath,
+      projectId: encodeProjectId(projectPath),
       mode: resumeId ? 'resume' : mode,
       tmux: !!tmuxName,
     };

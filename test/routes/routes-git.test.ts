@@ -253,3 +253,90 @@ describe('worktree targeting (arbitrary branch names)', () => {
     expect(res.json().files).toEqual([]); // only-here.txt does not exist in the main tree
   });
 });
+
+// Drag-and-drop: raw-body upload (must not disturb the JSON routes above) and
+// the lazy directory listing that backs expanding an ignored dir.
+describe('POST /api/git/upload + GET /api/git/dir', () => {
+  it('writes the raw body into the repo and reports where it landed', async () => {
+    const f = makeApp();
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/git/upload?project=x&name=dropped.txt&dir=',
+      headers: { 'content-type': 'application/octet-stream' },
+      payload: Buffer.from('bytes'),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().relPath).toBe('dropped.txt');
+    expect(readFileSync(join(repo, 'dropped.txt'), 'utf8')).toBe('bytes');
+  });
+
+  it('400s a destination outside the repo', async () => {
+    const f = makeApp();
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/git/upload?project=x&name=x.txt&dir=..',
+      headers: { 'content-type': 'application/octet-stream' },
+      payload: Buffer.from('x'),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('lists one directory, dirs suffixed with a slash', async () => {
+    mkdirSync(join(repo, 'listme', 'sub'), { recursive: true });
+    writeFileSync(join(repo, 'listme', 'f.txt'), 'x');
+    const f = makeApp();
+    const res = await f.inject({ method: 'GET', url: '/api/git/dir?project=x&path=listme' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().entries).toEqual(['listme/f.txt', 'listme/sub/']);
+  });
+
+  it('404s a directory outside the repo', async () => {
+    const f = makeApp();
+    const res = await f.inject({ method: 'GET', url: '/api/git/dir?project=x&path=../..' });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
+// POST /api/git/reveal — hands a path to the OS file manager. The reveal call
+// is injected so the suite never actually opens a Finder window.
+describe('POST /api/git/reveal', () => {
+  it('reveals the repo root when no path is given (no select)', async () => {
+    const calls: [string, boolean | undefined][] = [];
+    const f = makeApp({ revealFn: async (t, sel) => (calls.push([t, sel]), true) });
+    const res = await f.inject({ method: 'POST', url: '/api/git/reveal', payload: { project: 'x' } });
+    expect(res.statusCode).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toBe(false); // a directory opens, it is not "selected"
+  });
+
+  it('selects the file when a path is given', async () => {
+    const calls: [string, boolean | undefined][] = [];
+    const f = makeApp({ revealFn: async (t, sel) => (calls.push([t, sel]), true) });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/git/reveal',
+      payload: { project: 'x', path: 'a.txt' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(calls[0][0].endsWith('a.txt')).toBe(true);
+    expect(calls[0][1]).toBe(true);
+  });
+
+  it('404s a path outside the repo instead of falling back to the root', async () => {
+    let called = false;
+    const f = makeApp({ revealFn: async () => ((called = true), true) });
+    const res = await f.inject({
+      method: 'POST',
+      url: '/api/git/reveal',
+      payload: { project: 'x', path: '../../etc/passwd' },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(called).toBe(false);
+  });
+
+  it('501s when the host has no file manager', async () => {
+    const f = makeApp({ revealFn: async () => false });
+    const res = await f.inject({ method: 'POST', url: '/api/git/reveal', payload: { project: 'x' } });
+    expect(res.statusCode).toBe(501);
+  });
+});

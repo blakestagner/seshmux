@@ -10,7 +10,14 @@
 // (edge H isolation). An empty pane deletes its record entry so the split
 // collapses back to a solo terminal.
 
-export type PanelId = 'agents' | 'team' | 'changes' | 'terminal';
+// Terminal panels are INSTANCED: one per scratch shell, id carries its ptyId
+// so several can coexist in one tab's strip. Everything else is a singleton.
+export type PanelId = 'agents' | 'team' | 'changes' | 'ports' | `terminal:${string}`;
+
+export const terminalPanel = (ptyId: string): PanelId => `terminal:${ptyId}`;
+export const isTerminalPanel = (id: PanelId): boolean => id.startsWith('terminal:');
+/** ptyId of a terminal panel, '' for any other panel. */
+export const panelPtyId = (id: PanelId): string => (isTerminalPanel(id) ? id.slice('terminal:'.length) : '');
 export interface PaneState {
   open: PanelId[];
   active: PanelId | null;
@@ -57,14 +64,13 @@ export function pruneTab(rec: RightPaneRecord, tabId: string): RightPaneRecord {
 // to decide which panel to actually show. Returns `active` if its gate passes,
 // else the LAST panel in `open` whose gate passes, else null (pane collapses to
 // a solo terminal). `open` is PRESERVED — a recovered gate re-shows its panel.
-export function resolveActive(
-  pane: PaneState | undefined,
-  gates: Record<PanelId, boolean>,
-): PanelId | null {
+// `gate` is a predicate rather than a record: terminal panel ids are unbounded
+// (one per shell), so there is no finite key set to build a record from.
+export function resolveActive(pane: PaneState | undefined, gate: (id: PanelId) => boolean): PanelId | null {
   if (!pane) return null;
-  if (pane.active && gates[pane.active]) return pane.active;
+  if (pane.active && gate(pane.active)) return pane.active;
   for (let i = pane.open.length - 1; i >= 0; i--) {
-    if (gates[pane.open[i]]) return pane.open[i];
+    if (gate(pane.open[i])) return pane.open[i];
   }
   return null;
 }
@@ -80,6 +86,7 @@ export function resolveActive(
 // server's startup sweep rewrites the ownerPtyId in that case, but the tmux
 // fallback here keeps the client correct even before/without that rewrite.
 // Unmatched scratch entries are dropped (the server sweep owns real orphans).
+// One owner may map to MANY shells; the value is a list in `live` order.
 // Tab id mirrors store.ts openTerm: 'term-' + owner.ptyId.
 export interface LiveLike {
   ptyId: string;
@@ -90,15 +97,18 @@ export interface LiveLike {
 }
 export function routeScratchLive<T extends LiveLike>(
   live: T[],
-): { agents: T[]; scratchByOwnerTab: Record<string, string> } {
+): { agents: T[]; scratchByOwnerTab: Record<string, string[]> } {
   const agents = live.filter((l) => l.kind !== 'scratch');
-  const scratchByOwnerTab: Record<string, string> = {};
+  const scratchByOwnerTab: Record<string, string[]> = {};
   for (const s of live) {
     if (s.kind !== 'scratch') continue;
     const owner =
       agents.find((a) => a.ptyId === s.ownerPtyId) ??
       (s.ownerTmuxName ? agents.find((a) => a.tmuxName != null && a.tmuxName === s.ownerTmuxName) : undefined);
-    if (owner) scratchByOwnerTab['term-' + owner.ptyId] = s.ptyId;
+    if (!owner) continue;
+    // An owner can have SEVERAL shells now (⌘T), so this is a list, in live
+    // order — the strip rebuilds one tab per surviving shell.
+    (scratchByOwnerTab['term-' + owner.ptyId] ??= []).push(s.ptyId);
   }
   return { agents, scratchByOwnerTab };
 }

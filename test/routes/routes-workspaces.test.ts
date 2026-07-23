@@ -27,7 +27,7 @@ function recorder() {
   const calls: any[] = [];
   const startSession: WorkspaceRouteDeps['startSession'] = async (opts) => {
     calls.push(opts);
-    return { ptyId: 'pty-1', tabMeta: { ptyId: 'pty-1', provider: opts.provider, projectPath: opts.projectPath, mode: 'new', tmux: false } };
+    return { ptyId: 'pty-1', tabMeta: { ptyId: 'pty-1', provider: opts.provider, projectPath: opts.projectPath, projectId: 'p', mode: 'new', tmux: false } };
   };
   return { calls, startSession };
 }

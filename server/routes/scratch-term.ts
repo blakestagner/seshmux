@@ -6,7 +6,7 @@
 // two files apart keeps that invariant crisp. Named scratch-term (not scratch)
 // so it can't be confused with routes/scratchpad.ts.
 //
-//   POST   /api/term/scratch          { ownerPtyId } -> { ptyId, existing }
+//   POST   /api/term/scratch          { ownerPtyId, fresh? } -> { ptyId, existing }
 //   DELETE /api/term/scratch/:ptyId   scratch-guarded kill (fail-closed 404)
 //
 // Guarded by the onRequest auth hook in server/index.ts (under /api/).
@@ -24,13 +24,13 @@ export interface ScratchTermRouteDeps {
 export default async function scratchTermRoutes(f: FastifyInstance, deps: ScratchTermRouteDeps = {}) {
   // POST /api/term/scratch — spawn (or idempotently re-adopt) an owner's shell.
   f.post('/api/term/scratch', async (req, reply) => {
-    const body = (req.body ?? {}) as { ownerPtyId?: unknown };
+    const body = (req.body ?? {}) as { ownerPtyId?: unknown; fresh?: unknown };
     const { ownerPtyId } = body;
     if (typeof ownerPtyId !== 'string' || !ownerPtyId) {
       return reply.code(400).send({ error: 'ownerPtyId is required' });
     }
     try {
-      return await startScratchTerminal(ownerPtyId, { dialFn: deps.dialFn });
+      return await startScratchTerminal(ownerPtyId, { dialFn: deps.dialFn, fresh: body.fresh === true });
     } catch (e) {
       const msg = (e as Error).message;
       // Owner-missing / gone-cwd are client faults (400); daemon errors are 500.

@@ -156,7 +156,7 @@ describe('reconcile', () => {
         startedAt: 5000,
         sessionId: input.resumeId,
       });
-      return { ptyId, tabMeta: { ptyId, provider: input.provider, projectPath: input.projectPath, mode: 'resume', tmux: false } };
+      return { ptyId, tabMeta: { ptyId, provider: input.provider, projectPath: input.projectPath, projectId: 'p', mode: 'resume', tmux: false } };
     });
     return fn;
   }

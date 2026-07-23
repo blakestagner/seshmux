@@ -23,6 +23,24 @@ function authToken(): string {
   return typeof window !== 'undefined' ? window.__SESHMUX_TOKEN ?? '' : '';
 }
 
+// A 401 means the token baked into THIS page's HTML is no longer the server's:
+// the server process restarted and minted a new one (every server/ save does
+// that under `tsx watch`). The page can only get the new token by re-fetching
+// its HTML, so reload once — otherwise the tab looks alive while every request
+// and every websocket silently fails.
+//
+// Once per page load, tracked in sessionStorage: if the reload lands and STILL
+// 401s, the error surfaces normally instead of looping. Any successful request
+// clears the latch, so a later rotation can self-heal again.
+const RELOAD_LATCH = 'seshmux-reloaded-for-token';
+
+function recoverFromStaleToken(): void {
+  if (typeof window === 'undefined') return;
+  if (sessionStorage.getItem(RELOAD_LATCH)) return; // already tried — don't loop
+  sessionStorage.setItem(RELOAD_LATCH, '1');
+  window.location.reload();
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -35,10 +53,16 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!res.ok) {
+    if (res.status === 401) recoverFromStaleToken();
     // Surface the server's {error} message when present — callers show it to the user.
     const body = await res.json().catch(() => null);
     const msg = body && typeof body.error === 'string' ? body.error : `${path} -> ${res.status}`;
     throw new Error(msg);
+  }
+  // Only when actually set — this runs on every poll, and sessionStorage
+  // writes are synchronous.
+  if (typeof window !== 'undefined' && sessionStorage.getItem(RELOAD_LATCH)) {
+    sessionStorage.removeItem(RELOAD_LATCH);
   }
   return res.json() as Promise<T>;
 }
@@ -47,6 +71,28 @@ export { authToken };
 
 export function getProjects(): Promise<Project[]> {
   return req('/api/projects');
+}
+
+/** Default location for the new-project dialog + native-picker availability. */
+export function getHomeDir(): Promise<{ home: string; picker: boolean }> {
+  return req('/api/projects/home');
+}
+
+/**
+ * Open the OS folder chooser. Runs on the machine hosting seshmux, which for a
+ * local-first app is yours. `path: null` = cancelled (a normal outcome).
+ */
+export function pickFolder(startIn?: string): Promise<{ path: string | null }> {
+  return req('/api/projects/pick', { method: 'POST', body: JSON.stringify({ startIn }) });
+}
+
+/**
+ * Create (or adopt) <parent>/<name> so a session can be started in it. seshmux
+ * has no project registry — a project IS a cwd an agent has run in — so this
+ * only makes the directory; the caller starts the session.
+ */
+export function createProjectFolder(parent: string, name: string): Promise<{ path: string; existed: boolean }> {
+  return req('/api/projects/create', { method: 'POST', body: JSON.stringify({ parent, name }) });
 }
 
 /** Deep width-correct scrollback for a live PTY (tmux capture-pane via the
@@ -130,6 +176,9 @@ export type TabMeta = {
   ptyId: string;
   provider: ProviderId;
   projectPath: string;
+  // Id this cwd will have once it holds a session — see server/session-start.
+  // Older servers omit it; callers fall back to the path.
+  projectId?: string;
   mode: string;
   tmux: boolean;
   linked?: boolean;
@@ -171,8 +220,12 @@ export function getLive(): Promise<{ live: LiveSession[] }> {
 // ── Scratch terminal (a plain shell bound to a session's cwd) ────────────────
 // Spawn is idempotent per owner: a live scratch for this owner is re-adopted
 // (returns its ptyId + existing:true) rather than spawning a second shell.
-export function startScratchTerminal(ownerPtyId: string): Promise<{ ptyId: string; existing: boolean }> {
-  return req('/api/term/scratch', { method: 'POST', body: JSON.stringify({ ownerPtyId }) });
+// `fresh` opts out — ⌘T wants ANOTHER shell, not the one already open.
+export function startScratchTerminal(
+  ownerPtyId: string,
+  fresh = false,
+): Promise<{ ptyId: string; existing: boolean }> {
+  return req('/api/term/scratch', { method: 'POST', body: JSON.stringify({ ownerPtyId, fresh }) });
 }
 
 // The ONLY client-facing PTY kill route — scratch-guarded server-side (404 on a
@@ -581,7 +634,14 @@ export function getTeamMembers(leadSessionId: string): Promise<TeamInfo | null> 
 // approx: the count is a capped lower bound (huge untracked file).
 export type FileChange = { path: string; added: number; removed: number; status: string; approx?: boolean };
 // degraded: git failed server-side — a zeros payload; keep your last good value.
-export type GitChanges = { added: number; removed: number; files: FileChange[]; tree?: string[]; degraded?: boolean };
+export type GitChanges = {
+  added: number;
+  removed: number;
+  files: FileChange[];
+  tree?: string[];
+  root?: string; // absolute dir the tree paths hang off (tree requests only)
+  degraded?: boolean;
+};
 
 // Branch line stats vs the repo's default branch (committed + dirty + untracked).
 // tree=true adds the full tracked file list for the changes panel.
@@ -607,10 +667,119 @@ export function getGitFile(
   projectId: string,
   branch: string | null | undefined,
   path: string,
-): Promise<{ content?: string; truncated?: boolean; binary?: boolean }> {
+): Promise<{ content?: string; truncated?: boolean; binary?: boolean; mtimeMs?: number }> {
   const params = new URLSearchParams({ project: projectId, path });
   if (branch) params.set('branch', branch);
   return req(`/api/git/file?${params}`);
+}
+
+/**
+ * Save an edited file. `mtimeMs` is the one the read returned — the server
+ * refuses (409) if the file changed underneath, so an agent writing the same
+ * file mid-edit never gets clobbered.
+ */
+export function saveGitFile(
+  projectId: string,
+  branch: string | null | undefined,
+  path: string,
+  content: string,
+  mtimeMs: number,
+): Promise<{ mtimeMs: number }> {
+  return req('/api/git/file', {
+    method: 'PUT',
+    body: JSON.stringify({ project: projectId, branch: branch ?? undefined, path, content, mtimeMs }),
+  });
+}
+
+/** One directory's entries (dirs suffixed '/'), for expanding an ignored dir. */
+export function getGitDir(
+  projectId: string,
+  branch: string | null | undefined,
+  path: string,
+): Promise<{ entries: string[] }> {
+  const params = new URLSearchParams({ project: projectId, path });
+  if (branch) params.set('branch', branch);
+  return req(`/api/git/dir?${params}`);
+}
+
+/**
+ * Drop a file into the repo. Raw body, one file per call (the browser hands
+ * over File objects individually anyway). Returns where it actually landed —
+ * the server never overwrites, so `name.txt` may come back as `name-1.txt`.
+ */
+export async function uploadFile(
+  projectId: string,
+  branch: string | null | undefined,
+  dir: string,
+  file: File,
+): Promise<{ path: string; relPath: string }> {
+  const params = new URLSearchParams({ project: projectId, name: file.name, dir });
+  if (branch) params.set('branch', branch);
+  return req(`/api/git/upload?${params}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/octet-stream' },
+    body: await file.arrayBuffer(),
+  });
+}
+
+export interface PortEntry {
+  port: number;
+  pid: number;
+  command: string;
+  dir: string;
+}
+
+/**
+ * Syntax check for the editor's squiggles. `checked: false` means we have no
+ * checker for this file type — NOT that the file is clean.
+ */
+export function checkSyntax(
+  projectId: string,
+  branch: string | null | undefined,
+  path: string,
+  content: string,
+): Promise<{ checked: boolean; errors: { line: number; message: string }[] }> {
+  return req('/api/git/check', {
+    method: 'POST',
+    body: JSON.stringify({ project: projectId, branch: branch ?? undefined, path, content }),
+  });
+}
+
+/**
+ * Open the project (or one file in it) in the OS file manager — Finder on
+ * macOS. Runs on the machine hosting seshmux, same as the folder picker.
+ */
+export function revealInFileManager(
+  projectId: string,
+  branch: string | null | undefined,
+  path?: string,
+): Promise<{ ok: true }> {
+  return req('/api/git/reveal', {
+    method: 'POST',
+    body: JSON.stringify({ project: projectId, branch: branch ?? undefined, path }),
+  });
+}
+
+/** SIGTERM whatever is listening on `port` (server re-verifies pid+port first). */
+export function killPort(
+  projectId: string,
+  branch: string | null | undefined,
+  port: number,
+  pid: number,
+): Promise<{ ok: true }> {
+  return req('/api/git/ports/kill', {
+    method: 'POST',
+    body: JSON.stringify({ project: projectId, branch: branch ?? undefined, port, pid }),
+  });
+}
+
+export function getPorts(
+  projectId: string,
+  branch: string | null | undefined,
+): Promise<{ ports: PortEntry[]; supported: boolean }> {
+  const params = new URLSearchParams({ project: projectId });
+  if (branch) params.set('branch', branch);
+  return req(`/api/git/ports?${params}`);
 }
 
 // ── repo search / replace (changes panel search mode) ───────────────────────

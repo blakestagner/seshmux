@@ -24,6 +24,7 @@ import {
   finishWorkspace,
   getSubagents,
   getGitChanges,
+  uploadFile,
   type BridgeStart,
   type WorkspaceRecord,
   type WorkspaceFinishMode,
@@ -31,6 +32,7 @@ import {
 import { useAppState } from '../../lib/client/store';
 import { useDetectedProviders, bridgeTarget } from '../../lib/client/providers';
 import { retryRepaintUntilReady } from '../../lib/client/repaint-retry';
+import { pasteText, pathsFromDrop } from '../../lib/client/drop-paths';
 import StatusDot from '../ui/StatusDot/StatusDot';
 import ProviderBadge, { PROV } from '../ui/ProviderBadge/ProviderBadge';
 import BranchLabel from '../ui/BranchLabel/BranchLabel';
@@ -73,6 +75,8 @@ export type TerminalPaneProps = {
   // (page.tsx owns the split, same slot as the subagent viewer). Absent (grid
   // tiles) → the stats render as a plain non-clickable span.
   onOpenChanges?: () => void;
+  // Clicking the ports chip opens the listening-ports panel for this repo.
+  onOpenPorts?: () => void;
   // Clicking the `>_` chip opens (idempotently spawns) a scratch shell in this
   // session's cwd, in the right-pane tab strip. Absent → no chip (grid tiles,
   // and the scratch pane's own TerminalPane, which passes no owner context).
@@ -108,6 +112,7 @@ export default function TerminalPane({
   teamMemberCount,
   onOpenTeam,
   onOpenChanges,
+  onOpenPorts,
   onOpenTerminal,
   visible = true,
 }: TerminalPaneProps) {
@@ -122,6 +127,35 @@ export default function TerminalPane({
   // Escape hatch for the view-switch effect below: the main effect stores its
   // pushSize closure here so size can be reasserted from outside it.
   const pushSizeRef = useRef<(() => void) | null>(null);
+  // Same escape hatch for writing INTO the PTY from outside the effect (the
+  // file-drop handler below). Null while unmounted/reconnecting — drops no-op.
+  const sendRef = useRef<((data: string) => void) | null>(null);
+  const [dropping, setDropping] = useState(false);
+
+  // Drop a file on the terminal → its path is typed at the cursor.
+  //   - our own Folder-panel rows and Finder drags in browsers that expose
+  //     file:// URLs give the real path straight from the DataTransfer;
+  //   - Chrome withholds local paths for File drops, so the file is copied
+  //     into the repo's .seshmux/dropped/ and THAT path is pasted. It is the
+  //     only way to hand Chrome-dropped Finder files to an agent at all.
+  async function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDropping(false);
+    const paths = pathsFromDrop(e.dataTransfer);
+    if (paths.length) {
+      sendRef.current?.(pasteText(paths));
+      return;
+    }
+    const files = Array.from(e.dataTransfer.files);
+    if (!files.length || !projectId) return;
+    try {
+      const saved: string[] = [];
+      for (const file of files) saved.push((await uploadFile(projectId, branch, '.seshmux/dropped', file)).path);
+      sendRef.current?.(pasteText(saved));
+    } catch {
+      /* the drop simply types nothing; no statusbar error surface here */
+    }
+  }
 
   // Reassert PTY size on EVERY tabs⇄grid⇄(future views) switch — panes that
   // survive a switch (or whose container math lands on the same px width)
@@ -365,6 +399,7 @@ export default function TerminalPane({
       });
 
       term.onData((data) => socket?.send(data));
+      sendRef.current = (data: string) => socket?.send(data);
 
       // Resize xterm to its container and tell the PTY.
       // RO fires per animation frame during a seam drag (grid workspace) — debounce
@@ -408,6 +443,7 @@ export default function TerminalPane({
     return () => {
       disposed = true;
       pushSizeRef.current = null;
+      sendRef.current = null;
       if (roTimer) clearTimeout(roTimer);
       ro?.disconnect();
       themeObserver?.disconnect();
@@ -652,7 +688,22 @@ export default function TerminalPane({
 
   return (
     <div className={styles.pane}>
-      <div className={styles.termWrap}>
+      <div
+        className={`${styles.termWrap} ${dropping ? styles.dropTarget : ''}`}
+        onDragOver={(e) => {
+          // Only intercept FILE/URI drags. text/plain is deliberately excluded:
+          // a text selection dragged inside xterm carries only that, and
+          // intercepting it swallowed the drop (a path never came back, so
+          // nothing was typed). Our own tree rows publish uri-list too.
+          const t = e.dataTransfer.types;
+          if (!t.includes('Files') && !t.includes('text/uri-list')) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'copy';
+          setDropping(true);
+        }}
+        onDragLeave={() => setDropping(false)}
+        onDrop={(e) => void handleDrop(e)}
+      >
         <div ref={mountRef} className={styles.term} />
         {connecting ? (
           <div className={styles.loading} aria-live="polite">
@@ -756,6 +807,16 @@ export default function TerminalPane({
                 <span className={styles.diffChip}>{stats}</span>
               );
             })()}
+          </>
+        ) : null}
+        {/* Ports chip: listening ports whose owning process runs inside this
+            repo (or a subdir — monorepo apps each report their own). */}
+        {variant !== 'grid' && onOpenPorts ? (
+          <>
+            <span className={styles.divider} aria-hidden="true" />
+            <Button variant="chip" title="Listening ports" onClick={onOpenPorts}>
+              ⇅ ports
+            </Button>
           </>
         ) : null}
         {/* Scratch terminal chip: opens a plain shell in this session's cwd in

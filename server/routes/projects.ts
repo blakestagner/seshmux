@@ -5,7 +5,10 @@
 // No provider specifics here: everything flows through getProviders() (hard rule 3).
 
 import type { FastifyInstance } from 'fastify';
+import { mkdir, stat } from 'node:fs/promises';
 import os from 'node:os';
+import path from 'node:path';
+import { pickFolder, pickerAvailable } from '../lib/folder-picker';
 import { getProviders } from '../lib/providers/types';
 import type { Project, SessionMeta } from '../lib/providers/types';
 
@@ -24,7 +27,68 @@ function isTmpProject(path: string): boolean {
   return TMP_ROOTS.some((root) => p.startsWith(root));
 }
 
+// Expand a leading ~ and make absolute. The user types this path, so there is
+// no traversal boundary to defend — but it MUST end up absolute, or mkdir would
+// land relative to wherever the server happens to be running.
+function resolveUserPath(input: string): string {
+  const trimmed = input.trim();
+  const expanded = trimmed === '~' || trimmed.startsWith('~/') ? path.join(os.homedir(), trimmed.slice(1)) : trimmed;
+  return path.resolve(expanded);
+}
+
 export default async function projectsRoutes(f: FastifyInstance) {
+  // Default location offered by the "new project" dialog, plus whether a
+  // native folder chooser can be opened on this machine at all.
+  f.get('/api/projects/home', async () => ({ home: os.homedir(), picker: await pickerAvailable() }));
+
+  // Open the OS folder chooser (on the SERVER's screen — see lib/folder-picker).
+  // A cancel is a normal outcome, not an error: { path: null }.
+  f.post<{ Body: { startIn?: string } }>('/api/projects/pick', async (req) => {
+    // A second request dismisses a stale dialog and opens a new one, so this
+    // never refuses — see lib/folder-picker.
+    return pickFolder(req.body?.startIn);
+  });
+
+  // POST /api/projects/create { parent, name } -> { path }
+  // Creates <parent>/<name> and hands the path back; the client then starts a
+  // session in it (which is what actually makes it a project — a project is a
+  // cwd an agent has run in, so seshmux never "registers" one).
+  // An existing directory is ADOPTED rather than rejected: pointing the dialog
+  // at a repo you already have is the obvious second use of this button.
+  f.post<{ Body: { parent?: string; name?: string } }>('/api/projects/create', async (req, reply) => {
+    const { parent, name } = req.body ?? {};
+    if (!parent || !name || !name.trim()) {
+      reply.code(400);
+      return { error: 'parent and name are required' };
+    }
+    // Basename only: a name with slashes silently creating nested dirs (or
+    // climbing out with ..) is never what the field means.
+    const base = path.basename(name.trim());
+    if (!base || base === '.' || base === '..') {
+      reply.code(400);
+      return { error: 'invalid folder name' };
+    }
+    const parentPath = resolveUserPath(parent);
+    const parentStat = await stat(parentPath).catch(() => null);
+    if (!parentStat?.isDirectory()) {
+      reply.code(400);
+      return { error: `no such directory: ${parentPath}` };
+    }
+    const target = path.join(parentPath, base);
+    const existing = await stat(target).catch(() => null);
+    if (existing && !existing.isDirectory()) {
+      reply.code(400);
+      return { error: `a file already exists at ${target}` };
+    }
+    if (!existing) await mkdir(target).catch(() => null);
+    const made = await stat(target).catch(() => null);
+    if (!made?.isDirectory()) {
+      reply.code(500);
+      return { error: `could not create ${target}` };
+    }
+    return { path: target, existed: !!existing };
+  });
+
   f.get('/api/projects', async () => {
     const providers = await getProviders();
     const lists = await Promise.all(providers.map((p) => p.scanProjects().catch(() => [])));

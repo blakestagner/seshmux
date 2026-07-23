@@ -23,6 +23,7 @@ import { useAppState } from '../../lib/client/store';
 import { useDetectedProviders, provFilterOptions, showsProviderIdentity } from '../../lib/client/providers';
 import type { RailSort, Tab } from '../../lib/client/store';
 import NewSessionModal, { type SessionMode } from '../NewSessionModal/NewSessionModal';
+import NewProjectModal from '../NewProjectModal/NewProjectModal';
 import TeamModal, { teamsAllowed } from '../TeamModal/TeamModal';
 import FilterMenu from '../FilterMenu/FilterMenu';
 import { PrList } from '../PrLinks/PrLinks';
@@ -157,6 +158,8 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
   const [railFilter, setRailFilter] = useState('');
   // "+" opens NewSessionModal for one project; null = closed.
   const [modalProject, setModalProject] = useState<Project | null>(null);
+  // Rail footer "+ New project": create a folder anywhere, then start in it.
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   // "⚑" (or NewSessionModal's "Team…") opens TeamModal for one project.
   const [teamProject, setTeamProject] = useState<Project | null>(null);
   // Task 5 Step 1b: claude's claude-swarm teammate backend — Teams entry
@@ -193,6 +196,25 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
     } catch {
       // Surfacing errors as a toast lands with the events-ws wave (Task 15).
     }
+  }
+
+  // New project: the folder already exists by now (the modal created it), so
+  // this is just a session spawn in a cwd that has none yet. No project id
+  // exists until the agent writes its first jsonl, so the tab is keyed on the
+  // path — exactly what the rehydrate path does for an unmatched cwd.
+  async function handleStartInNewProject(path: string, name: string, provider: ProviderId) {
+    const { tabMeta } = await startSession({ projectPath: path, provider, mode: 'new' });
+    // tabMeta.projectId is what this cwd's project WILL be called once the
+    // agent writes its first jsonl — key the tab on that, not the raw path, so
+    // the session-new event binds to it and the rail lists it without a reload.
+    dispatch({
+      type: 'openTerm',
+      ptyId: tabMeta.ptyId,
+      projectId: tabMeta.projectId ?? path,
+      label: name,
+      provider,
+    });
+    dispatch({ type: 'setView', view: 'tabs' });
   }
 
   // Team modal's Start button (Task 5) — same split as handleStartSession:
@@ -821,9 +843,29 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
             );
           })
         )}
+        {/* Always available, even with zero projects — this is the only way in
+            for a machine that has never run an agent anywhere. */}
+        <button type="button" className={styles.newProject} onClick={() => setNewProjectOpen(true)}>
+          + New project
+        </button>
       </div>
       </div>
       {sessionsPos === 'bottom' ? sessionsPanel : null}
+      {newProjectOpen ? (
+        <NewProjectModal
+          providers={availableProviders}
+          // Parent dirs of existing projects, most-used first — the datalist.
+          suggestions={[
+            ...new Set(
+              projects
+                .map((p) => p.path.slice(0, p.path.lastIndexOf('/')))
+                .filter(Boolean),
+            ),
+          ]}
+          onCreate={handleStartInNewProject}
+          onClose={() => setNewProjectOpen(false)}
+        />
+      ) : null}
       {modalProject ? (
         <NewSessionModal
           projectPath={modalProject.path}

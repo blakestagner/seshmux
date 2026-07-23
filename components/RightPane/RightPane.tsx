@@ -20,10 +20,12 @@ export type RightPaneProps = {
   active: PanelId | null;
   onSelect(id: PanelId): void;
   onClose(id: PanelId): void;
+  // Present only when this tab can spawn shells — renders the strip's + button.
+  onNewTerminal?(): void;
   panels: RightPanePanel[];
 };
 
-export default function RightPane({ tabs, active, onSelect, onClose, panels }: RightPaneProps) {
+export default function RightPane({ tabs, active, onSelect, onClose, onNewTerminal, panels }: RightPaneProps) {
   return (
     <div className={styles.host}>
       <TabStrip
@@ -31,6 +33,7 @@ export default function RightPane({ tabs, active, onSelect, onClose, panels }: R
         active={active}
         onSelect={(id) => onSelect(id as PanelId)}
         onClose={(id) => onClose(id as PanelId)}
+        action={onNewTerminal ? { label: 'New terminal (⌘T)', glyph: '+', onClick: onNewTerminal } : undefined}
       />
       <div className={styles.body}>
         {panels.map((p) => {

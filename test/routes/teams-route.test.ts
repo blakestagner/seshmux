@@ -20,7 +20,7 @@ function makeApp(over: Partial<TeamRouteDeps> = {}) {
       calls.push(i);
       return {
         ptyId: 'p1',
-        tabMeta: { ptyId: 'p1', provider: 'claude', projectPath: i.projectPath, mode: 'new', tmux: true },
+        tabMeta: { ptyId: 'p1', provider: 'claude', projectPath: i.projectPath, projectId: 'p', mode: 'new', tmux: true },
       };
     },
     ...over,

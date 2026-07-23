@@ -1,0 +1,59 @@
+@use '../../styles/typography' as *;
+
+// New-project dialog — layout/spacing only; chrome comes from Modal, text from
+// the t-* mixins (hard rule 1).
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 380px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.label {
+  @include t-sub;
+}
+
+// Why the name field is locked — the folder already exists under that name.
+.lockNote {
+  color: var(--text-faint);
+}
+
+// Path input + Browse… on one line; the input takes the slack.
+.locationRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.locationInput {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+// The exact path that will be created — cheap certainty before a mkdir.
+.preview {
+  @include t-mono-micro;
+  min-height: 14px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.error {
+  @include t-mono-micro;
+  color: var(--hot);
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

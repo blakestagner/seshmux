@@ -31,6 +31,25 @@
   white-space: nowrap;
 }
 
+// Every control in the header shares ONE height so the row reads as a single
+// strip: the chip buttons (back/edit/cancel/save) and the diff|full segmented
+// otherwise land at ~22px vs ~33px. Glyph buttons (✕ ⌕) keep their own optical
+// sizing and are excluded.
+.head > button:not(.headGlyph):not(.headGlyphSearch),
+.head .viewToggle {
+  height: 24px;
+  box-sizing: border-box;
+}
+
+.head .viewToggle {
+  padding: 1px;
+  align-items: stretch;
+}
+
+.head .viewToggle button {
+  padding: 0 11px;
+}
+
 // Header glyph buttons. Two sizes, one optical result — see t-glyph-panel-search.
 .headGlyph {
   @include t-glyph-panel;
@@ -404,4 +423,81 @@
 .resultMatch:hover .rowAction,
 .rowAction:focus-visible {
   opacity: 1;
+}
+
+// Drag-and-drop target (a dir row, or the tree background = repo root).
+.dropTarget {
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+  background: var(--bg-hover);
+}
+
+// Full-view editor: a transparent textarea sitting exactly on top of a
+// highlighted <pre>, so the caret and the colors are the same pixels. Both
+// layers MUST keep identical font/padding/line-box geometry or the text drifts
+// apart as you scroll — change one, change the other.
+.editorWrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.editorHighlight,
+.editor {
+  @include t-mono-micro;
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 8px 12px;
+  border: 0;
+  box-sizing: border-box;
+  white-space: pre;
+  tab-size: 2;
+  // Explicit, not inherited: a textarea and a pre pick different default
+  // line boxes in some browsers, and any drift shears the two layers apart.
+  line-height: 1.5;
+}
+
+.editorHighlight {
+  overflow: hidden; // scrolled programmatically to follow the textarea
+  pointer-events: none;
+  color: var(--text-dim);
+}
+
+.editor {
+  overflow: auto;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  // The glyphs come from the layer underneath; only the caret and the
+  // selection belong to the textarea.
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--text);
+}
+
+// No highlight layer (file too big): the textarea shows its own text.
+.editorPlain {
+  color: var(--text);
+  -webkit-text-fill-color: var(--text);
+  background: var(--bg);
+}
+
+// Syntax error: wavy underline on the offending line inside the highlight
+// layer, plus a message strip pinned under the editor.
+.errLine {
+  text-decoration: underline wavy var(--hot);
+  text-underline-offset: 3px;
+  text-decoration-skip-ink: none;
+}
+
+.syntaxBar {
+  @include t-mono-micro;
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--hot);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

@@ -483,3 +483,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+// Rail footer "+ New project" — sits under the last project, full width.
+.newProject {
+  @include t-row;
+  display: block;
+  width: 100%;
+  padding: 10px 14px;
+  margin-top: 4px;
+  text-align: left;
+  color: var(--text-faint);
+  border-top: 1px solid var(--border);
+  background: transparent;
+}
+
+.newProject:hover {
+  color: var(--accent);
+  background: var(--bg-hover);
+}

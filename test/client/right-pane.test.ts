@@ -6,12 +6,15 @@ import {
   pruneTab,
   resolveActive,
   routeScratchLive,
+  terminalPanel,
+  isTerminalPanel,
+  panelPtyId,
   type PanelId,
   type RightPaneRecord,
   type LiveLike,
 } from '../../lib/client/right-pane';
 
-const allGatesPass: Record<PanelId, boolean> = { agents: true, team: true, changes: true, terminal: true };
+const allGatesPass = () => true;
 
 describe('openPanel', () => {
   it('adds the first panel to open and makes it active', () => {
@@ -127,20 +130,20 @@ describe('resolveActive', () => {
 
   it('active gate fails → falls through to the LAST open panel whose gate passes', () => {
     const pane = { open: ['agents', 'team', 'changes'] as PanelId[], active: 'changes' as PanelId };
-    const gates = { ...allGatesPass, changes: false };
+    const gates = (id: PanelId) => id !== 'changes';
     expect(resolveActive(pane, gates)).toBe('team');
   });
 
   it('all gates fail → null (pane collapses to solo terminal)', () => {
     const pane = { open: ['agents', 'changes'] as PanelId[], active: 'changes' as PanelId };
-    const gates: Record<PanelId, boolean> = { agents: false, team: false, changes: false, terminal: false };
+    const gates = () => false;
     expect(resolveActive(pane, gates)).toBeNull();
   });
 
   it('gate recovery → original active shows again (open list untouched)', () => {
     const pane = { open: ['agents', 'changes'] as PanelId[], active: 'changes' as PanelId };
     // gate fails, falls through
-    expect(resolveActive(pane, { ...allGatesPass, changes: false })).toBe('agents');
+    expect(resolveActive(pane, (id: PanelId) => id !== 'changes')).toBe('agents');
     // gate recovers, original active shows again — pane object never mutated
     expect(resolveActive(pane, allGatesPass)).toBe('changes');
     expect(pane.open).toEqual(['agents', 'changes']);
@@ -161,7 +164,7 @@ describe('routeScratchLive', () => {
     ];
     const { agents, scratchByOwnerTab } = routeScratchLive(live);
     expect(agents.map((a) => a.ptyId)).toEqual(['owner-1']);
-    expect(scratchByOwnerTab).toEqual({ 'term-owner-1': 'scratch-1' });
+    expect(scratchByOwnerTab).toEqual({ 'term-owner-1': ['scratch-1'] });
   });
 
   it('matches by ownerTmuxName after a daemon restart reassigns the owner ptyId', () => {
@@ -172,7 +175,7 @@ describe('routeScratchLive', () => {
       { ptyId: 'scratch-1', tmuxName: null, kind: 'scratch', ownerPtyId: 'owner-old', ownerTmuxName: 'seshmux-abc' },
     ];
     const { scratchByOwnerTab } = routeScratchLive(live);
-    expect(scratchByOwnerTab).toEqual({ 'term-owner-new': 'scratch-1' });
+    expect(scratchByOwnerTab).toEqual({ 'term-owner-new': ['scratch-1'] });
   });
 
   it('drops an orphan scratch whose owner is not in the live set', () => {
@@ -200,5 +203,38 @@ describe('routeScratchLive', () => {
     ];
     const { scratchByOwnerTab } = routeScratchLive(live);
     expect(scratchByOwnerTab).toEqual({});
+  });
+});
+
+// ⌘T: one owner, several shells — every one gets its own strip tab, in live order.
+describe('routeScratchLive with multiple shells per owner', () => {
+  it('collects them into a list rather than keeping only the last', () => {
+    const live = [
+      { ptyId: 'owner-1', tmuxName: null },
+      { ptyId: 'scratch-1', tmuxName: null, kind: 'scratch' as const, ownerPtyId: 'owner-1' },
+      { ptyId: 'scratch-2', tmuxName: null, kind: 'scratch' as const, ownerPtyId: 'owner-1' },
+    ];
+    const { agents, scratchByOwnerTab } = routeScratchLive(live);
+    expect(agents.map((a) => a.ptyId)).toEqual(['owner-1']);
+    expect(scratchByOwnerTab).toEqual({ 'term-owner-1': ['scratch-1', 'scratch-2'] });
+  });
+});
+
+// Terminal panel ids carry their shell's ptyId so several coexist in one strip.
+describe('terminal panel ids', () => {
+  it('round-trips a ptyId and never matches a singleton panel', () => {
+    const id = terminalPanel('pty-abc');
+    expect(isTerminalPanel(id)).toBe(true);
+    expect(panelPtyId(id)).toBe('pty-abc');
+    expect(isTerminalPanel('changes')).toBe(false);
+    expect(panelPtyId('changes')).toBe('');
+  });
+
+  it('closing one terminal leaves its siblings open', () => {
+    let rec = openPanel({}, 't1', terminalPanel('a'));
+    rec = openPanel(rec, 't1', terminalPanel('b'));
+    rec = closePanel(rec, 't1', terminalPanel('a'));
+    expect(rec.t1.open).toEqual([terminalPanel('b')]);
+    expect(rec.t1.active).toEqual(terminalPanel('b'));
   });
 });

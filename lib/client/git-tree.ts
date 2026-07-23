@@ -6,14 +6,21 @@ import type { FileChange } from './api';
 export interface TreeNode {
   path: string; // full repo-relative path
   name: string; // last segment
-  children: TreeNode[]; // empty for files
+  children: TreeNode[]; // empty for files (and for unexpanded lazy dirs)
   change?: FileChange;
+  lazy?: boolean; // ignored dir, listed but not walked — expand fetches /api/git/dir
 }
 
 export function buildTree(tree: string[], files: FileChange[]): TreeNode[] {
   const changeByPath = new Map(files.map((f) => [f.path, f]));
+  // A trailing slash marks a directory git listed without walking into it
+  // (ignored dirs, and anything /api/git/dir hands back). Strip it here; the
+  // node is flagged lazy so the panel knows expanding it needs a fetch.
+  const lazyDirs = new Set(tree.filter((p) => p.endsWith('/')).map((p) => p.replace(/\/+$/, '')));
   // Deleted files vanish from ls-files but must still show in the panel.
-  const allPaths = [...new Set([...tree, ...files.map((f) => f.path)])];
+  const allPaths = [
+    ...new Set([...tree.map((p) => p.replace(/\/+$/, '')), ...files.map((f) => f.path)]),
+  ].filter(Boolean);
 
   const root: TreeNode = { path: '', name: '', children: [] };
   const dirs = new Map<string, TreeNode>([['', root]]);
@@ -30,6 +37,12 @@ export function buildTree(tree: string[], files: FileChange[]): TreeNode[] {
   };
 
   for (const p of allPaths) {
+    if (lazyDirs.has(p)) {
+      // Dir node either way: already materialized if its children were fetched,
+      // otherwise created empty here and flagged for on-demand expansion.
+      dirFor(p).lazy = true;
+      continue;
+    }
     const idx = p.lastIndexOf('/');
     const parent = dirFor(idx === -1 ? '' : p.slice(0, idx));
     parent.children.push({ path: p, name: p.slice(idx + 1), children: [], change: changeByPath.get(p) });
@@ -58,7 +71,7 @@ export function collapsedByDefault(nodes: TreeNode[]): Set<string> {
     // map, not some — some() short-circuits and would skip siblings after the
     // first changed subtree, leaving them wrongly expanded.
     const any = n.children.map(hasChange).includes(true);
-    if (n.children.length > 0 && !any) collapsed.add(n.path);
+    if ((n.children.length > 0 || n.lazy) && !any) collapsed.add(n.path);
     return any;
   };
   for (const n of nodes) hasChange(n);
