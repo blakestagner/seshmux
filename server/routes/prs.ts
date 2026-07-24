@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { getProviders } from '../lib/providers/types';
 import type { SessionMeta } from '../lib/providers/types';
 import { extractPrs, type PrRef } from '../lib/store/prs';
+import { filterOpenPrs } from '../lib/store/pr-state';
 import { Lru } from '../lib/store/lru';
 
 export default async function prsRoutes(f: FastifyInstance) {
@@ -40,7 +41,9 @@ export default async function prsRoutes(f: FastifyInstance) {
         const { msgs } = await owner!.parseTranscript(projectId, sessionId);
         return extractPrs(msgs);
       });
-      return { prs };
+      // Drop closed/merged PRs. Runs OUTSIDE the mtime cache: a PR's state
+      // changes without touching the transcript, so it has its own TTL.
+      return { prs: await filterOpenPrs(prs) };
     },
   );
 }

@@ -32,6 +32,16 @@ describe('saveUpload', () => {
     expect(res?.relPath).toBe(join('.seshmux', 'dropped', 'shot.png'));
   });
 
+  it('drops a .gitignore(*) so a .seshmux/ drop is not tracked by git', async () => {
+    await saveUpload(root, '.seshmux/dropped', 'report.html', buf('x'));
+    expect(readFileSync(join(root, '.seshmux', '.gitignore'), 'utf8')).toBe('*\n');
+  });
+
+  it('does NOT add a .seshmux/.gitignore for a normal (non-.seshmux) upload', async () => {
+    await saveUpload(root, '', 'a.txt', buf('hi'));
+    expect(existsSync(join(root, '.seshmux'))).toBe(false);
+  });
+
   it('never overwrites — suffixes instead', async () => {
     writeFileSync(join(root, 'a.txt'), 'original');
     const res = await saveUpload(root, '', 'a.txt', buf('new'));

@@ -18,10 +18,13 @@ import styles from './PortsPanel.module.scss';
 export interface PortsPanelProps {
   projectId: string;
   branch?: string | null;
+  // The active terminal's PTY: lets the server scan that terminal's actual cwd
+  // (correct for worktree sessions, where the branch alone can misresolve).
+  ptyId?: string | null;
   onClose: () => void;
 }
 
-export default function PortsPanel({ projectId, branch, onClose }: PortsPanelProps) {
+export default function PortsPanel({ projectId, branch, ptyId, onClose }: PortsPanelProps) {
   const [ports, setPorts] = useState<PortEntry[] | null>(null);
   const [supported, setSupported] = useState(true);
   const [killing, setKilling] = useState<number | null>(null);
@@ -29,13 +32,13 @@ export default function PortsPanel({ projectId, branch, onClose }: PortsPanelPro
 
   const load = useCallback(async () => {
     try {
-      const res = await getPorts(projectId, branch);
+      const res = await getPorts(projectId, branch, ptyId);
       setPorts(res.ports);
       setSupported(res.supported);
     } catch {
       /* best-effort; next tick retries */
     }
-  }, [projectId, branch]);
+  }, [projectId, branch, ptyId]);
 
   // SIGTERM, then re-poll: a dev server usually takes a second to actually go
   // away, so the row lingers until the next tick rather than lying immediately.
@@ -43,7 +46,7 @@ export default function PortsPanel({ projectId, branch, onClose }: PortsPanelPro
     setKilling(p.pid);
     setError(null);
     try {
-      await killPortApi(projectId, branch, p.port, p.pid);
+      await killPortApi(projectId, branch, p.port, p.pid, ptyId);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'kill failed');
     }

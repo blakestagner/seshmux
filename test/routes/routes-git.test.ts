@@ -4,8 +4,9 @@ import Fastify from 'fastify';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import gitRoutes, { type GitRouteDeps } from '../../server/routes/git';
+import { addEntry, _resetLedgerForTest } from '../../server/lib/live-ledger';
 import { canSymlink } from '../helpers/platform';
 
 function git(cwd: string, args: string[]): string {
@@ -300,13 +301,14 @@ describe('POST /api/git/upload + GET /api/git/dir', () => {
 // POST /api/git/reveal — hands a path to the OS file manager. The reveal call
 // is injected so the suite never actually opens a Finder window.
 describe('POST /api/git/reveal', () => {
-  it('reveals the repo root when no path is given (no select)', async () => {
+  it('reveals the repo root selected in its parent when no path is given', async () => {
     const calls: [string, boolean | undefined][] = [];
     const f = makeApp({ revealFn: async (t, sel) => (calls.push([t, sel]), true) });
     const res = await f.inject({ method: 'POST', url: '/api/git/reveal', payload: { project: 'x' } });
     expect(res.statusCode).toBe(200);
     expect(calls).toHaveLength(1);
-    expect(calls[0][1]).toBe(false); // a directory opens, it is not "selected"
+    expect(calls[0][0].endsWith(basename(repo))).toBe(true); // the project dir itself...
+    expect(calls[0][1]).toBe(true); // ...selected, so it opens in the PARENT folder
   });
 
   it('selects the file when a path is given', async () => {
@@ -338,5 +340,43 @@ describe('POST /api/git/reveal', () => {
     const f = makeApp({ revealFn: async () => false });
     const res = await f.inject({ method: 'POST', url: '/api/git/reveal', payload: { project: 'x' } });
     expect(res.statusCode).toBe(501);
+  });
+});
+
+describe('GET /api/git/ports — worktree cwd resolution', () => {
+  let cfg: string;
+  let prev: string | undefined;
+  const scanned: string[] = [];
+  const spyPorts = async (dir: string) => (scanned.push(dir), []);
+
+  beforeAll(async () => {
+    cfg = mkdtempSync(join(tmpdir(), 'smx-ports-cfg-'));
+    prev = process.env.SESHMUX_CONFIG_DIR;
+    process.env.SESHMUX_CONFIG_DIR = cfg;
+    _resetLedgerForTest();
+    // A worktree session whose PTY spawned in a dir OUTSIDE the resolved repo.
+    await addEntry({ ptyId: 'pty-wt', tmuxName: null, provider: 'claude', cwd: '/tmp/some-worktree', startedAt: 1 });
+  });
+  afterAll(() => {
+    if (prev === undefined) delete process.env.SESHMUX_CONFIG_DIR;
+    else process.env.SESHMUX_CONFIG_DIR = prev;
+    _resetLedgerForTest();
+    rmSync(cfg, { recursive: true, force: true });
+  });
+
+  it('scans the PTY ledger cwd when pty is given, not the branch-resolved repo', async () => {
+    scanned.length = 0;
+    const f = makeApp({ listPortsFn: spyPorts });
+    const res = await f.inject({ method: 'GET', url: '/api/git/ports?project=x&branch=nomatch&pty=pty-wt' });
+    expect(res.statusCode).toBe(200);
+    expect(scanned).toEqual(['/tmp/some-worktree']);
+  });
+
+  it('falls back to the branch-resolved repo when pty is unknown', async () => {
+    scanned.length = 0;
+    const f = makeApp({ listPortsFn: spyPorts });
+    const res = await f.inject({ method: 'GET', url: '/api/git/ports?project=x&pty=ghost' });
+    expect(res.statusCode).toBe(200);
+    expect(scanned).toEqual([repo]);
   });
 });

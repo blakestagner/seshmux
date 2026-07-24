@@ -766,19 +766,24 @@ export function killPort(
   branch: string | null | undefined,
   port: number,
   pid: number,
+  ptyId?: string | null,
 ): Promise<{ ok: true }> {
   return req('/api/git/ports/kill', {
     method: 'POST',
-    body: JSON.stringify({ project: projectId, branch: branch ?? undefined, port, pid }),
+    body: JSON.stringify({ project: projectId, branch: branch ?? undefined, port, pid, ptyId: ptyId ?? undefined }),
   });
 }
 
 export function getPorts(
   projectId: string,
   branch: string | null | undefined,
+  ptyId?: string | null,
 ): Promise<{ ports: PortEntry[]; supported: boolean }> {
   const params = new URLSearchParams({ project: projectId });
   if (branch) params.set('branch', branch);
+  // ptyId lets the server scan the terminal's REAL cwd (worktree-aware) instead
+  // of inferring the dir from the branch name.
+  if (ptyId) params.set('pty', ptyId);
   return req(`/api/git/ports?${params}`);
 }
 
