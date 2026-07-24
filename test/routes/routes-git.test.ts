@@ -4,7 +4,7 @@ import Fastify from 'fastify';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import gitRoutes, { type GitRouteDeps } from '../../server/routes/git';
 import { addEntry, _resetLedgerForTest } from '../../server/lib/live-ledger';
 import { canSymlink } from '../helpers/platform';
@@ -307,7 +307,7 @@ describe('POST /api/git/reveal', () => {
     const res = await f.inject({ method: 'POST', url: '/api/git/reveal', payload: { project: 'x' } });
     expect(res.statusCode).toBe(200);
     expect(calls).toHaveLength(1);
-    expect(calls[0][0].endsWith(repo.split('/').pop()!)).toBe(true); // the project dir itself...
+    expect(calls[0][0].endsWith(basename(repo))).toBe(true); // the project dir itself...
     expect(calls[0][1]).toBe(true); // ...selected, so it opens in the PARENT folder
   });
 
