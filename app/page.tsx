@@ -899,6 +899,7 @@ function AppShell() {
                       <PortsPanel
                         projectId={activeTab.projectId!}
                         branch={activeTab.branch}
+                        ptyId={activeTab.ptyId}
                         onClose={() => handleClosePanel(activeTab.id, 'ports')}
                       />
                     );

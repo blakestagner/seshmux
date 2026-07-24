@@ -20,6 +20,7 @@ import {
   writeWorkingFile,
 } from '../lib/git-stats';
 import { killPort, listeningPorts } from '../lib/ports';
+import { readEntries } from '../lib/live-ledger';
 import { reveal } from '../lib/reveal';
 import { syntaxCheck } from '../lib/syntax-check';
 import { search, replace, type ReplaceEdit, type SearchOpts } from '../lib/git-search';
@@ -39,12 +40,15 @@ export interface GitRouteDeps {
   // Injected so tests can exercise the route without a real Finder/Explorer
   // window opening on whoever is running the suite.
   revealFn?: (target: string, select?: boolean) => Promise<boolean>;
+  // Injected so tests can assert WHICH dir gets scanned without a real listener.
+  listPortsFn?: typeof listeningPorts;
 }
 
 export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps = {}) {
   const resolveRepo = deps.resolveRepo ?? defaultResolveRepo;
   const listWorkspaces = deps.listWorkspaces ?? listWorkspacesDefault;
   const revealFn = deps.revealFn ?? reveal;
+  const listPorts = deps.listPortsFn ?? listeningPorts;
 
   // The resolver runs provider store scans — far too heavy per 10s poll, and
   // the id→path mapping essentially never changes. Memoize per registration.
@@ -186,18 +190,32 @@ export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps =
 
   // Listening TCP ports owned by processes running inside this dir (or any
   // subdir — monorepo apps report the subdir that owns the port).
-  f.get<{ Querystring: { project?: string; branch?: string } }>('/api/git/ports', async (req, reply) => {
-    const { project, branch } = req.query;
+  // Which dir to scan for ports. Prefer the PTY's REAL spawn cwd from the live
+  // ledger (server-authoritative, ptyId → cwd): a worktree session's terminal
+  // lives in the worktree, and the ledger knows that exactly. Branch-based
+  // resolveTarget is the fallback — it silently maps to the main checkout when
+  // the tab's branch is null or doesn't match a worktree record (fresh session,
+  // restored tab), which made an external worktree's ports vanish.
+  async function portsDir(project: string, branch: string | undefined, ptyId: string | undefined) {
+    if (ptyId) {
+      const entry = (await readEntries().catch(() => [])).find((e) => e.ptyId === ptyId);
+      if (entry?.cwd) return { dir: entry.cwd };
+    }
+    return resolveTarget(project, branch);
+  }
+
+  f.get<{ Querystring: { project?: string; branch?: string; pty?: string } }>('/api/git/ports', async (req, reply) => {
+    const { project, branch, pty } = req.query;
     if (!project) {
       reply.code(400);
       return { error: 'project is required' };
     }
-    const target = await resolveTarget(project, branch);
+    const target = await portsDir(project, branch, pty);
     if (!target) {
       reply.code(404);
       return { error: 'project not found' };
     }
-    return { ports: await listeningPorts(target.dir), supported: process.platform !== 'win32' };
+    return { ports: await listPorts(target.dir), supported: process.platform !== 'win32' };
   });
 
   // Drag-and-drop upload: raw body (one file per request, the browser hands us
@@ -307,7 +325,10 @@ export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps =
         reply.code(404);
         return { error: 'path not found' };
       }
-      const ok = await revealFn(abs, !!b.path);
+      // Always reveal (select=true): a file shows highlighted in its folder,
+      // and the repo root itself shows highlighted in its PARENT — so clicking
+      // with no file open lands you where the project lives, not inside it.
+      const ok = await revealFn(abs, true);
       if (!ok) {
         reply.code(501);
         return { error: 'no file manager available on the seshmux host' };
@@ -317,7 +338,7 @@ export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps =
   );
 
   // Kill whatever is listening on a port inside this project (SIGTERM).
-  f.post<{ Body: { project?: string; branch?: string; port?: number; pid?: number } }>(
+  f.post<{ Body: { project?: string; branch?: string; port?: number; pid?: number; ptyId?: string } }>(
     '/api/git/ports/kill',
     async (req, reply) => {
       const b = req.body ?? {};
@@ -325,7 +346,9 @@ export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps =
         reply.code(400);
         return { error: 'project, port and pid are required' };
       }
-      const target = await resolveTarget(b.project, b.branch);
+      // Same dir the ports list was scanned from, so killPort's pid+port
+      // re-verification matches what the user actually saw.
+      const target = await portsDir(b.project, b.branch, b.ptyId);
       if (!target) {
         reply.code(404);
         return { error: 'project not found' };

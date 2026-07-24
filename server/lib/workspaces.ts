@@ -15,6 +15,7 @@ import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { configDir } from '../daemon-client';
+import { ensureSeshmuxIgnored } from './git-stats';
 
 const execFileP = promisify(execFile);
 
@@ -158,6 +159,9 @@ export async function git(cwd: string, args: string[]): Promise<string> {
  */
 async function preserveIgnoredFiles(project: string, dir: string, files: string[]): Promise<string | null> {
   if (files.length === 0) return null;
+  // These are gitignored files rescued from a worktree; keep them ignored at
+  // their new home too, so finishing a worktree never adds noise to the repo.
+  await ensureSeshmuxIgnored(project);
   const dest = path.join(project, '.seshmux', 'leftovers', path.basename(dir));
   const failed: string[] = [];
   for (const rel of files) {
