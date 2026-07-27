@@ -313,6 +313,20 @@ export async function listDir(dir: string, relPath: string): Promise<string[] | 
 }
 
 /**
+ * Keep seshmux's own scratch dir out of the user's git. A single `.gitignore`
+ * of `*` inside `.seshmux/` ignores everything there — dropped files, worktree
+ * leftovers, and the .gitignore itself — so nothing seshmux writes into a repo
+ * shows up as untracked noise. Create-once (`wx`) + best-effort: an existing
+ * one is never touched, and an unwritable repo just skips it.
+ */
+export async function ensureSeshmuxIgnored(root: string): Promise<void> {
+  const dir = path.join(root, '.seshmux');
+  await mkdir(dir, { recursive: true }).catch(() => {});
+  const fh = await open(path.join(dir, '.gitignore'), 'wx').catch(() => null);
+  if (fh) await fh.writeFile('*\n').finally(() => fh.close());
+}
+
+/**
  * Write a dropped file into `relDir` inside the target dir. The one write path
  * here, so it fails closed: the destination must resolve INSIDE the repo,
  * `name` is reduced to a basename (no traversal, no absolute), and an existing
@@ -343,6 +357,10 @@ export async function saveUpload(
   // realpath (/var → /private/var on macOS), and mixing the two forms produced
   // a "relative" path full of ../../.
   const rootReal = await realpath(root).catch(() => root);
+  // A drop lands in .seshmux/dropped/ — make sure git ignores it (and anything
+  // else under .seshmux/) so it never shows up as a tracked change.
+  const seshmuxDir = path.join(rootReal, '.seshmux');
+  if (destDir === seshmuxDir || destDir.startsWith(seshmuxDir + path.sep)) await ensureSeshmuxIgnored(rootReal);
   const ext = path.extname(base);
   const stem = base.slice(0, base.length - ext.length);
   let target = path.join(destDir, base);
