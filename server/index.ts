@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import Fastify from 'fastify';
 import next from 'next';
 import { AuthError, requireAuth } from './lib/auth';
+import { validateBindHost, displayHost } from '../bin/lib/host.js';
 import { dial, withTimeout } from './daemon-client';
 import { readEntries, removeByPtyId } from './lib/live-ledger';
 
@@ -30,7 +31,12 @@ async function syncLedgerAtShutdown(): Promise<void> {
   }
 }
 
-export async function startServer({ port = 4700, dev = false } = {}) {
+export async function startServer({ port = 4700, host, dev = false }: { port?: number; host?: string; dev?: boolean } = {}) {
+  // Resolve + validate the bind host here (not only in the entry points) so BOTH
+  // the prod bundle (scripts/entry-server.ts) and dev `tsx server/index.ts` honor
+  // SESHMUX_HOST without each re-implementing the security rule. Default loopback;
+  // validateBindHost throws on 0.0.0.0/:: or a non-IP (see bin/lib/host.js).
+  const bindHost = validateBindHost(host ?? process.env.SESHMUX_HOST ?? '127.0.0.1');
   // Safety net: one missed rejection anywhere (a fire-and-forget `.then` body
   // throwing, a watcher callback rejecting) must not take down the whole control
   // plane — PTYs survive in the daemon, but every open UI dies with the server.
@@ -71,7 +77,7 @@ export async function startServer({ port = 4700, dev = false } = {}) {
           query: req.query as Record<string, unknown>,
           url: req.url,
         },
-        { token, port, isWebSocket },
+        { token, port, host: bindHost, isWebSocket },
       );
     } catch (e) {
       const err = e as AuthError;
@@ -278,7 +284,7 @@ export async function startServer({ port = 4700, dev = false } = {}) {
     handle(req.raw, reply.raw);
   });
 
-  await f.listen({ port, host: '127.0.0.1' });
+  await f.listen({ port, host: bindHost });
   return f;
 }
 
@@ -300,7 +306,8 @@ if (isMain) {
   });
   const dev = process.env.NODE_ENV !== 'production';
   const port = Number(process.env.PORT) || 4700;
-  startServer({ port, dev }).then(() => {
-    console.log(`[seshmux] server on http://127.0.0.1:${port} (dev=${dev})`);
+  const host = validateBindHost(process.env.SESHMUX_HOST ?? '127.0.0.1');
+  startServer({ port, host, dev }).then(() => {
+    console.log(`[seshmux] server on http://${displayHost(host)}:${port} (dev=${dev})`);
   });
 }

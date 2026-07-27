@@ -33,6 +33,15 @@ describe('checkHost', () => {
     expect(checkHost('169.254.169.254')).toBe(false);
     expect(checkHost(undefined)).toBe(false);
   });
+  it('allows the configured non-loopback bind IP (opt-in LAN), loopback still ok', () => {
+    expect(checkHost('10.0.26.5:4700', '10.0.26.5')).toBe(true);
+    expect(checkHost('127.0.0.1:4700', '10.0.26.5')).toBe(true); // loopback always allowed
+    expect(checkHost('[fd00::5]:4700', 'fd00::5')).toBe(true);
+  });
+  it('still rejects a foreign Host even with a LAN bind configured', () => {
+    expect(checkHost('evil.example.com', '10.0.26.5')).toBe(false);
+    expect(checkHost('10.0.26.6:4700', '10.0.26.5')).toBe(false); // different IP
+  });
 });
 
 describe('checkOrigin', () => {
@@ -49,6 +58,18 @@ describe('checkOrigin', () => {
   });
   it('rejects when neither origin nor referer present', () => {
     expect(checkOrigin({}, PORT)).toBe(false);
+  });
+  it('accepts the configured non-loopback origin (opt-in LAN)', () => {
+    expect(checkOrigin({ origin: `http://10.0.26.5:${PORT}` }, PORT, '10.0.26.5')).toBe(true);
+    expect(checkOrigin({ referer: `http://10.0.26.5:${PORT}/app` }, PORT, '10.0.26.5')).toBe(true);
+    // IPv6 bind → bracketed origin.
+    expect(checkOrigin({ origin: `http://[fd00::5]:${PORT}` }, PORT, 'fd00::5')).toBe(true);
+    // Loopback origin still fine alongside a LAN bind.
+    expect(checkOrigin({ origin: `http://127.0.0.1:${PORT}` }, PORT, '10.0.26.5')).toBe(true);
+  });
+  it('rejects a foreign origin even with a LAN bind, and the LAN IP on a wrong port', () => {
+    expect(checkOrigin({ origin: 'http://evil.example.com' }, PORT, '10.0.26.5')).toBe(false);
+    expect(checkOrigin({ origin: `http://10.0.26.5:9999` }, PORT, '10.0.26.5')).toBe(false);
   });
 });
 
@@ -155,6 +176,37 @@ describe('requireAuth (WS upgrade)', () => {
     const err = grab(() =>
       requireAuth(
         reqLike({ headers: { origin: 'http://evil.example.com' }, query: { token: TOKEN } }),
+        ctx,
+      ),
+    );
+    expect(err.statusCode).toBe(403);
+  });
+});
+
+describe('requireAuth (opt-in LAN bind)', () => {
+  const ctx = { token: TOKEN, port: PORT, host: '10.0.26.5' };
+  const lan = { host: `10.0.26.5:${PORT}`, origin: `http://10.0.26.5:${PORT}` };
+
+  it('POST from the LAN IP with token -> passes', () => {
+    expect(() =>
+      requireAuth(
+        reqLike({ method: 'POST', headers: { ...lan, 'x-seshmux-token': TOKEN } }),
+        ctx,
+      ),
+    ).not.toThrow();
+  });
+  it('WS from the LAN IP with token -> passes', () => {
+    expect(() =>
+      requireAuth(
+        reqLike({ headers: { ...lan }, query: { token: TOKEN } }),
+        { ...ctx, isWebSocket: true },
+      ),
+    ).not.toThrow();
+  });
+  it('foreign Host with valid token still -> 403 (rebinding block holds)', () => {
+    const err = grab(() =>
+      requireAuth(
+        reqLike({ headers: { host: 'evil.example.com', 'x-seshmux-token': TOKEN } }),
         ctx,
       ),
     );

@@ -20,6 +20,12 @@ export interface AuthCtx {
   token: string;
   port: number;
   isWebSocket?: boolean;
+  // The configured bind host (see bin/lib/host.js). When it names a specific
+  // non-loopback IP (opt-in LAN bind), that exact address is added to the Host
+  // and Origin allowlists so a browser on another device can reach us. Loopback
+  // is ALWAYS allowed regardless, so the default (loopback) bind never widens
+  // the boundary. Undefined ⇒ loopback-only, unchanged from the original model.
+  host?: string;
 }
 
 interface ReqLike {
@@ -34,25 +40,47 @@ function header(headers: ReqLike['headers'], name: string): string | undefined {
   return Array.isArray(v) ? v[0] : v;
 }
 
-// Accept only a Host header naming our own loopback interface (any port). Defeats
-// DNS-rebinding: a rebound page resolves attacker.com -> 127.0.0.1 but the browser
-// still sends `Host: attacker.com`, which fails here. Applied to ALL guarded
-// requests (GET included) since that's the read-only exfiltration vector.
-export function checkHost(host: string | undefined): boolean {
+const LOOPBACK_NAMES = new Set(['127.0.0.1', 'localhost', '::1']);
+
+// A configured bind host only widens the allowlist when it's a specific
+// non-loopback address; a loopback bind is already covered and must not be
+// double-counted (keeps the default boundary exactly as it was).
+function extraHost(host: string | undefined): string | undefined {
+  return host !== undefined && !LOOPBACK_NAMES.has(host) ? host : undefined;
+}
+
+// Host as it appears inside a URL: IPv6 literals must be bracketed. (net.isIP is
+// avoided here to keep this module free of node imports for the browser build;
+// a bare ':' unambiguously marks an IPv6 literal in this position.)
+function hostForUrl(host: string): string {
+  return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+}
+
+// Accept a Host header naming our own loopback interface (any port) OR the
+// specific IP we were told to bind (`allowedHost`, opt-in LAN bind). Defeats
+// DNS-rebinding: a rebound page resolves attacker.com -> our IP but the browser
+// still sends `Host: attacker.com`, which is on neither list and fails here.
+// Applied to ALL guarded requests (GET included) — the read-only exfil vector.
+export function checkHost(host: string | undefined, allowedHost?: string): boolean {
   if (!host) return false;
   // Strip the port. IPv6 literals are bracketed: [::1]:port.
   const hostname = host.startsWith('[') ? host.slice(1, host.indexOf(']')) : host.split(':')[0];
-  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+  if (LOOPBACK_NAMES.has(hostname)) return true;
+  return hostname === extraHost(allowedHost);
 }
 
-// Accept only http origins pointing at our own loopback host:port.
+// Accept http origins pointing at our own loopback host:port OR the configured
+// non-loopback bind IP:port (opt-in LAN bind).
 export function checkOrigin(
   headers: { origin?: string; referer?: string },
   port: number,
+  allowedHost?: string,
 ): boolean {
   const source = headers.origin ?? headers.referer;
   if (!source) return false;
   const allowed = [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
+  const extra = extraHost(allowedHost);
+  if (extra) allowed.push(`http://${hostForUrl(extra)}:${port}`);
   // origin is an exact host:port; referer carries a path — compare by prefix.
   return allowed.some((a) => source === a || source.startsWith(a + '/'));
 }
@@ -75,7 +103,7 @@ export function requireAuth(req: ReqLike, ctx: AuthCtx): void {
   // Layer 0 — Host allowlist on every guarded request (GET included). Blocks
   // DNS-rebinding read-only exfiltration that the Origin check (mutating/WS only)
   // and localhost binding alone don't cover.
-  if (!checkHost(header(req.headers, 'host'))) {
+  if (!checkHost(header(req.headers, 'host'), ctx.host)) {
     throw new AuthError(403, 'host not allowed');
   }
 
@@ -83,7 +111,7 @@ export function requireAuth(req: ReqLike, ctx: AuthCtx): void {
   if (isMutating || ctx.isWebSocket) {
     const origin = header(req.headers, 'origin');
     const referer = header(req.headers, 'referer');
-    if (!checkOrigin({ origin, referer }, ctx.port)) {
+    if (!checkOrigin({ origin, referer }, ctx.port, ctx.host)) {
       throw new AuthError(403, 'origin not allowed');
     }
   }
