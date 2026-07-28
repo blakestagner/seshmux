@@ -55,9 +55,11 @@ Opens `http://127.0.0.1:4700` in your browser. No account, no config, no server 
 ### Commands
 
 ```bash
-seshmux                    # start (reuses a running instance if there is one)
-seshmux --port 4800        # bind a different port ($PORT works too)
-seshmux --no-open          # don't open a browser
+seshmux                       # start (reuses a running instance if there is one)
+seshmux --port 4800           # bind a different port ($PORT works too)
+seshmux --host 10.0.26.5      # bind a specific IP so other devices can reach it ($SESHMUX_HOST too)
+seshmux --host 10.0.26.5:4800 # set host and port together
+seshmux --no-open             # don't open a browser
 
 seshmux update             # check npm for a newer release and install it
 seshmux update --check     # just tell me, don't install
@@ -281,10 +283,20 @@ This invariant — *nothing may kill daemon-owned PTYs during a server update* �
 
 ## Security model
 
-seshmux serves a web app that can spawn shells, so localhost binding alone is not treated as a boundary. Two layers guard every API call and WebSocket upgrade:
+seshmux serves a web app that can spawn shells, so localhost binding alone is not treated as a boundary. Three layers guard every API call and WebSocket upgrade:
 
-1. **Origin check** — every state-changing request and every WS upgrade must originate from `http://127.0.0.1:<port>` (or `localhost`); cross-site requests are rejected.
-2. **Per-process token** — a random 32-byte token is generated at launch, embedded in the served page, and required on every `/api/*` call and WS upgrade. Never written to disk.
+1. **Host allowlist** — the `Host` header must name the interface seshmux is bound to (loopback by default, plus the `--host` IP if you set one). This blocks DNS-rebinding: a rebound page still sends the attacker's `Host`, which fails here. Applied to reads too.
+2. **Origin check** — every state-changing request and every WS upgrade must originate from the bound `http://<host>:<port>` (loopback, or your `--host` IP); cross-site requests are rejected.
+3. **Per-process token** — a random 32-byte token is generated at launch, embedded in the served page, and required on every `/api/*` call and WS upgrade. Never written to disk.
+
+### Reaching seshmux from another device
+
+By default seshmux binds `127.0.0.1`, so it's only reachable on the machine running it. Two ways to open it elsewhere:
+
+- **SSH tunnel (recommended, no exposure):** on the other device, `ssh -L 4700:127.0.0.1:4700 you@host`, then browse `http://127.0.0.1:4700`. Nothing is exposed on any network.
+- **Bind a private-network IP:** `seshmux --host 10.0.26.5` (a specific LAN/VPN/Tailscale IP). Wildcard binds (`0.0.0.0`, `::`) and hostnames are refused on purpose — you must name one concrete IP, and it's added to the Host/Origin allowlists so a browser on that network can connect.
+
+  ⚠️ Once bound to a network, the per-process token is the **only** thing between anyone who can reach that address and a shell. Only do this on a network you trust (e.g. a Tailscale tailnet), never a public/shared one.
 
 Other postures:
 
