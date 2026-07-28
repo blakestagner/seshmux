@@ -202,8 +202,10 @@
 // grid / drag handles / linked-pair splits are gated off. 640px matches
 // MobileNav.module.scss + TopNav.module.scss.
 @media (max-width: 640px) {
-  // Reserve room under both panes for the fixed bottom nav (54px + border +
-  // iOS safe area) so it never covers content.
+  // Reserve room under both panes for the fixed bottom nav (55px measured) so it
+  // never covers content, + iOS safe area. Breathing room above the nav comes
+  // from the status bar's own internal padding (TerminalPane), avoiding a
+  // mismatched --bg seam here.
   .app {
     position: relative;
     padding-bottom: calc(55px + env(safe-area-inset-bottom));

@@ -57,6 +57,15 @@
   color: var(--text-dim);
 }
 
+// Mobile: at phone width the bar wraps to two rows — give it vertical padding
+// so the wrapped chips aren't jammed against the top border and the fixed
+// bottom nav directly below it.
+@media (max-width: 640px) {
+  .statusbar {
+    padding: 10px 16px;
+  }
+}
+
 // Grid tile footer (mock line 205): compact — fixed 38px, single row, micro font.
 .statusbar.grid {
   min-height: 38px;
