@@ -24,6 +24,9 @@ import GridView from '../components/GridView/GridView';
 import AgentsView from '../components/AgentsView/AgentsView';
 import TeamPanel from '../components/TeamPanel/TeamPanel';
 import RightPane from '../components/RightPane/RightPane';
+import MobileNav, { type MobileScreen } from '../components/MobileNav/MobileNav';
+import MobileSessionHeader from '../components/MobileSessionHeader/MobileSessionHeader';
+import MobileActionSheet, { type SheetItem } from '../components/MobileActionSheet/MobileActionSheet';
 import ScratchTerminal from '../components/ScratchTerminal/ScratchTerminal';
 import EmptyComposer from '../components/EmptyComposer/EmptyComposer';
 import type { ProviderId } from '../lib/client/types';
@@ -144,6 +147,57 @@ function AppShell() {
   // gated on the opt-in `restoreNotice` setting at render; the event always flows.
   const [restoredCount, setRestoredCount] = useState(0);
   const activeTab = state.tabs.find((t) => t.id === state.activeTab);
+
+  // Mobile responsive layer (mockup "Seshmux Mobile"). isMobile drives the
+  // grid gate + rail-width fallback; mobileScreen picks which of rail/main the
+  // single-column layout shows. SSR renders desktop (isMobile=false) so first
+  // paint matches; the media listener flips it after mount.
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const mq = matchMedia('(max-width: 640px)');
+    const sync = () => setIsMobile(mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
+  const [mobileScreen, setMobileScreen] = useState<MobileScreen>('sessions');
+  // Mobile-only overlays: the projects drawer (hamburger) and the per-session
+  // action sheet (⋯ in the session header).
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  // Opening a session (rail tap, search jump, bridge) sets activeTab — on mobile
+  // that means "show the session", so follow it to the Active screen. But the
+  // landing IS the session list (mockup), so the rehydrate-restored active tab
+  // on load must NOT yank us to Active — only later user-driven opens do.
+  const prevActiveRef = useRef(state.activeTab);
+  const followArmedRef = useRef(false);
+  useEffect(() => {
+    // ponytail: 1.2s arm window, not a restore-complete signal — the async tab
+    // rehydrate lands well within it; human taps land after. Bump if a cold
+    // rehydrate ever runs longer.
+    const t = setTimeout(() => {
+      followArmedRef.current = true;
+    }, 1200);
+    return () => clearTimeout(t);
+  }, []);
+  useEffect(() => {
+    if (followArmedRef.current && state.activeTab && state.activeTab !== prevActiveRef.current) {
+      setMobileScreen('active');
+      // Picking a session from the projects drawer lands you on it — close it.
+      setDrawerOpen(false);
+    }
+    prevActiveRef.current = state.activeTab;
+  }, [state.activeTab]);
+  function handleMobileNav(screen: MobileScreen) {
+    setMobileScreen(screen);
+    setDrawerOpen(false);
+    if (state.settingsOpen) dispatch({ type: 'closeSettings' });
+    if (screen === 'agents') dispatch({ type: 'setView', view: 'agents' });
+    else if (state.view === 'agents') dispatch({ type: 'setView', view: 'tabs' });
+  }
+  // Grid is desktop-only (mockup): on a phone a stored 'grid' view falls back to
+  // tabs for rendering (the segment is hidden too, so it can't be re-picked).
+  const view = isMobile && state.view === 'grid' ? 'tabs' : state.view;
 
   // Mirrors Rail's handleTogglePin: optimistic dispatch + persist. Lives here
   // (not in the modal) so the modal stays store-agnostic per Task 6/7.
@@ -756,17 +810,75 @@ function AppShell() {
     });
   }
 
+  // Mobile "Close session" (action sheet): same dismissal as the desktop tab ×
+  // — the PTY stays alive server-side, the rail still lists it; we just leave
+  // the session view. NOT a kill/finish (that's the desktop WorkspaceFinishPrompt).
+  function closeActiveSession(tab: Tab) {
+    if (tab.kind === 'term' && tab.ptyId) {
+      try {
+        const key = 'seshmux-dismissed-ptys';
+        const id = dismissalKey(tab);
+        const cur: string[] = JSON.parse(localStorage.getItem(key) || '[]');
+        if (!cur.includes(id)) localStorage.setItem(key, JSON.stringify([...cur, id]));
+      } catch {
+        /* localStorage unavailable — dismissal just won't persist */
+      }
+    }
+    dispatch({ type: 'closeTab', id: tab.id });
+    setMobileScreen('sessions');
+  }
+
+  // Action-sheet items for the active session — each maps onto an existing
+  // capability (the same toggles the desktop status-bar chips fire). A failed
+  // gate drops the row; grid stays as a disabled "desktop only" affordance.
+  const sheetItems: SheetItem[] = activeTab
+    ? ([
+        activeTab.projectId && {
+          key: 'ports',
+          icon: '⇄',
+          label: 'Ports',
+          onClick: () => handleTogglePanel(activeTab.id, 'ports'),
+        },
+        activeTab.ptyId && {
+          key: 'terminal',
+          icon: '›_',
+          label: 'Open terminal',
+          onClick: () => void handleOpenTerminal(activeTab),
+        },
+        activeTab.sessionId && activeTab.projectId && activeTab.provider !== 'codex' && {
+          key: 'agents',
+          icon: '◈',
+          label: 'Subagents',
+          onClick: () => handleTogglePanel(activeTab.id, 'agents'),
+        },
+        activeTab.projectId && {
+          key: 'changes',
+          icon: '▤',
+          label: 'Folder / changes',
+          onClick: () => handleTogglePanel(activeTab.id, 'changes'),
+        },
+        { key: 'grid', icon: '▦', label: 'Grid / split view', hint: 'desktop only', disabled: true },
+        { key: 'close', icon: '✕', label: 'Close session', danger: true, onClick: () => closeActiveSession(activeTab) },
+      ].filter(Boolean) as SheetItem[])
+    : [];
+
   return (
     <div className={styles.shell}>
       {restarting ? <div className={styles.restartBanner}>Updating — reconnecting…</div> : null}
-      <TopNav onPickHit={handlePickHit} onOpenCustomizations={() => setCustOpen({})} />
-      <div className={styles.app}>
+      <TopNav
+        onPickHit={handlePickHit}
+        onOpenCustomizations={() => setCustOpen({})}
+        onOpenMenu={isMobile && mobileScreen !== 'sessions' ? () => setDrawerOpen(true) : undefined}
+      />
+      {/* data-screen drives the mobile single-column layout (page.module.scss):
+          'sessions' shows the rail full-width, anything else shows main. */}
+      <div className={styles.app} data-screen={mobileScreen} data-drawer={drawerOpen ? 'open' : 'closed'}>
         {/* Settings is a full-page overlay: hide the rail so it reads as its own
             page. Sibling of <main>, so gate it here. */}
         {state.settingsOpen ? null : (
-          <>
+          <div className={styles.railCol}>
             <Rail
-              width={railWidth}
+              width={isMobile ? undefined : railWidth}
               jumpTo={jumpTo}
               onJumped={() => setJumpTo(null)}
               onOpenCustomizations={setCustOpen}
@@ -780,7 +892,7 @@ function AppShell() {
               aria-orientation="vertical"
               aria-label="Resize sidebar"
             />
-          </>
+          </div>
         )}
         <main className={styles.main}>
           {/* Settings short-circuits BEFORE the grid/tabs branches — the grid
@@ -794,13 +906,22 @@ function AppShell() {
             <>
           {/* Tab strip hides in grid view — every tile carries its own header
               and the tabs⇄grid toggle lives in TopNav, so it's redundant there. */}
-          {state.tabs.length > 0 && state.view === 'tabs' ? <Tabs /> : null}
+          {/* Desktop: tab strip. Mobile: a single-session header (back + ⋯) —
+              multi-tab is gated, so the strip is replaced, not shrunk. */}
+          {state.tabs.length > 0 && view === 'tabs' && !isMobile ? <Tabs /> : null}
+          {isMobile && view === 'tabs' && activeTab ? (
+            <MobileSessionHeader
+              tab={activeTab}
+              onBack={() => setMobileScreen('sessions')}
+              onMenu={() => setSheetOpen(true)}
+            />
+          ) : null}
           {/* Grid mode replaces the single-pane view over the same term-tab set. */}
-          {state.view === 'grid' ? (
+          {view === 'grid' ? (
             <div className={styles.pane}>
               <GridView />
             </div>
-          ) : state.view === 'agents' ? (
+          ) : view === 'agents' ? (
             <div className={styles.pane}>
               <AgentsView />
             </div>
@@ -968,7 +1089,21 @@ function AppShell() {
             </>
           )}
         </main>
+        {/* Projects drawer backdrop — the railCol becomes a fixed overlay on
+            mobile when data-drawer=open (page.module.scss); this dims behind it. */}
+        {isMobile && drawerOpen ? (
+          <div className={styles.drawerBackdrop} onClick={() => setDrawerOpen(false)} role="presentation" />
+        ) : null}
       </div>
+      {/* Bottom tab bar — mobile only (CSS-hidden on desktop). */}
+      <MobileNav value={mobileScreen} onChange={handleMobileNav} />
+      <MobileActionSheet
+        open={sheetOpen && isMobile && !!activeTab}
+        title={activeTab?.label}
+        subtitle={[activeTab?.branch, activeTab?.provider].filter(Boolean).join(' · ') || undefined}
+        items={sheetItems}
+        onClose={() => setSheetOpen(false)}
+      />
       <Toast
         open={waitingToasts.length > 0}
         repos={waitingToasts.map((w) => w.repo)}

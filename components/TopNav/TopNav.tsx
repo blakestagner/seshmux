@@ -21,9 +21,11 @@ const VIEW_OPTIONS = [
 export type TopNavProps = {
   onPickHit: (hit: SearchHit) => void;
   onOpenCustomizations: () => void;
+  // Mobile only: opens the projects drawer. Desktop hides the trigger.
+  onOpenMenu?: () => void;
 };
 
-export default function TopNav({ onPickHit, onOpenCustomizations }: TopNavProps) {
+export default function TopNav({ onPickHit, onOpenCustomizations, onOpenMenu }: TopNavProps) {
   const { state, dispatch } = useAppState();
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<SearchHit[]>([]);
@@ -95,6 +97,15 @@ export default function TopNav({ onPickHit, onOpenCustomizations }: TopNavProps)
 
   return (
     <nav className={styles.nav}>
+      {onOpenMenu ? (
+        <button type="button" className={styles.menuBtn} onClick={onOpenMenu} aria-label="Open projects">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+            <line x1="4" y1="7" x2="20" y2="7" />
+            <line x1="4" y1="12" x2="20" y2="12" />
+            <line x1="4" y1="17" x2="20" y2="17" />
+          </svg>
+        </button>
+      ) : null}
       <div className={styles.logo}>
         <span className={styles.mark}>s</span>
         seshmux
@@ -105,11 +116,15 @@ export default function TopNav({ onPickHit, onOpenCustomizations }: TopNavProps)
         <SearchDropdown open={open} query={query} hits={hits} onPick={handlePick} />
       </div>
       <div className={styles.right}>
-        <Segmented
-          options={VIEW_OPTIONS}
-          value={state.view}
-          onChange={(id) => dispatch({ type: 'setView', view: id as 'tabs' | 'grid' | 'agents' })}
-        />
+        {/* View switcher is redundant on mobile (the bottom nav owns navigation
+            and grid is desktop-only) — hidden there via CSS. */}
+        <span className={styles.viewToggle}>
+          <Segmented
+            options={VIEW_OPTIONS}
+            value={state.view}
+            onChange={(id) => dispatch({ type: 'setView', view: id as 'tabs' | 'grid' | 'agents' })}
+          />
+        </span>
         {visible.length > 0 ? (
           <button
             type="button"

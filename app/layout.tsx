@@ -22,6 +22,13 @@ export const metadata = {
   description: 'Local-first mission control for AI coding agents',
 };
 
+// Mobile: honor the device width so the responsive layer (bottom nav, full-width
+// rail) engages instead of the page rendering at desktop width and zooming out.
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+};
+
 // Render at REQUEST time, not build time. The per-process auth token below is
 // read from process.env at render — a static prerender (the default) would bake
 // in the build-time value (empty), leaving the prod app with no token → every

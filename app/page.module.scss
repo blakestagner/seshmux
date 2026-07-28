@@ -32,6 +32,14 @@
   min-height: 0;
 }
 
+// Wraps the rail + its drag handle as one flex item so the mobile layer can
+// show/hide the pair with a single rule (data-screen on .app).
+.railCol {
+  display: flex;
+  flex: none;
+  min-height: 0;
+}
+
 // Sits between Rail and main as its own flex item — Rail has overflow:hidden
 // so an absolutely-positioned handle inside it would get clipped.
 .railHandle {
@@ -186,4 +194,83 @@
 .setupActions {
   display: flex;
   justify-content: flex-end;
+}
+
+// ── Mobile layer (mockup "Seshmux Mobile") ──────────────────────────────────
+// The desktop rail|main row collapses to a single column: data-screen picks
+// which one shows, a fixed bottom nav (MobileNav) switches between them, and
+// grid / drag handles / linked-pair splits are gated off. 640px matches
+// MobileNav.module.scss + TopNav.module.scss.
+@media (max-width: 640px) {
+  // Reserve room under both panes for the fixed bottom nav (54px + border +
+  // iOS safe area) so it never covers content.
+  .app {
+    position: relative;
+    padding-bottom: calc(55px + env(safe-area-inset-bottom));
+  }
+
+  .railCol {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+  }
+
+  // No side-by-side on a phone: rail and main each take the full column, chosen
+  // by data-screen. Sessions = rail; active/agents = main.
+  .app[data-screen='sessions'] .main {
+    display: none;
+  }
+  .app[data-screen='active'] .railCol,
+  .app[data-screen='agents'] .railCol {
+    display: none;
+  }
+
+  // Drag-resize is pointer-only; drop the handles.
+  .railHandle,
+  .splitHandle {
+    display: none;
+  }
+
+  // A linked-pair split (the one split that can survive on mobile) stacks
+  // vertically instead of cramming two terminals into 390px.
+  .split {
+    flex-direction: column;
+    border-top: none;
+  }
+  .splitSideRight {
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}
+
+.drawerBackdrop {
+  display: none;
+}
+
+// Projects drawer (mockup screen 03): reuses the single Rail instance — when
+// data-drawer=open the hidden railCol becomes a fixed slide-in panel below the
+// 56px top nav, dimmed by .drawerBackdrop. These rules come AFTER the
+// data-screen hide rules above so equal specificity resolves in their favor.
+@media (max-width: 640px) {
+  .app[data-drawer='open'] .railCol {
+    display: flex;
+    position: fixed;
+    top: 56px;
+    left: 0;
+    bottom: 0;
+    width: 316px;
+    max-width: 85%;
+    z-index: 460;
+    padding-bottom: 0;
+    box-shadow: var(--shadow-modal);
+    border-right: 1px solid var(--border-bright);
+  }
+
+  .drawerBackdrop {
+    display: block;
+    position: fixed;
+    inset: 56px 0 0 0;
+    z-index: 455;
+    background: var(--overlay-bg);
+  }
 }
