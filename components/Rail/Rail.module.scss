@@ -14,6 +14,16 @@
   min-height: 0;
 }
 
+// Mobile: the rail IS the "Sessions" screen — full width, no side border. The
+// width prop is passed undefined on mobile (page.tsx) so this wins over inline.
+@media (max-width: 640px) {
+  .rail {
+    width: 100%;
+    flex: 1 1 auto;
+    border-right: none;
+  }
+}
+
 .head {
   padding: 18px 18px 12px;
   display: flex;

@@ -104,3 +104,47 @@
 .waiting {
   color: var(--text-faint);
 }
+
+// Projects-drawer trigger — mobile only (the prop is undefined on desktop, so
+// it isn't even rendered there; this keeps it out of the desktop bar regardless).
+.menuBtn {
+  display: none;
+}
+
+// Mobile: bottom nav owns view switching, so drop the segmented + live badge
+// and tighten the bar so logo · search · icons fit a 390px width.
+@media (max-width: 640px) {
+  .nav {
+    gap: 10px;
+    padding: 0 12px;
+  }
+  .menuBtn {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 36px;
+    height: 40px;
+    margin-left: -6px;
+    border: none;
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .viewToggle,
+  .liveBadge {
+    display: none;
+  }
+  // Logo + icons take their natural width; search fills what's left so the logo
+  // isn't crushed to "se" by three competing flex:1 rails.
+  .logo {
+    flex: 0 0 auto;
+  }
+  .searchWrap {
+    flex: 1 1 auto;
+    margin: 0;
+  }
+  .right {
+    flex: 0 0 auto;
+    gap: 8px;
+  }
+}

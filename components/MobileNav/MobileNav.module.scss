@@ -1,0 +1,47 @@
+@use '../../styles/typography' as *;
+
+// Bottom tab bar — mobile only. Fixed to the viewport bottom so it stays put
+// while the rail / transcript scroll. Desktop keeps it out of the tree (display
+// none); the 640px breakpoint matches page.module.scss's mobile layer.
+.bar {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 400;
+    display: flex;
+    // Safe-area inset so the bar clears the iOS home indicator.
+    padding-bottom: env(safe-area-inset-bottom);
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
+  }
+}
+
+.item {
+  flex: 1;
+  min-height: 54px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 6px 0;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.active {
+  color: var(--accent);
+}
+
+.label {
+  @include t-mono-micro;
+  color: inherit;
+}
