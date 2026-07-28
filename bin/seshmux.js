@@ -281,6 +281,36 @@ async function resolvePort(host, start, span = 10) {
   throw new Error(`no free port in ${start}-${start + span - 1}${hint}`);
 }
 
+function printHelp() {
+  const v = currentVersion();
+  console.log(
+    `seshmux v${v} — local-first mission control for AI coding agents (Claude Code + Codex)
+
+Usage:
+  seshmux [options]           Start seshmux and open it in your browser
+  seshmux update [--check]    Update to the latest published version (--check: report only)
+  seshmux version             Print the installed version
+  seshmux --help              Show this help
+
+Options:
+  -p, --port <n>              Port to bind (default 4700, or $PORT)
+  -H, --host <host[:port]>    Address to bind (default 127.0.0.1, or $SESHMUX_HOST).
+                              Accepts a bare IP or host:port. A non-loopback host
+                              exposes seshmux on your LAN, gated only by the auth token.
+      --no-open               Do not open a browser window on startup
+      --restart-daemon        Stop and restart the seshmuxd daemon. tmux-backed
+                              sessions survive; any non-tmux PTYs end.
+  -v, --version               Print the installed version
+  -h, --help                  Show this help
+
+Environment:
+  PORT                        Default port (--port overrides)
+  SESHMUX_HOST                Default bind host (--host overrides)
+
+Docs: https://github.com/blakestagner/seshmux`,
+  );
+}
+
 function parseArgs(argv) {
   // $PORT / $SESHMUX_HOST are honoured because server/index.ts already reads them —
   // without this the CLI silently ignored them. --port / --host still win over env.
@@ -473,6 +503,13 @@ async function main() {
   // Subcommand dispatch (before arg parsing / server flow).
   const argv = process.argv.slice(2);
   const root = path.resolve(__dirname, '..');
+  // --help before everything else: a plain informational command that must never
+  // touch the daemon or a port. `mcp-bridge` is intentionally omitted from the
+  // listing — it's an internal stdio server invoked by the agents, not a user command.
+  if (argv[0] === 'help' || argv.includes('--help') || argv.includes('-h')) {
+    printHelp();
+    return;
+  }
   if (argv[0] === 'mcp-bridge') {
     runMcpBridge(root);
     return;
