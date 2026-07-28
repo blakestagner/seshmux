@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { AppStateProvider, useAppState, activePair, activeTeam, shouldMarkUnviewed, shouldShowRestoreBanner, findTabToBindSession, type Tab } from '../lib/client/store';
+import { AppStateProvider, useAppState, activePair, activeTeam, shouldMarkUnviewed, shouldShowRestoreBanner, findTabToBindSession, dismissalKey, type Tab } from '../lib/client/store';
 import { getProjects, getConfig, getEnv, getLive, notify, resolveApproval, putConfig, getTeamMembers, startScratchTerminal, killScratchTerminal, type SearchHit, type LiveSession } from '../lib/client/api';
 import { openEventsSocket } from '../lib/client/ws';
 import type { EventMessage } from '../lib/client/ws';
@@ -329,8 +329,11 @@ function AppShell() {
         // out and maps each surviving one to its owner tab's right pane (matched by
         // ownerPtyId, or ownerTmuxName after a daemon-restart ptyId reassignment).
         const { agents, scratchByOwnerTab } = routeScratchLive(live);
+        // Owner tab id -> its dismissal key, so the scratch re-attach below can
+        // honor a dismissed owner even after a daemon restart reassigned ptyIds.
+        const ownerKeyByTab = new Map(agents.map((a) => ['term-' + a.ptyId, dismissalKey(a)]));
         for (const s of agents) {
-          if (dismissed.includes(s.ptyId)) continue;
+          if (dismissed.includes(dismissalKey(s))) continue;
           // Prefer the server-resolved owning project id: a worktree PTY's cwd never
           // equals any project.path (folded into the parent), so the path match alone
           // left the tab keyed on a raw cwd that no bridge/session lookup understands.
@@ -339,6 +342,7 @@ function AppShell() {
           dispatch({
             type: 'openTerm',
             ptyId: s.ptyId,
+            tmuxName: s.tmuxName,
             projectId: proj?.id ?? s.projectId ?? s.cwd,
             label,
             provider: proj?.provider,
@@ -360,8 +364,7 @@ function AppShell() {
         // + active), but only where the owner tab was actually opened above — a
         // dismissed owner keeps its shell alive server-side without re-showing it.
         for (const [tabId, scratchPtyIds] of Object.entries(scratchByOwnerTab)) {
-          const ownerPtyId = tabId.slice('term-'.length);
-          if (dismissed.includes(ownerPtyId)) continue;
+          if (dismissed.includes(ownerKeyByTab.get(tabId) ?? tabId.slice('term-'.length))) continue;
           setScratchByTab((m) => ({ ...m, [tabId]: scratchPtyIds }));
           // One strip tab per surviving shell, in live order.
           for (const ptyId of scratchPtyIds) setRightPane((r) => openPanel(r, tabId, terminalPanel(ptyId)));
@@ -371,7 +374,7 @@ function AppShell() {
         // enable persistence so this restore can't be clobbered (StrictMode
         // runs this whole effect twice — the ref survives both runs).
         const savedActive = localStorage.getItem('seshmux-active-tab');
-        if (savedActive && live.some((s) => 'term-' + s.ptyId === savedActive && !dismissed.includes(s.ptyId))) {
+        if (savedActive && live.some((s) => 'term-' + s.ptyId === savedActive && !dismissed.includes(dismissalKey(s)))) {
           dispatch({ type: 'activateTab', id: savedActive });
         }
         activeLoadedRef.current = true;
@@ -562,8 +565,9 @@ function AppShell() {
           try {
             const raw = localStorage.getItem('seshmux-dismissed-ptys');
             const dismissed: string[] = raw ? JSON.parse(raw) : [];
-            if (dismissed.includes(next.ptyId)) {
-              localStorage.setItem('seshmux-dismissed-ptys', JSON.stringify(dismissed.filter((x) => x !== next.ptyId)));
+            const id = dismissalKey(s);
+            if (dismissed.includes(id)) {
+              localStorage.setItem('seshmux-dismissed-ptys', JSON.stringify(dismissed.filter((x) => x !== id)));
             }
           } catch {
             /* corrupt entry — ignore */
@@ -572,6 +576,7 @@ function AppShell() {
           dispatch({
             type: 'openTerm',
             ptyId: s.ptyId,
+            tmuxName: s.tmuxName,
             projectId: proj?.id ?? s.projectId ?? s.cwd,
             label: next.repo !== 'A session' ? next.repo : proj?.name ?? s.cwd.split('/').filter(Boolean).pop() ?? 'session',
             provider: proj?.provider,

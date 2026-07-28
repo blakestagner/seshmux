@@ -4,6 +4,15 @@
 import { createElement, createContext, useContext, useReducer, type ReactNode } from 'react';
 import type { ProviderId, Project, Config } from './types';
 
+// Stable identity for tab-dismissal (localStorage 'seshmux-dismissed-ptys').
+// A daemon restart reassigns every tmux-tier ptyId (rehydrateTmux), so keying
+// dismissal on ptyId meant a daemon update forgot every dismissal and reopened
+// all closed-but-alive sessions. tmuxName survives the restart; holder-tier
+// (no tmuxName) is re-adopted under its original ptyId, so ptyId is stable there.
+export function dismissalKey(s: { ptyId?: string; tmuxName?: string | null }): string {
+  return s.tmuxName ?? s.ptyId ?? '';
+}
+
 export type Tab = {
   id: string;
   kind: 'term' | 'transcript' | 'settings' | 'scratchpad' | 'planoff';
@@ -18,6 +27,10 @@ export type Tab = {
   // Task 14 (all optional — additive): live-terminal tabs carry a daemon PTY id;
   // branch/ctx feed the terminal statusbar + grid tile. ctx.window from provider.
   ptyId?: string;
+  // The daemon's tmux session name for this PTY, when tmux-tier. Stable across a
+  // daemon restart (unlike ptyId, which rehydrateTmux reassigns) — so it, not
+  // ptyId, is what dismissal is keyed on (see dismissalKey).
+  tmuxName?: string | null;
   branch?: string | null;
   ctx?: { tokens: number; window: number } | null;
   // Spec 3 (done-unviewed): set when this tab finished (working→idle/waiting)
@@ -68,7 +81,7 @@ export type AppState = {
 
 export type Action =
   | { type: 'openSession'; sessionId: string; projectId: string; label: string; kind: 'term' | 'transcript'; provider?: ProviderId; status?: 'live' | 'waiting' | 'done' }
-  | { type: 'openTerm'; ptyId: string; projectId: string; label: string; provider?: ProviderId; branch?: string | null; linked?: boolean; linkedKind?: 'handoff' | 'review'; linkSrc?: string; sessionId?: string; isTeamLead?: boolean }
+  | { type: 'openTerm'; ptyId: string; projectId: string; label: string; provider?: ProviderId; branch?: string | null; tmuxName?: string | null; linked?: boolean; linkedKind?: 'handoff' | 'review'; linkSrc?: string; sessionId?: string; isTeamLead?: boolean }
   | { type: 'resumeToTerm'; tabId: string; ptyId: string }
   // Teams v1 (Task 6): a term tab's team identity resolved (fresh-start bind,
   // rehydrate, or resume one-shot check against GET /api/teams/members?leadSession=).
@@ -230,6 +243,7 @@ export function reducer(state: AppState, action: Action): AppState {
         id: 'term-' + action.ptyId,
         kind: 'term',
         ptyId: action.ptyId,
+        tmuxName: action.tmuxName ?? null,
         projectId: action.projectId,
         label: action.label,
         provider: action.provider,

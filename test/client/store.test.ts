@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { reducer, initialState, shouldMarkUnviewed, findTabToBindSession, activeTeam, type Tab } from '../../lib/client/store';
+import { reducer, initialState, shouldMarkUnviewed, findTabToBindSession, activeTeam, dismissalKey, type Tab } from '../../lib/client/store';
 
 function tab(overrides: Partial<Tab> & Pick<Tab, 'id' | 'kind' | 'label'>): Tab {
   return overrides;
@@ -417,5 +417,26 @@ describe('setTabTeam', () => {
     expect(state.tabs[0].isTeamLead).toBe(true);
     expect(state.tabs[0].teamName).toBe('session-abc123');
     expect(state.tabs[1].isTeamLead).toBeUndefined();
+  });
+});
+
+describe('dismissalKey (survives daemon-restart ptyId reassignment)', () => {
+  it('prefers tmuxName over ptyId', () => {
+    expect(dismissalKey({ ptyId: 'pty-9', tmuxName: 'seshmux-abc' })).toBe('seshmux-abc');
+  });
+
+  it('falls back to ptyId for a holder-tier (no tmux) session', () => {
+    expect(dismissalKey({ ptyId: 'pty-9', tmuxName: null })).toBe('pty-9');
+  });
+
+  it('a session dismissed by tmuxName stays dismissed after its ptyId changes', () => {
+    // Close a tmux tab -> we store its tmuxName. A daemon restart mints a fresh
+    // ptyId for the SAME tmux session; the dismissal must still match it.
+    const closed = tab({ id: 'term-old', kind: 'term', label: 'x', ptyId: 'pty-old', tmuxName: 'seshmux-web-1' });
+    const dismissed = [dismissalKey(closed)];
+    const afterRestart = { ptyId: 'pty-NEW', tmuxName: 'seshmux-web-1' }; // rehydrateTmux reassigned ptyId
+    expect(dismissed.includes(dismissalKey(afterRestart))).toBe(true);
+    // ...and the pre-fix, ptyId-keyed check would have missed it:
+    expect(dismissed.includes(afterRestart.ptyId)).toBe(false);
   });
 });
