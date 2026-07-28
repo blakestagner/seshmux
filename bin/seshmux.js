@@ -19,6 +19,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { ensureDaemon, pidAlive, paths, configDir, daemonInfo, canSafelyRestartDaemon } = require('../daemon/ensure');
 const { cmdInvocation } = require('../daemon/win-args');
+const { parseHostPort, validateBindHost, isLoopback, displayHost } = require('./lib/host');
 
 // The daemon's pid, from the pidfile it writes in the config dir. null when it isn't running.
 function readDaemonPid() {
@@ -143,7 +144,9 @@ async function runUpdate(checkOnly) {
   await autoUpgradeDaemon(currentVersion()).catch(() => {});
 
   console.log(`[seshmux] updated to v${latest}`);
-  if (await probeHealth(4700)) console.log('[seshmux] a seshmux is running — restart it to use the new version');
+  // Best-effort "restart it" hint — probes the default loopback address only. A
+  // running instance on a custom --host simply won't trigger the notice; harmless.
+  if (await probeHealth('127.0.0.1', 4700)) console.log('[seshmux] a seshmux is running — restart it to use the new version');
 }
 
 // Numeric-segment version compare ("0.10.0" > "0.9.0"). Mirror of server/lib/update.ts's
@@ -215,11 +218,14 @@ function scheduleDaemonUpgrade(getVersion) {
 // `npx seshmux` only resolves once the package is published to a registry.
 process.env.SESHMUX_BIN = __filename;
 
-// GET /api/health on a port; resolves the JSON body if a seshmux answers, else null.
-function probeHealth(port, timeoutMs = 800) {
+// GET /api/health on host:port; resolves the JSON body if a seshmux answers, else
+// null. Probes the SAME host we'd bind — an instance bound to a specific LAN IP
+// doesn't answer on loopback, so probing 127.0.0.1 would miss it and we'd try to
+// double-bind. The CLI runs on the same machine, so it can always reach that IP.
+function probeHealth(host, port, timeoutMs = 800) {
   return new Promise((resolve) => {
     const req = http.get(
-      { host: '127.0.0.1', port, path: '/api/health', timeout: timeoutMs },
+      { host, port, path: '/api/health', timeout: timeoutMs },
       (res) => {
         let body = '';
         res.on('data', (c) => (body += c));
@@ -243,27 +249,28 @@ function probeHealth(port, timeoutMs = 800) {
 
 const net = require('node:net');
 
-// Is a TCP port free to bind on 127.0.0.1? EACCES (privileged/blocked port) is reported
+// Is a TCP port free to bind on `host`? EACCES (privileged/blocked port) is reported
 // distinctly so resolvePort can explain why a low port failed rather than masking it as
-// "busy" (R2-5) — a plain busy port is EADDRINUSE.
-function portFree(port) {
+// "busy" (R2-5) — a plain busy port is EADDRINUSE. Checks the exact host we'll bind, so
+// e.g. loopback:4700 being busy doesn't block a LAN-IP:4700 bind (different interfaces).
+function portFree(host, port) {
   return new Promise((resolve) => {
     const srv = net.createServer();
     srv.once('error', (err) => resolve({ free: false, code: err.code }));
     srv.once('listening', () => srv.close(() => resolve({ free: true })));
-    srv.listen(port, '127.0.0.1');
+    srv.listen(port, host);
   });
 }
 
-// Find a usable port in [start, start+span). Returns { port, existing }:
-//  - existing:true  → a healthy seshmux already owns this port; just open browser.
+// Find a usable port in [start, start+span) on `host`. Returns { port, existing }:
+//  - existing:true  → a healthy seshmux already owns this host:port; just open browser.
 //  - existing:false → a free port to bind our new server to.
-async function resolvePort(start, span = 10) {
+async function resolvePort(host, start, span = 10) {
   let sawEacces = false;
   for (let port = start; port < start + span; port++) {
-    const health = await probeHealth(port);
+    const health = await probeHealth(host, port);
     if (health) return { port, existing: true }; // reuse the running seshmux
-    const bind = await portFree(port);
+    const bind = await portFree(host, port);
     if (bind.free) return { port, existing: false };
     if (bind.code === 'EACCES') sawEacces = true;
     // Port held by something else (not a seshmux) — try the next one.
@@ -275,22 +282,35 @@ async function resolvePort(start, span = 10) {
 }
 
 function parseArgs(argv) {
-  // $PORT is honoured because server/index.ts already does — without this the CLI
-  // silently ignored it and booted on 4700 anyway. --port still wins over the env.
+  // $PORT / $SESHMUX_HOST are honoured because server/index.ts already reads them —
+  // without this the CLI silently ignored them. --port / --host still win over env.
   const envPort = Number(process.env.PORT);
   const args = {
+    host: process.env.SESHMUX_HOST || '127.0.0.1',
     port: Number.isInteger(envPort) && envPort > 0 ? envPort : 4700,
     noOpen: false,
     restartDaemon: false,
+  };
+  // --host accepts a bare IP (`10.0.26.5`) or host:port (`10.0.26.5:4700`) — the
+  // latter is the "set both together" shorthand. A port here is overridden by a
+  // later explicit --port (last-wins by argv order, same as before).
+  const setHost = (raw) => {
+    const { host, port } = parseHostPort(raw);
+    args.host = host;
+    if (port != null) args.port = port;
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--port' || a === '-p') args.port = Number(argv[++i]);
     else if (a.startsWith('--port=')) args.port = Number(a.slice(7));
+    else if (a === '--host' || a === '-H') setHost(argv[++i]);
+    else if (a.startsWith('--host=')) setHost(a.slice(7));
     else if (a === '--no-open') args.noOpen = true;
     else if (a === '--restart-daemon') args.restartDaemon = true;
   }
   if (!Number.isInteger(args.port) || args.port <= 0) args.port = 4700;
+  // Throws on 0.0.0.0/:: (all-interfaces) or a non-IP host — main().catch prints it.
+  args.host = validateBindHost(args.host);
   return args;
 }
 
@@ -487,11 +507,11 @@ async function main() {
     if (!(await restartDaemon())) process.exit(1);
   }
 
-  // If a healthy seshmux already runs on the requested port range, just open the
-  // browser to it — no duplicate server, no port fight.
-  const reuse = await resolvePort(args.port);
+  // If a healthy seshmux already runs on the requested host:port range, just open
+  // the browser to it — no duplicate server, no port fight.
+  const reuse = await resolvePort(args.host, args.port);
   if (reuse.existing) {
-    const reuseUrl = `http://127.0.0.1:${reuse.port}`;
+    const reuseUrl = `http://${displayHost(args.host)}:${reuse.port}`;
     console.log(`[seshmux] already running at ${reuseUrl}`);
     if (!args.noOpen) openBrowser(reuseUrl);
     return;
@@ -517,12 +537,21 @@ async function main() {
   // sub-ms race is acceptable — the server child will simply exit if it loses it.
   let port;
   try {
-    ({ port } = await resolvePort(args.port));
+    ({ port } = await resolvePort(args.host, args.port));
   } catch (e) {
     console.error(`[seshmux] ${e.message}`);
     process.exit(1);
   }
-  const url = `http://127.0.0.1:${port}`;
+  const url = `http://${displayHost(args.host)}:${port}`;
+
+  // Opt-in LAN bind: say plainly that the per-process token is now the only guard.
+  // seshmux spawns shells, so anyone who can reach this address + token has one.
+  if (!isLoopback(args.host)) {
+    console.log(
+      `[seshmux] binding ${displayHost(args.host)}:${port} — reachable by other devices on that network; ` +
+        `the per-process auth token is the only thing gating shell access. Trust the network.`,
+    );
+  }
 
   // Prefer the built standalone launcher when present (production install);
   // otherwise run the TypeScript server directly via tsx (local dev).
@@ -543,6 +572,7 @@ async function main() {
   const env = {
     ...process.env,
     PORT: String(port),
+    SESHMUX_HOST: args.host,
     SESHMUX_TOKEN: token,
   };
   if (isProd) env.NODE_ENV = 'production';
