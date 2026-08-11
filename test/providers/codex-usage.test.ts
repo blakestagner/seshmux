@@ -31,23 +31,28 @@ describe('CodexProvider.usage', () => {
 
   beforeAll(() => {
     root = mkdtempSync(join(tmpdir(), 'seshmux-codex-usage-'));
-    const dir = join(root, '2026', '07', '02');
+    // Dated from today, never a literal date: usage(30) drops turns older than the
+    // cutoff, so a hardcoded timestamp turns green CI red 30 days later.
+    const now = new Date();
+    const [day] = now.toISOString().split('T');
+    const dir = join(root, ...day.split('-'));
     mkdirSync(dir, { recursive: true });
-    const file = join(dir, 'rollout-2026-07-02T09-00-00-019aebe9-51ba-7810-959a-6b8c07979e40.jsonl');
+    const file = join(dir, `rollout-${day}T09-00-00-019aebe9-51ba-7810-959a-6b8c07979e40.jsonl`);
+    const at = (s: number) => new Date(now.getTime() + s * 1000).toISOString();
     const lines = [
       {
-        timestamp: '2026-07-02T12:00:00.000Z',
+        timestamp: at(0),
         type: 'session_meta',
         payload: { id: '019aebe9-51ba-7810-959a-6b8c07979e40', cwd: '/Users/demo/github/myrepo', git: { branch: 'main' } },
       },
       {
-        timestamp: '2026-07-02T12:00:01.000Z',
+        timestamp: at(1),
         type: 'turn_context',
         payload: { model: 'gpt-5.5' },
       },
       // fresh input = 1000 - 200 = 800, cached = 200, output = 100
       {
-        timestamp: '2026-07-02T12:00:02.000Z',
+        timestamp: at(2),
         type: 'event_msg',
         payload: {
           type: 'token_count',
@@ -58,7 +63,7 @@ describe('CodexProvider.usage', () => {
       },
       // second request delta: fresh = 500 - 50 = 450, cached = 50, output = 60
       {
-        timestamp: '2026-07-02T12:00:03.000Z',
+        timestamp: at(3),
         type: 'event_msg',
         payload: {
           type: 'token_count',
@@ -69,7 +74,6 @@ describe('CodexProvider.usage', () => {
       },
     ];
     writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
-    const now = new Date();
     utimesSync(file, now, now);
   });
 

@@ -157,7 +157,14 @@ async function runReconcile(deps: RestoreDeps): Promise<number> {
   }
 
   // 4. Filter candidates, in order, logging every drop/skip.
-  const seenSessionIds = new Set<string>(); // B2: accepted ids this run
+  // B2: accepted ids this run. Seeded with the sessionIds that are ALREADY live
+  // (keepLive) — otherwise a session whose ptyId changed identity (a stale
+  // ledger row for a session that is currently alive under another entry) gets
+  // resumed a second time every boot, and the duplicates compound: one real
+  // ledger grew to 4 live tmux sessions all running --resume on one session id.
+  const seenSessionIds = new Set<string>(
+    plan.keepLive.map(({ entry }) => entry.sessionId).filter((id): id is string => !!id),
+  );
   const survivors: LedgerEntry[] = [];
   for (const entry of plan.candidates) {
     // a. B3 — nothing durable to resume.

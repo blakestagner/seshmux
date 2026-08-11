@@ -185,9 +185,10 @@ export default function TerminalPane({
     let themeObserver: MutationObserver | null = null;
 
     (async () => {
-      const [{ Terminal }, { FitAddon }] = await Promise.all([
+      const [{ Terminal }, { FitAddon }, { WebLinksAddon }] = await Promise.all([
         import('@xterm/xterm'),
         import('@xterm/addon-fit'),
+        import('@xterm/addon-web-links'),
       ]);
       if (disposed || !mountRef.current) return;
 
@@ -204,6 +205,14 @@ export default function TerminalPane({
       });
       fit = new FitAddon();
       term.loadAddon(fit);
+      // Cmd/Ctrl-click opens URLs; a plain click stays a click, so selecting text
+      // over a link (or clicking through to focus the pane) still works.
+      term.loadAddon(
+        new WebLinksAddon((ev, uri) => {
+          if (!(ev as MouseEvent).metaKey && !(ev as MouseEvent).ctrlKey) return;
+          window.open(uri, '_blank', 'noopener,noreferrer');
+        }),
+      );
       term.open(mountRef.current);
 
       // ATTACH FLOW (no raw replay — see ws-term.ts replay=0): raw ring bytes

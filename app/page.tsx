@@ -351,6 +351,14 @@ function AppShell() {
     if (state.activeTab) localStorage.setItem('seshmux-active-tab', state.activeTab);
   }, [state.activeTab]);
 
+  // Looking at a terminal IS acknowledging it — drop its pending "needs input"
+  // toast on focus, not only when the next status event happens to arrive.
+  useEffect(() => {
+    const tab = state.tabs.find((t) => t.id === state.activeTab);
+    if (tab?.kind !== 'term' || !tab.ptyId) return;
+    setWaitingToasts((cur) => (cur.some((w) => w.ptyId === tab.ptyId) ? cur.filter((w) => w.ptyId !== tab.ptyId) : cur));
+  }, [state.activeTab, state.tabs]);
+
   useEffect(() => {
     getConfig().then((config) => {
       dispatch({ type: 'setConfig', config });
@@ -469,7 +477,12 @@ function AppShell() {
           }
           prevNIRef.current[e.ptyId] = e.status;
 
-          if (e.status === 'waiting') {
+          // Toast on the TRANSITION into waiting only, and never for the terminal
+          // you are already looking at. Every (re)connect replays status for all
+          // live PTYs, so without the prevNI gate a reload queued a toast for every
+          // long-idle session sitting at a prompt — and Jump then landed on the
+          // oldest of those instead of the thing that just asked for you.
+          if (e.status === 'waiting' && prevNI !== undefined && prevNI !== 'waiting' && !(isActiveTab && !document.hidden)) {
             setWaitingToasts((cur) =>
               cur.some((w) => w.ptyId === e.ptyId) ? cur : [...cur, { ptyId: e.ptyId, repo }],
             );
@@ -478,8 +491,10 @@ function AppShell() {
             if (document.hidden && notifyOnRef.current) {
               notify(`${repo} needs input`, 'A session is waiting for your input.').catch(() => {});
             }
-          } else {
-            // drop the session from the toast once it's no longer waiting
+          } else if (e.status !== 'waiting' || (isActiveTab && !document.hidden)) {
+            // drop the session from the toast once it's no longer waiting, or once
+            // you're actually sitting on it. A replayed still-waiting event for an
+            // unfocused tab keeps its pending toast.
             setWaitingToasts((cur) => cur.filter((w) => w.ptyId !== e.ptyId));
           }
           break;

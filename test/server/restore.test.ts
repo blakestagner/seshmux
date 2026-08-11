@@ -192,6 +192,23 @@ describe('reconcile', () => {
     expect(entries[0].sessionId).toBe('sess-1');
   });
 
+  it('a candidate whose sessionId is already live under another entry is NOT re-spawned', async () => {
+    // stale row for the same session that is currently alive under a tmux entry —
+    // without the keepLive seed this resumed a duplicate agent on every boot.
+    await ledger.addEntry(entry({ ptyId: 'live-pty', tmuxName: 'seshmux-r-1', cwd: existingCwd, sessionId: 'sess-1' }));
+    await ledger.addEntry(entry({ ptyId: 'stale', cwd: existingCwd, sessionId: 'sess-1' }));
+    const startSessionFn = makeStartSession();
+
+    const n = await reconcile({
+      ...baseDeps(),
+      dialFn: makeDial([{ ptyId: 'live-pty', cwd: existingCwd, tmuxName: 'seshmux-r-1', alive: true }]),
+      startSessionFn: startSessionFn as any,
+    });
+
+    expect(n).toBe(0);
+    expect(startSessionFn).not.toHaveBeenCalled();
+  });
+
   it('B3: candidate with no sessionId is dropped, never spawned', async () => {
     await ledger.addEntry(entry({ ptyId: 'old', cwd: existingCwd, sessionId: undefined }));
     const startSessionFn = makeStartSession();
