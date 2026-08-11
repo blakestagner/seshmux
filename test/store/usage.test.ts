@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, copyFileSync, utimesSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, utimesSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,11 +22,18 @@ beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'seshmux-usage-'));
   projDir = join(root, '-Users-demo-github-myrepo');
   mkdirSync(projDir);
+  const now = new Date();
   for (const f of ['aaaa-1111.jsonl', 'bbbb-2222.jsonl']) {
-    copyFileSync(join(srcProjDir, f), join(projDir, f));
+    // Restamp the copies' line timestamps to today. The shared fixtures carry a fixed
+    // calendar date, and the per-turn window filter drops turns older than the cutoff —
+    // so the copies (not the fixtures, other suites assert on those dates) move with now.
+    const text = readFileSync(join(srcProjDir, f), 'utf8').replace(
+      /"timestamp":"\d{4}-\d{2}-\d{2}T/g,
+      `"timestamp":"${now.toISOString().slice(0, 10)}T`,
+    );
+    writeFileSync(join(projDir, f), text);
   }
   // Deterministic mtimes: both "now" so a 30-day window includes them.
-  const now = new Date();
   utimesSync(join(projDir, 'aaaa-1111.jsonl'), now, now);
   utimesSync(join(projDir, 'bbbb-2222.jsonl'), now, now);
 });
@@ -169,7 +176,9 @@ function makeUsageRoot(model: string) {
       },
     },
     uuid: 'p1',
-    timestamp: '2026-07-05T00:00:00.000Z',
+    // Relative, never a literal date: the per-turn window filter drops turns older
+    // than the `days` cutoff, so a hardcoded timestamp turns green CI red 30 days later.
+    timestamp: new Date().toISOString(),
     cwd: '/Users/demo/github/priced',
     sessionId: 'pppp-0001',
     gitBranch: 'main',
