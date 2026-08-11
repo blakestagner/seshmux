@@ -6,6 +6,7 @@ describe('windowForModel', () => {
     expect(windowForModel('claude-opus-4-8')).toBe(1_000_000);
     expect(windowForModel('claude-fable-5')).toBe(1_000_000);
     expect(windowForModel('claude-opus-4-6')).toBe(1_000_000);
+    expect(windowForModel('claude-opus-5')).toBe(1_000_000);
   });
 
   it('defaults everything else to 200k', () => {

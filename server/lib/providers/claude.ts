@@ -56,7 +56,7 @@ const CLAUDE_BIN = 'claude';
 // suffix and no context_window field in the jsonl, so the window must be inferred.
 // Opus 4.5+ and fable/mythos 5 run a 1M window; opus 4.0/4.1 (pre-4.5) stayed at 200k, so
 // only opus-4-5 and newer are matched here (NOT a bare "opus-4" prefix).
-const WINDOW_1M_PREFIXES = ['opus-4-5', 'opus-4-6', 'opus-4-7', 'opus-4-8', 'fable-5', 'mythos-5'];
+const WINDOW_1M_PREFIXES = ['opus-4-5', 'opus-4-6', 'opus-4-7', 'opus-4-8', 'opus-5', 'fable-5', 'mythos-5'];
 
 export function windowForModel(model: string): number {
   const m = model.toLowerCase();
