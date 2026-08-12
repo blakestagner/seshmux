@@ -164,8 +164,10 @@ export async function sweepOrphanScratch(
  * decided by which side of the association the exited ptyId is:
  *   - the ptyId IS a scratch → the shell itself died/was killed → prune its record.
  *   - the ptyId OWNS scratch(es) → the owner agent PTY exited → kill its shell(s)
- *     + prune. NOTE: exit here is a genuine PTY end, never a UI tab dismissal
- *     (decision 2 keeps a dismissed tab's shell alive — dismissal never exits).
+ *     + prune. Closing a session tab now KILLS the owner PTY (it used to be a
+ *     pure UI dismissal, which is why decision 2 promised a dismissed tab's
+ *     shell stayed alive — that promise is gone), so this fires on tab close
+ *     too: ending a session takes its dev-server shells down with it.
  * Never throws.
  */
 export async function handleScratchOnExit(ptyId: string, deps: ScratchDeps = {}): Promise<void> {

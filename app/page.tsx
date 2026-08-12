@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AppStateProvider, useAppState, activePair, activeTeam, shouldMarkUnviewed, shouldShowRestoreBanner, findTabToBindSession, dismissalKey, type Tab } from '../lib/client/store';
-import { getProjects, getConfig, getEnv, getLive, notify, resolveApproval, putConfig, getTeamMembers, startScratchTerminal, killScratchTerminal, type SearchHit, type LiveSession } from '../lib/client/api';
+import { getProjects, getConfig, getEnv, getLive, notify, resolveApproval, putConfig, getTeamMembers, startScratchTerminal, killScratchTerminal, endTermSession, type SearchHit, type LiveSession } from '../lib/client/api';
 import { openEventsSocket } from '../lib/client/ws';
 import type { EventMessage } from '../lib/client/ws';
 import TopNav from '../components/TopNav/TopNav';
@@ -123,8 +123,9 @@ function AppShell() {
   // Kept OUT of right-pane.ts
   // (the panel model stays panel-only) — the pane record just knows a 'terminal'
   // panel is open; this map holds which shell backs it. The server owns the
-  // shell's lifetime (decision 2): tab dismissal drops this mapping without
-  // killing, an explicit × kills, and owner-PTY exit kills server-side.
+  // shell's lifetime: this map is local bookkeeping only. The chip's × kills a
+  // shell directly; closing the session tab kills the owner PTY, and the shells
+  // it owns die server-side with it (handleScratchOnExit).
   const [scratchByTab, setScratchByTab] = useState<Record<string, string[]>>({});
   const [subagentPings, setSubagentPings] = useState<Record<string, number>>({});
   // Chip member count, keyed by leadSessionId (mirrors teamPings) — lifted from
@@ -590,10 +591,9 @@ function AppShell() {
   // routed through page.tsx), so prune the right-pane record via effect: any tab
   // that's no longer live loses its pane state, so reopening the same session
   // starts from a fresh record (edge D). Also drop the scratch mapping for that
-  // tab — but deliberately do NOT kill the shell (decision 2: a tab dismissal is
-  // a UI action, the agent PTY survives it and so does its scratch; the server
-  // map still owns it, and reopening the owner tab + the chip re-adopts it via
-  // the idempotent spawn route).
+  // tab — this effect only prunes LOCAL bookkeeping and never kills anything:
+  // the kill is endTermSession()'s job at the close sites, and the shells that
+  // tab owned die server-side off the owner's exit (handleScratchOnExit).
   useEffect(() => {
     const liveIds = new Set(state.tabs.map((t) => t.id));
     setRightPane((r) => {
@@ -825,20 +825,10 @@ function AppShell() {
     });
   }
 
-  // Mobile "Close session" (action sheet): same dismissal as the desktop tab ×
-  // — the PTY stays alive server-side, the rail still lists it; we just leave
-  // the session view. NOT a kill/finish (that's the desktop WorkspaceFinishPrompt).
+  // Mobile "Close session" (action sheet): same as the desktop tab × — ENDS the
+  // session (kills the PTY + any tmux session behind it), not just the view.
   function closeActiveSession(tab: Tab) {
-    if (tab.kind === 'term' && tab.ptyId) {
-      try {
-        const key = 'seshmux-dismissed-ptys';
-        const id = dismissalKey(tab);
-        const cur: string[] = JSON.parse(localStorage.getItem(key) || '[]');
-        if (!cur.includes(id)) localStorage.setItem(key, JSON.stringify([...cur, id]));
-      } catch {
-        /* localStorage unavailable — dismissal just won't persist */
-      }
-    }
+    endTermSession(tab);
     dispatch({ type: 'closeTab', id: tab.id });
     setMobileScreen('sessions');
   }

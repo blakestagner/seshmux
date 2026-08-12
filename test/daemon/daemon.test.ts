@@ -645,7 +645,7 @@ tmuxDescribe('seshmuxd tmux tier', () => {
     }
   });
 
-  it('kill RPC on a tmux-tier PTY stays dead — no revive, tmux session detaches-but-survives (BUG-11 noRevive)', async () => {
+  it('kill RPC on a tmux-tier PTY stays dead — no revive, and the tmux SESSION dies too', async () => {
     const name = 'test-kill-norevive-' + process.pid;
     const full = 'seshmux-' + name;
     const c = new Client(daemon.sockPath);
@@ -656,7 +656,9 @@ tmuxDescribe('seshmuxd tmux tier', () => {
       await c.call('attach', { ptyId });
       await c.waitForEvent((e) => e.event === 'data' && e.ptyId === ptyId);
 
-      // Explicit kill: proc dies, but the tmux session survives by design.
+      // Explicit kill means "end this session": the client proc dies AND so does
+      // the tmux session. Killing only the client left the agent running forever
+      // behind a closed tab. (killAll() on daemon shutdown still only detaches.)
       const exitP = c.waitForEvent((e) => e.event === 'exit' && e.ptyId === ptyId, 8000);
       await c.call('kill', { ptyId });
       await exitP;
@@ -668,9 +670,14 @@ tmuxDescribe('seshmuxd tmux tier', () => {
       expect(pm._ptys.get(ptyId).alive).toBe(false);
       await pm._sweepDead();
       expect(pm._ptys.get(ptyId).alive).toBe(false);
-      // The tmux session is still there (kill detaches the client, not the session).
-      const sessions = execFileSync('tmux', ['ls', '-F', '#{session_name}'], { encoding: 'utf8', env: TMUX_FREE_ENV });
-      expect(sessions).toContain(full);
+      // And the tmux session itself is gone — no orphaned agent left behind.
+      let sessions = '';
+      try {
+        sessions = execFileSync('tmux', ['ls', '-F', '#{session_name}'], { encoding: 'utf8', env: TMUX_FREE_ENV });
+      } catch {
+        /* no sessions left at all — tmux ls exits 1 */
+      }
+      expect(sessions).not.toContain(full);
     } finally {
       try {
         execFileSync('tmux', ['kill-session', '-t', full], { stdio: 'ignore', env: TMUX_FREE_ENV });
