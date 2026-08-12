@@ -10,6 +10,7 @@ import type {
   SubagentDetail,
   PrRef,
 } from './types';
+import { dismissalKey } from './store';
 
 // Per-process auth token embedded in the served HTML (Task 6.5). Sent on every /api/*
 // call; the server 401s without it. WS clients read the same global for their query param.
@@ -228,10 +229,33 @@ export function startScratchTerminal(
   return req('/api/term/scratch', { method: 'POST', body: JSON.stringify({ ownerPtyId, fresh }) });
 }
 
-// The ONLY client-facing PTY kill route — scratch-guarded server-side (404 on a
-// non-scratch ptyId), so it can never terminate an agent session.
+// Scratch-guarded server-side (404 on a non-scratch ptyId).
 export function killScratchTerminal(ptyId: string): Promise<void> {
   return req(`/api/term/scratch/${encodeURIComponent(ptyId)}`, { method: 'DELETE' });
+}
+
+// End an agent session for real (tab ✕). Kills the PTY *and*, on the tmux tier,
+// the tmux session behind it — closing a tab used to leave the agent process
+// running forever. Already-dead ptyId resolves ok (no-op server-side).
+export function killTerminal(ptyId: string): Promise<void> {
+  return req(`/api/term/${encodeURIComponent(ptyId)}`, { method: 'DELETE' });
+}
+
+// Closing a session tab (desktop ✕ / mobile action sheet) ENDS the session.
+// Both call sites route through here so they can't drift apart: record the
+// dismissal first (if the kill fails, boot rehydrate must not reopen the tab),
+// then kill. Never throws — the tab closes regardless.
+export function endTermSession(tab: { kind: string; ptyId?: string; tmuxName?: string | null }): void {
+  if (tab.kind !== 'term' || !tab.ptyId) return;
+  try {
+    const key = 'seshmux-dismissed-ptys';
+    const id = dismissalKey(tab); // tmuxName ?? ptyId — survives daemon restart
+    const cur: string[] = JSON.parse(localStorage.getItem(key) || '[]');
+    if (!cur.includes(id)) localStorage.setItem(key, JSON.stringify([...cur, id]));
+  } catch {
+    /* localStorage unavailable — dismissal just won't persist */
+  }
+  void killTerminal(tab.ptyId).catch(() => {});
 }
 
 // ── Agent bridge (Task 16.5 handoff/review, 16.8 plan-off) ──────────────────

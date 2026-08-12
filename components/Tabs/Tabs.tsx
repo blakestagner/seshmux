@@ -6,7 +6,8 @@ import StatusDot from '../ui/StatusDot/StatusDot';
 import ProviderBadge from '../ui/ProviderBadge/ProviderBadge';
 import IconButton from '../ui/IconButton/IconButton';
 import LinkChip from '../ui/LinkChip/LinkChip';
-import { useAppState, dismissalKey } from '../../lib/client/store';
+import { useAppState } from '../../lib/client/store';
+import { endTermSession } from '../../lib/client/api';
 import type { Tab } from '../../lib/client/store';
 import styles from './Tabs.module.scss';
 
@@ -97,19 +98,10 @@ export default function Tabs() {
                 label="Close tab"
                 onClick={(e) => {
                   e.stopPropagation();
-                  // Closing a live term tab is a UI dismissal — the PTY stays
-                  // alive (detach-safe) and the rail still lists it. Remember
-                  // the dismissal so the boot rehydrate doesn't reopen it.
-                  if (t.kind === 'term' && t.ptyId) {
-                    try {
-                      const key = 'seshmux-dismissed-ptys';
-                      const id = dismissalKey(t); // tmuxName ?? ptyId — survives daemon restart
-                      const cur: string[] = JSON.parse(localStorage.getItem(key) || '[]');
-                      if (!cur.includes(id)) localStorage.setItem(key, JSON.stringify([...cur, id]));
-                    } catch {
-                      /* localStorage unavailable — dismissal just won't persist */
-                    }
-                  }
+                  // Closing a live term tab ENDS the session (kills the PTY and,
+                  // on the tmux tier, its tmux session). It used to be a pure UI
+                  // dismissal, which left every "closed" agent running.
+                  endTermSession(t);
                   dispatch({ type: 'closeTab', id: t.id });
                 }}
               >

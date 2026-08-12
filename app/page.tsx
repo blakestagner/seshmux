@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AppStateProvider, useAppState, activePair, activeTeam, shouldMarkUnviewed, shouldShowRestoreBanner, findTabToBindSession, dismissalKey, type Tab } from '../lib/client/store';
-import { getProjects, getConfig, getEnv, getLive, notify, resolveApproval, putConfig, getTeamMembers, startScratchTerminal, killScratchTerminal, type SearchHit, type LiveSession } from '../lib/client/api';
+import { getProjects, getConfig, getEnv, getLive, notify, resolveApproval, putConfig, getTeamMembers, startScratchTerminal, killScratchTerminal, endTermSession, type SearchHit, type LiveSession } from '../lib/client/api';
 import { openEventsSocket } from '../lib/client/ws';
 import type { EventMessage } from '../lib/client/ws';
 import TopNav from '../components/TopNav/TopNav';
@@ -825,20 +825,10 @@ function AppShell() {
     });
   }
 
-  // Mobile "Close session" (action sheet): same dismissal as the desktop tab ×
-  // — the PTY stays alive server-side, the rail still lists it; we just leave
-  // the session view. NOT a kill/finish (that's the desktop WorkspaceFinishPrompt).
+  // Mobile "Close session" (action sheet): same as the desktop tab × — ENDS the
+  // session (kills the PTY + any tmux session behind it), not just the view.
   function closeActiveSession(tab: Tab) {
-    if (tab.kind === 'term' && tab.ptyId) {
-      try {
-        const key = 'seshmux-dismissed-ptys';
-        const id = dismissalKey(tab);
-        const cur: string[] = JSON.parse(localStorage.getItem(key) || '[]');
-        if (!cur.includes(id)) localStorage.setItem(key, JSON.stringify([...cur, id]));
-      } catch {
-        /* localStorage unavailable — dismissal just won't persist */
-      }
-    }
+    endTermSession(tab);
     dispatch({ type: 'closeTab', id: tab.id });
     setMobileScreen('sessions');
   }

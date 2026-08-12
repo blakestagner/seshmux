@@ -189,6 +189,29 @@ export default async function termRoutes(f: FastifyInstance, deps: TermRouteDeps
     }
   });
 
+  // DELETE /api/term/:ptyId — end an agent session for real (tab ✕).
+  // Closing a tab used to be a pure UI dismissal, so the PTY (and the agent
+  // process under it) outlived every close and piled up until they blocked a
+  // daemon upgrade ("N running session(s) aren't tmux-backed"). The daemon's
+  // kill sets noRevive, and the resulting `exit` broadcast is what prunes the
+  // ledger / status / owned scratch shells — no bookkeeping needed here.
+  // Unknown ptyId is a no-op (already dead), NOT an error: the UI must be able
+  // to close a tab whose PTY is gone.
+  f.delete<{ Params: { ptyId: string } }>('/api/term/:ptyId', async (req, reply) => {
+    let conn: DaemonConnection | null = null;
+    try {
+      conn = await (deps.dialFn ?? dial)();
+      await conn.kill(req.params.ptyId);
+      return { ok: true };
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (msg.includes('unknown ptyId')) return { ok: true, alreadyGone: true };
+      return reply.code(500).send({ error: msg });
+    } finally {
+      conn?.close();
+    }
+  });
+
   // GET /api/term/:ptyId/status-explain — Spec 6: "why is the dot this color."
   // Latest classify evidence for the PTY (no history — see StatusExplain doc).
   // No injected getStatusExplain (e.g. hub not wired) → 501, distinct from the

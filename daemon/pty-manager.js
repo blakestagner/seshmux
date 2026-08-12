@@ -714,6 +714,13 @@ class PtyManager {
     const entry = this._ptys.get(ptyId);
     if (!entry) throw new Error('unknown ptyId: ' + ptyId);
     entry.noRevive = true; // intent: stay dead, don't reconcile-revive (BUG-11 guard)
+    // tmux tier: proc is only a CLIENT — killing it detaches and leaves the tmux
+    // session (and the agent inside it) running forever. kill() means the user
+    // wants the session GONE, so end the tmux session too. This is the one place
+    // that does: killAll() (daemon shutdown) must still only detach.
+    if (entry.tmuxName) {
+      execFile('tmux', ['kill-session', '-t', entry.tmuxName], { env: tmuxEnv() }, () => {});
+    }
     try {
       entry.proc.kill();
     } catch {
