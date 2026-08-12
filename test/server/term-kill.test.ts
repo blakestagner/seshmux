@@ -79,4 +79,50 @@ posixDescribe('DELETE /api/term/:ptyId (real daemon)', () => {
     expect(again.statusCode).toBe(200);
     await f.close();
   });
+
+  // The reported symptom: a dev server (or any child) started inside a session
+  // kept its port after the tab was closed. node-pty's kill() signals only the
+  // PTY's leader, so descendants survived — the holder now kills the group.
+  it('kills processes SPAWNED INSIDE the session, not just the leader', async () => {
+    const { dial } = await import('../../server/daemon-client');
+    const { default: termRoutes } = await import('../../server/routes/term');
+
+    // A background grandchild (stand-in for `npm run dev`) that TRAPS SIGHUP and
+    // SIGTERM, as long-running dev servers routinely do. Verified: with a plain
+    // single-pid proc.kill() this survives the PTY's death and keeps its port
+    // forever — only the group SIGKILL follow-up reaches it.
+    const pidFile = path.join(configDir, 'child.pid');
+    const child = "process.on('SIGHUP',()=>{});process.on('SIGTERM',()=>{});setInterval(()=>{},1000)";
+    const script = `node -e "${child}" & echo $! > ${pidFile}; cat`;
+
+    const conn = await dial();
+    const { ptyId } = await conn.spawn({ cwd: configDir, args: ['/bin/sh', '-c', script], cols: 80, rows: 24 });
+    conn.close();
+
+    const childPid = await poll(async () => {
+      try {
+        const n = Number(fs.readFileSync(pidFile, 'utf8').trim());
+        return Number.isFinite(n) && n > 0 ? n : false;
+      } catch {
+        return false;
+      }
+    }, 'grandchild pid file');
+    expect(() => process.kill(childPid, 0)).not.toThrow(); // alive before the close
+
+    const f = Fastify();
+    f.register(termRoutes as any);
+    expect((await f.inject({ method: 'DELETE', url: `/api/term/${ptyId}` })).statusCode).toBe(200);
+    await f.close();
+
+    expect(
+      await poll(async () => {
+        try {
+          process.kill(childPid, 0);
+          return false;
+        } catch {
+          return true; // gone
+        }
+      }, 'grandchild dies with the session', 15000), // > the holder's 2s SIGKILL escalation
+    ).toBe(true);
+  });
 });

@@ -76,6 +76,44 @@ const proc = pty.spawn(file, ptyArgs, {
   env: { ...process.env, ...(env || {}) },
 });
 
+/**
+ * Kill the PTY's whole PROCESS GROUP, not just its leader.
+ *
+ * node-pty's proc.kill() signals one pid. forkpty() setsid()s the child, so that
+ * pid is the session + process-group leader — but its descendants (a `npm run
+ * dev` under a scratch shell, an agent's own subprocesses) are separate pids in
+ * that group. Signalling only the leader left them running, still holding their
+ * listening ports, after the session was "closed". kill(-pgid) reaches all of
+ * them. SIGKILL follow-up covers anything that traps/ignores SIGHUP; it's a
+ * no-op once the group is already gone.
+ *
+ * win32 has no process groups — node-pty's kill() tears down the conpty job
+ * object (children included), so the plain path is already correct there.
+ */
+function killTree() {
+  try {
+    if (process.platform === 'win32') {
+      proc.kill();
+      return;
+    }
+    process.kill(-proc.pid, 'SIGHUP');
+    setTimeout(() => {
+      try {
+        process.kill(-proc.pid, 'SIGKILL');
+      } catch {
+        // group already gone — the normal case
+      }
+    }, 2000).unref();
+  } catch {
+    // pgid gone (or not a leader): fall back to the single-pid kill.
+    try {
+      proc.kill();
+    } catch {
+      // already dead
+    }
+  }
+}
+
 // Same ring semantics (and same caps) as the daemon's — bytes are replayed
 // verbatim, never re-lined, so escape sequences survive.
 const ring = [];
@@ -168,11 +206,7 @@ function handle(msg) {
       return;
     case 'kill':
       exitKnown = true;
-      try {
-        proc.kill();
-      } catch {
-        // already dead
-      }
+      killTree(); // the session is being ENDED — nothing it spawned may outlive it
       return;
     default:
       // ignore unknown
@@ -226,11 +260,7 @@ const server = net.createServer((s) => {
 
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => {
-    try {
-      proc.kill();
-    } catch {
-      // ignore
-    }
+    killTree();
     cleanup();
   });
 }
@@ -266,10 +296,6 @@ server.listen(sockPath, () => {
 server.on('error', () => {
   // Can't listen (path too long, dir gone): the PTY is unreachable, so don't
   // strand it — kill it and exit rather than leaving an invisible child.
-  try {
-    proc.kill();
-  } catch {
-    // ignore
-  }
+  killTree();
   cleanup();
 });
