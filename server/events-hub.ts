@@ -347,7 +347,8 @@ export async function createEventsHub(deps: EventsHubDeps = {}): Promise<EventsH
         });
       } else if (e.event === 'exit') {
         // Any PTY exit (clean finish or user kill) drops its ledger entry — the
-        // ONLY removal trigger. Tab-close never touches the ledger (UI dismissal).
+        // ONLY removal trigger. Tab-close reaches it the same way as any other
+        // kill: it ends the PTY, and the exit does the removal.
         void removeByPtyId(e.ptyId).catch(() => {});
         statusByPty.delete(e.ptyId);
         niStateByPty.delete(e.ptyId);
@@ -358,9 +359,9 @@ export async function createEventsHub(deps: EventsHubDeps = {}): Promise<EventsH
         settleWaiters(e.ptyId, 'idle');
         // Scratch bookkeeping: if THIS pty is a scratch, prune its record; if it
         // OWNS scratch(es), kill them (its dev-server shell dies with the agent).
-        // Fire-and-forget, never blocks the event loop, never throws. A genuine
-        // PTY exit only — a UI tab dismissal never exits, so decision 2 (keep the
-        // shell on dismissal) is preserved.
+        // Fire-and-forget, never blocks the event loop, never throws. Closing a
+        // session tab now kills the owner PTY, so this fires on tab close too:
+        // ending a session takes its shells (and their ports) down with it.
         void onOwnerExit(e.ptyId);
       }
     });

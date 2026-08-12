@@ -47,6 +47,10 @@ const { cmdInvocation } = require('./win-args');
 const EXIT_GRACE_MS = 60 * 1000;
 const EXIT_GRACE_KNOWN_MS = 5 * 1000;
 
+// SIGHUP -> SIGKILL window for killTree(). Long enough for a dev server to run
+// its shutdown handler, short enough that a closed tab frees its port promptly.
+const KILL_ESCALATION_MS = 2000;
+
 // The daemon's death must not be ours. (detached+stdio:'ignore' covers the fd
 // side; this covers the signal side.)
 process.on('SIGHUP', () => {});
@@ -89,6 +93,11 @@ const proc = pty.spawn(file, ptyArgs, {
  *
  * win32 has no process groups — node-pty's kill() tears down the conpty job
  * object (children included), so the plain path is already correct there.
+ *
+ * Callers that exit right after MUST wait KILL_ESCALATION_MS + a beat before
+ * cleanup(): cleanup() ends in process.exit(0), which would take the pending
+ * SIGKILL timer with it and leave the SIGHUP-ignoring child alive — the exact
+ * orphan this exists to prevent.
  */
 function killTree() {
   try {
@@ -103,7 +112,7 @@ function killTree() {
       } catch {
         // group already gone — the normal case
       }
-    }, 2000).unref();
+    }, KILL_ESCALATION_MS).unref();
   } catch {
     // pgid gone (or not a leader): fall back to the single-pid kill.
     try {
@@ -261,7 +270,9 @@ const server = net.createServer((s) => {
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => {
     killTree();
-    cleanup();
+    // Ref'd on purpose: cleanup()'s process.exit(0) would otherwise kill the
+    // holder before killTree's SIGKILL escalation lands.
+    setTimeout(cleanup, KILL_ESCALATION_MS + 100);
   });
 }
 
@@ -297,5 +308,5 @@ server.on('error', () => {
   // Can't listen (path too long, dir gone): the PTY is unreachable, so don't
   // strand it — kill it and exit rather than leaving an invisible child.
   killTree();
-  cleanup();
+  setTimeout(cleanup, KILL_ESCALATION_MS + 100); // see the SIGTERM handler
 });
