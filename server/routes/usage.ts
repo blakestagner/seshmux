@@ -4,8 +4,36 @@
 import type { FastifyInstance } from 'fastify';
 import { getProviders } from '../lib/providers/types';
 import type { ProviderId, UsageSummary } from '../lib/providers/types';
+import { readClaudeRateLimits } from '../lib/providers/claude-limits';
+import { readCodexRateLimits } from '../lib/providers/codex-limits';
+import type { ProviderLimits } from '../lib/providers/limits-types';
 
 export default async function usageRoutes(f: FastifyInstance) {
+  // Subscription rate limits (5h window + weekly) per provider. Distinct from /api/usage
+  // below, which counts tokens off the local transcript store: these are the plan
+  // allowances the vendors meter us against.
+  //
+  // Always 200 with whatever could be read — a provider that isn't installed, isn't signed
+  // in, or has nothing current to report is simply absent from the array. This is chrome
+  // decoration; it must never surface an error the user has to dismiss.
+  //
+  // Array order is render order: Claude first, Codex after it.
+  f.get('/api/usage/limits', async () => {
+    const ids = new Set((await getProviders()).map((p) => p.id));
+    const [claude, codex] = await Promise.all([
+      readClaudeRateLimits().catch(() => null),
+      // Only read the Codex store when Codex is actually detected on this machine.
+      ids.has('codex') ? readCodexRateLimits().catch(() => null) : Promise.resolve(null),
+    ]);
+
+    const providers: ProviderLimits[] = [];
+    if (claude?.meters.length) providers.push({ provider: 'claude', meters: claude.meters });
+    if (codex?.meters.length) {
+      providers.push({ provider: 'codex', meters: codex.meters, capturedAt: codex.capturedAt });
+    }
+    return { providers };
+  });
+
   f.get<{ Querystring: { days?: string } }>('/api/usage', async (req) => {
     const days = req.query.days != null ? Number(req.query.days) : 30;
     const window = Number.isNaN(days) ? 30 : days;

@@ -162,6 +162,26 @@ export function getUsage(days = 30): Promise<unknown> {
   return req(`/api/usage?days=${days}`);
 }
 
+// Plan rate limits, normalised across providers — `windowMinutes` is the semantic value
+// (300 = 5h, 10080 = weekly); the label is the UI's business.
+export type UsageMeter = {
+  windowMinutes: number;
+  pct: number;
+  resetsAt: string | null;
+  scope?: 'opus';
+};
+export type ProviderLimits = {
+  provider: ProviderId;
+  meters: UsageMeter[];
+  /** Present only for snapshot sources (Codex) — absent means a live reading. */
+  capturedAt?: string;
+};
+
+// An empty array = nothing to show (not signed in, API-key auth, offline, provider absent).
+export function getUsageLimits(): Promise<{ providers: ProviderLimits[] }> {
+  return req('/api/usage/limits');
+}
+
 export function getConfig(): Promise<Config> {
   return req('/api/config');
 }
