@@ -79,6 +79,9 @@
 // not redrawn here (hard rule 2).
 
 .closeWrap {
+  display: flex;
+  align-items: center;
+  gap: 2px;
   opacity: 0;
 }
 

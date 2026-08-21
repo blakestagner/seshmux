@@ -494,6 +494,29 @@
   text-overflow: ellipsis;
 }
 
+// Word status under the branch line (working / waiting / idle / done).
+.openTabStatus {
+  @include t-mono-micro;
+  margin-top: 1px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.st_working {
+  color: var(--live);
+}
+
+.st_waiting {
+  color: var(--waiting);
+}
+
+.st_idle,
+.st_done {
+  color: var(--done);
+}
+
 // Rail footer "+ New project" — sits under the last project, full width.
 .newProject {
   @include t-row;

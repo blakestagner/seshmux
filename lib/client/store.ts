@@ -52,6 +52,10 @@ export type Tab = {
   // fresh-start instead of jumping in once the async lookup returns.
   isTeamLead?: boolean;
   teamName?: string;
+  // Minimized: hidden from the tab strip and grid, but the tab record (and so
+  // its daemon PTY) stays alive. Still listed in the rail's Sessions panel;
+  // activateTab clears the flag, which is how you restore it.
+  minimized?: boolean;
 };
 
 export type RailSort = 'updated' | 'created';
@@ -103,6 +107,7 @@ export type Action =
   // sessionId (optional): the requesting session — plan-off runs in its own cwd (worktree).
   | { type: 'openPlanoff'; projectId: string; label: string; sessionId?: string }
   | { type: 'closeTab'; id: string }
+  | { type: 'minimizeTab'; id: string }
   | { type: 'activateTab'; id: string }
   | { type: 'moveTabBlock'; from: string; to: string }
   | { type: 'setView'; view: 'tabs' | 'grid' | 'agents' }
@@ -331,8 +336,28 @@ export function reducer(state: AppState, action: Action): AppState {
       const activeTab = state.activeTab === action.id ? (tabs.length ? tabs[Math.max(0, i - 1)].id : null) : state.activeTab;
       return { ...state, tabs, activeTab };
     }
+    case 'minimizeTab': {
+      // Same active-tab handoff as closeTab, but the record survives — the PTY
+      // keeps running and the rail's Sessions panel keeps listing it.
+      const i = state.tabs.findIndex((t) => t.id === action.id);
+      if (i < 0 || state.tabs[i].minimized) return state;
+      const tabs = state.tabs.map((t) => (t.id === action.id ? { ...t, minimized: true } : t));
+      const visible = tabs.filter((t) => !t.minimized);
+      const activeTab =
+        state.activeTab === action.id
+          ? (visible.length ? (tabs.slice(0, i).reverse().find((t) => !t.minimized) ?? visible[0]).id : null)
+          : state.activeTab;
+      return { ...state, tabs, activeTab };
+    }
     case 'activateTab':
-      return { ...state, tabs: clearUnviewed(state.tabs, action.id), activeTab: action.id, settingsOpen: false };
+      return {
+        ...state,
+        tabs: clearUnviewed(state.tabs, action.id).map((t) =>
+          t.id === action.id && t.minimized ? { ...t, minimized: false } : t,
+        ),
+        activeTab: action.id,
+        settingsOpen: false,
+      };
     case 'moveTabBlock':
       return { ...state, tabs: moveTabBlock(state.tabs, action.from, action.to) };
     case 'setView':

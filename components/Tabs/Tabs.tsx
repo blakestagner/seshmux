@@ -30,7 +30,9 @@ export default function Tabs() {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
 
-  const tabs = state.tabs;
+  // Minimized tabs keep running (record + PTY alive) but leave the strip; the
+  // rail's Sessions panel is where you get them back.
+  const tabs = state.tabs.filter((t) => !t.minimized);
 
   function handleDrop(e: DragEvent, targetId: string) {
     e.preventDefault();
@@ -94,6 +96,15 @@ export default function Tabs() {
             {t.provider ? <ProviderBadge provider={t.provider} /> : null}
             <span className={styles.label}>{t.label}</span>
             <span className={styles.closeWrap}>
+              <IconButton
+                label="Minimize tab"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  dispatch({ type: 'minimizeTab', id: t.id });
+                }}
+              >
+                –
+              </IconButton>
               <IconButton
                 label="Close tab"
                 onClick={(e) => {

@@ -27,6 +27,35 @@
   user-select: none;
 }
 
+// Labeled chip, not a bare glyph — the action (and what state it's in) has to
+// read at a glance from the logo corner.
+.collapseBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 6px;
+  flex: 0 0 auto;
+}
+
+// Collapsed: slim strip with only the mark + the toggle. Everything else drops
+// out of flow so the terminals below get the height back.
+.collapsed {
+  height: 30px;
+  flex: 0 0 30px;
+}
+
+.collapsed .searchWrap,
+.collapsed .right,
+.collapsed .wordmark {
+  display: none;
+}
+
+.collapsed .mark {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+}
+
 .mark {
   @include t-logo-mark;
   width: 26px;

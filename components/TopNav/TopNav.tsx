@@ -5,12 +5,15 @@ import TextInput from '../ui/TextInput/TextInput';
 import Segmented from '../ui/Segmented/Segmented';
 import StatusDot from '../ui/StatusDot/StatusDot';
 import IconButton from '../ui/IconButton/IconButton';
+import Button from '../ui/Button/Button';
 import SearchDropdown from '../SearchDropdown/SearchDropdown';
 import { search, type SearchHit } from '../../lib/client/api';
 import { toggleTheme } from '../../lib/client/theme';
 import { useAppState } from '../../lib/client/store';
 import { rollup, type AgentBucket } from '../../lib/client/status-rollup';
 import styles from './TopNav.module.scss';
+
+const COLLAPSE_KEY = 'seshmux-topnav-collapsed';
 
 const VIEW_OPTIONS = [
   { id: 'tabs', label: 'Tabs' },
@@ -31,10 +34,15 @@ export default function TopNav({ onPickHit, onOpenCustomizations, onOpenMenu }: 
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [open, setOpen] = useState(false);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  // Collapsed: the bar shrinks to a slim strip holding just the mark + this
+  // toggle, giving the terminals ~30px back. Read after mount (localStorage is
+  // client-only) so SSR and first paint agree.
+  const [collapsed, setCollapsed] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setTheme((document.documentElement.dataset.theme as 'dark' | 'light') || 'dark');
+    setCollapsed(localStorage.getItem(COLLAPSE_KEY) === '1');
   }, []);
 
   useEffect(() => {
@@ -96,7 +104,7 @@ export default function TopNav({ onPickHit, onOpenCustomizations, onOpenMenu }: 
   const visible = SEGMENTS.filter((s) => counts[s.key] > 0);
 
   return (
-    <nav className={styles.nav}>
+    <nav className={`${styles.nav} ${collapsed ? styles.collapsed : ''}`}>
       {onOpenMenu ? (
         <button type="button" className={styles.menuBtn} onClick={onOpenMenu} aria-label="Open projects">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
@@ -108,7 +116,22 @@ export default function TopNav({ onPickHit, onOpenCustomizations, onOpenMenu }: 
       ) : null}
       <div className={styles.logo}>
         <span className={styles.mark}>s</span>
-        seshmux
+        <span className={styles.wordmark}>seshmux</span>
+        <Button
+          variant="chip"
+          className={styles.collapseBtn}
+          title={collapsed ? 'Show the top bar' : 'Hide the top bar for more terminal room'}
+          onClick={() => {
+            const next = !collapsed;
+            setCollapsed(next);
+            localStorage.setItem(COLLAPSE_KEY, next ? '1' : '0');
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <polyline points={collapsed ? '6 9 12 15 18 9' : '6 15 12 9 18 15'} />
+          </svg>
+          {collapsed ? 'Show bar' : 'Hide bar'}
+        </Button>
       </div>
       <div className={styles.searchWrap} ref={wrapRef}>
         <span className={styles.searchIcon}>⌕</span>

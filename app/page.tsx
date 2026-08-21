@@ -913,7 +913,7 @@ function AppShell() {
               and the tabs⇄grid toggle lives in TopNav, so it's redundant there. */}
           {/* Desktop: tab strip. Mobile: a single-session header (back + ⋯) —
               multi-tab is gated, so the strip is replaced, not shrunk. */}
-          {state.tabs.length > 0 && view === 'tabs' && !isMobile ? <Tabs /> : null}
+          {state.tabs.some((t) => !t.minimized) && view === 'tabs' && !isMobile ? <Tabs /> : null}
           {isMobile && view === 'tabs' && activeTab ? (
             <MobileSessionHeader
               tab={activeTab}

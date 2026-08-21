@@ -199,8 +199,18 @@ export async function parseTranscriptFile(
   return { msgs, ctx, truncated };
 }
 
-// Tail-read only the last 64KB of a session file and scan backwards for the last
-// assistant line carrying `usage`. Cheap enough to call on every ctx poll.
+// Tail-read a session file and scan backwards for the last assistant line carrying
+// `usage`. Starts at 64KB (covers a normal session in one read) and doubles up to
+// MAX_CTX_TAIL_BYTES when that window holds no usage line — one 300KB tool result or
+// a post-compact summary is enough to push the last assistant entry out of 64KB, which
+// used to return null/stale and freeze the ctx meter after a /compact.
+//
+// A `compact_boundary` line found before any usage line is authoritative: everything
+// above it was dropped from the model's context, so its compactMetadata.postTokens IS
+// the current ctx. Without that check a wider window would happily report the huge
+// PRE-compact number.
+const MAX_CTX_TAIL_BYTES = 4 * 1024 * 1024;
+
 export async function readCtx(
   filePath: string,
   window: number | ((model: string) => number),
@@ -211,42 +221,53 @@ export async function readCtx(
   } catch {
     return null;
   }
-  const start = Math.max(0, size - TAIL_BYTES);
-  const fh = await open(filePath, 'r');
-  let chunk: string;
-  try {
-    const buf = Buffer.alloc(size - start);
-    await fh.read(buf, 0, buf.length, start);
-    chunk = buf.toString('utf8');
-  } finally {
-    await fh.close();
-  }
 
-  const lines = chunk.split('\n');
-  // If we started mid-file, the first line may be a partial — drop it.
-  if (start > 0) lines.shift();
-
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i];
-    if (!line || line.indexOf('"usage"') === -1) continue;
-    let obj: any;
+  for (let tail = TAIL_BYTES; ; tail *= 2) {
+    const start = Math.max(0, size - tail);
+    const fh = await open(filePath, 'r');
+    let chunk: string;
     try {
-      obj = JSON.parse(line);
-    } catch {
-      continue;
+      const buf = Buffer.alloc(size - start);
+      await fh.read(buf, 0, buf.length, start);
+      chunk = buf.toString('utf8');
+    } finally {
+      await fh.close();
     }
-    const usage = obj?.message?.usage;
-    if (obj.type === 'assistant' && usage) {
-      const tokens = tokensFromUsage(usage);
+
+    const lines = chunk.split('\n');
+    // If we started mid-file, the first line may be a partial — drop it.
+    if (start > 0) lines.shift();
+
+    // Post-compact tokens seen on the way back, applied only once a model is known
+    // (the window resolver needs one) — otherwise the boundary's own value is returned
+    // against whatever the resolver gives for ''.
+    let postCompact: number | null = null;
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (!line) continue;
+      const hasUsage = line.indexOf('"usage"') !== -1;
+      const hasBoundary = postCompact === null && line.indexOf('"compact_boundary"') !== -1;
+      if (!hasUsage && !hasBoundary) continue;
+      let obj: any;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (obj?.subtype === 'compact_boundary' && typeof obj?.compactMetadata?.postTokens === 'number') {
+        postCompact = obj.compactMetadata.postTokens;
+        continue;
+      }
+      const usage = obj?.message?.usage;
+      // Sidechain (subagent) entries carry the SUBAGENT's context, not this session's.
+      if (obj.type !== 'assistant' || !usage || obj.isSidechain) continue;
       const model = typeof obj.message.model === 'string' ? obj.message.model : '';
+      const tokens = postCompact ?? tokensFromUsage(usage);
       const win = typeof window === 'function' ? window(model) : window;
-      return {
-        tokens,
-        window: win,
-        pct: Math.round((tokens / win) * 100),
-        model,
-      };
+      return { tokens, window: win, pct: Math.round((tokens / win) * 100), model };
     }
+
+    if (start === 0 || tail >= MAX_CTX_TAIL_BYTES) return null;
   }
-  return null;
 }

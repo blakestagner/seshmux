@@ -48,7 +48,7 @@ function parseTree(raw: unknown): LayoutNode | null {
 
 export default function GridView() {
   const { state, dispatch } = useAppState();
-  const termTabs = state.tabs.filter((t) => t.kind === 'term' && t.ptyId);
+  const termTabs = state.tabs.filter((t) => t.kind === 'term' && t.ptyId && !t.minimized);
   const openIds = termTabs.map((t) => t.id);
 
   const wsRef = useRef<HTMLDivElement>(null);
