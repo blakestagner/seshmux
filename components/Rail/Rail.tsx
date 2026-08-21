@@ -96,6 +96,14 @@ function tabDotStatus(t: Tab): 'waiting' | 'unviewed' | 'live' | 'neutral' {
   return t.status === 'live' ? 'live' : 'neutral';
 }
 
+// Word status under the branch line. tab.status collapses working+idle into
+// 'live', so prefer the raw NIStatus (t.ni) when the events feed has sent one.
+function tabStatusWord(t: Tab): 'working' | 'waiting' | 'idle' | 'done' {
+  if (t.status === 'done') return 'done';
+  if (t.status === 'waiting') return 'waiting';
+  return t.ni === 'working' ? 'working' : t.ni === 'waiting' ? 'waiting' : t.status === 'live' ? 'idle' : 'done';
+}
+
 const SESSIONS_H_MIN = 76;
 const SESSIONS_H_MAX = 480;
 const SESSIONS_H_DEFAULT = 180;
@@ -570,6 +578,10 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
               <span className={styles.openTabInfo}>
                 <span className={styles.openTabLabel}>{t.label}</span>
                 {t.branch ? <span className={styles.openTabBranch}>⎇ {t.branch}</span> : null}
+                <span className={`${styles.openTabStatus} ${styles['st_' + tabStatusWord(t)]}`}>
+                  {tabStatusWord(t)}
+                  {t.minimized ? ' · minimized' : ''}
+                </span>
               </span>
               {showProvider && t.provider ? (
                 <span className={`${styles.sessAgent} ${styles[t.provider]}`}>{t.provider}</span>

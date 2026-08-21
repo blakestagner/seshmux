@@ -62,6 +62,31 @@ describe('closeTab', () => {
   });
 });
 
+describe('minimizeTab', () => {
+  it('keeps the tab record, hands active to the previous visible tab, restores on activate', () => {
+    let state = initialState();
+    state = reducer(state, { type: 'openSession', sessionId: 'a', projectId: 'p', label: 'a', kind: 'term' });
+    state = reducer(state, { type: 'openSession', sessionId: 'b', projectId: 'p', label: 'b', kind: 'term' });
+    state = reducer(state, { type: 'minimizeTab', id: 'tab-b' });
+
+    expect(state.tabs.map((t) => t.id)).toEqual(['tab-a', 'tab-b']);
+    expect(state.tabs.find((t) => t.id === 'tab-b')?.minimized).toBe(true);
+    expect(state.activeTab).toBe('tab-a');
+
+    state = reducer(state, { type: 'activateTab', id: 'tab-b' });
+    expect(state.tabs.find((t) => t.id === 'tab-b')?.minimized).toBe(false);
+    expect(state.activeTab).toBe('tab-b');
+  });
+
+  it('minimizing the only tab clears activeTab but keeps the session', () => {
+    let state = initialState();
+    state = reducer(state, { type: 'openSession', sessionId: 'a', projectId: 'p', label: 'a', kind: 'term' });
+    state = reducer(state, { type: 'minimizeTab', id: 'tab-a' });
+    expect(state.tabs).toHaveLength(1);
+    expect(state.activeTab).toBe(null);
+  });
+});
+
 describe('moveTabBlock', () => {
   it('moves a linked handoff pair together and keeps them adjacent', () => {
     const src = tab({ id: 'tab-src', kind: 'term', label: 'src', sessionId: 'src' });
