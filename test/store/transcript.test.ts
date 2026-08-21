@@ -37,6 +37,11 @@ describe('parseTranscript', () => {
 });
 
 describe('readCtx', () => {
+  const ctxTmp: string[] = [];
+  afterAll(() => {
+    for (const d of ctxTmp.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
   it('tail-reads last assistant usage', async () => {
     const filePath = join(root, projId, 'aaaa-1111.jsonl');
     const ctx = await readCtx(filePath, WINDOW);
@@ -47,6 +52,58 @@ describe('readCtx', () => {
     const filePath = join(root, '-Users-demo-github-other', 'no-usage.jsonl');
     const ctx = await readCtx(filePath, WINDOW);
     expect(ctx).toBeNull();
+  });
+
+  // Regression: one huge tool-result line (or a post-compact summary) used to push the
+  // last assistant usage past the fixed 64KB tail, so the meter froze or blanked.
+  it('widens the tail past a >64KB line to find the last assistant usage', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'seshmux-ctx-tail-'));
+    ctxTmp.push(dir);
+    const filePath = join(dir, 'big-tail.jsonl');
+    const usage = JSON.stringify({
+      type: 'assistant',
+      message: { model: 'claude-opus-4-8', usage: { input_tokens: 2, cache_creation_input_tokens: 100, cache_read_input_tokens: 900 } },
+    });
+    const fat = JSON.stringify({ type: 'user', message: { role: 'user', content: 'x'.repeat(300_000) } });
+    writeFileSync(filePath, `${usage}\n${fat}\n`);
+    expect(await readCtx(filePath, WINDOW)).toMatchObject({ tokens: 1002, model: 'claude-opus-4-8' });
+  });
+
+  // A compact drops everything above the boundary from the model's context, so the
+  // boundary's postTokens wins over the (pre-compact, much larger) usage below it.
+  it('reports compactMetadata.postTokens when a compact boundary is newer than the last usage', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'seshmux-ctx-compact-'));
+    ctxTmp.push(dir);
+    const filePath = join(dir, 'compacted.jsonl');
+    const usage = JSON.stringify({
+      type: 'assistant',
+      message: { model: 'claude-opus-4-8', usage: { input_tokens: 2, cache_read_input_tokens: 549_046 } },
+    });
+    const boundary = JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compactMetadata: { trigger: 'manual', preTokens: 549_048, postTokens: 12_549 },
+    });
+    writeFileSync(filePath, `${usage}\n${boundary}\n`);
+    expect(await readCtx(filePath, WINDOW)).toMatchObject({ tokens: 12_549, model: 'claude-opus-4-8' });
+  });
+
+  // Subagent (sidechain) entries carry the SUBAGENT's context, not the session's.
+  it('skips sidechain usage', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'seshmux-ctx-side-'));
+    ctxTmp.push(dir);
+    const filePath = join(dir, 'sidechain.jsonl');
+    const main = JSON.stringify({
+      type: 'assistant',
+      message: { model: 'claude-opus-4-8', usage: { input_tokens: 1000 } },
+    });
+    const side = JSON.stringify({
+      type: 'assistant',
+      isSidechain: true,
+      message: { model: 'claude-opus-4-8', usage: { input_tokens: 7 } },
+    });
+    writeFileSync(filePath, `${main}\n${side}\n`);
+    expect(await readCtx(filePath, WINDOW)).toMatchObject({ tokens: 1000 });
   });
 });
 
