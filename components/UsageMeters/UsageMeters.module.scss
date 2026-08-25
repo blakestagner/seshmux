@@ -1,0 +1,61 @@
+@use '../../styles/typography' as *;
+
+// UNVERIFIED LAYOUT: with two providers this row carries up to four meters and two badges,
+// and that combination has never been rendered — Codex only reports a live window while it
+// is running. So nothing here leans on a pixel threshold guessed from the code. Instead the
+// row yields space gracefully: the bars (pure decoration) absorb the pressure, the label and
+// the number (the actual information) never shrink or clip, and the search field beside it
+// keeps a usable floor of its own. Worst case the bars get stubby — never an overflow.
+.wrap {
+  display: flex;
+  align-items: center;
+  gap: 16px; // between providers — wider than the 8px between one provider's own meters
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.meter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+  min-width: 0;
+}
+
+.label {
+  @include t-mono-micro;
+  color: var(--text-faint);
+}
+
+// MeterBar fills its container, so the width lives here (primitive rule). Shrinkable: this
+// is the one part of a meter that carries no information the number doesn't already give,
+// so it's what gives way when the bar runs out of room.
+.bar {
+  flex: 0 1 46px;
+  min-width: 16px;
+  display: block;
+}
+
+.pct {
+  @include t-mono-micro;
+  color: var(--text-dim);
+  min-width: 30px; // 3 digits + % — keeps the bar from jittering as the number grows
+  text-align: right;
+}
+
+// The codebase's one established breakpoint, where the bar already sheds the view toggle
+// and the live badge. Reusing it rather than inventing a second number: any threshold
+// picked without rendering the four-meter case would be a guess, and this row now degrades
+// on its own above it.
+@media (max-width: 640px) {
+  .wrap {
+    display: none;
+  }
+}

@@ -7,6 +7,7 @@ import StatusDot from '../ui/StatusDot/StatusDot';
 import IconButton from '../ui/IconButton/IconButton';
 import Button from '../ui/Button/Button';
 import SearchDropdown from '../SearchDropdown/SearchDropdown';
+import UsageMeters from '../UsageMeters/UsageMeters';
 import { search, type SearchHit } from '../../lib/client/api';
 import { toggleTheme } from '../../lib/client/theme';
 import { useAppState } from '../../lib/client/store';
@@ -138,6 +139,9 @@ export default function TopNav({ onPickHit, onOpenCustomizations, onOpenMenu }: 
         <TextInput value={query} onChange={setQuery} placeholder="Search all transcripts" kbdHint="⌘K" />
         <SearchDropdown open={open} query={query} hits={hits} onPick={handlePick} />
       </div>
+      {/* Not rendered while collapsed — the slim strip has no room, and unmounting
+          also stops the poll rather than fetching for a hidden element. */}
+      {collapsed ? null : <UsageMeters />}
       <div className={styles.right}>
         {/* View switcher is redundant on mobile (the bottom nav owns navigation
             and grid is desktop-only) — hidden there via CSS. */}

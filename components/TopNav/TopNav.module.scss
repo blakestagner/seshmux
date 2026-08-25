@@ -1,7 +1,9 @@
 @use '../../styles/typography' as *;
 
-// TopNav — redesign (__af_html.txt lines 16-42): 56px solid panel, fixed 266px
-// left (logo) + centered search + 266px right (view toggle · live count · icons).
+// TopNav — 56px solid panel. Left-packed: logo · search · usage meters, each at its
+// natural width; the right rail (view toggle · live count · icons) takes the slack and
+// stays flush right. The search was centered originally (__af_html.txt lines 16-42) —
+// it moved left so the usage meters could sit beside it instead of floating mid-bar.
 
 .nav {
   height: 56px;
@@ -14,15 +16,15 @@
   border-bottom: 1px solid var(--border);
 }
 
-// Equal-flex left/right rails keep the search centered without the design's
-// fixed 266px (our live counter + two icon buttons overflow 266 and cramp).
+// Left-aligned bar: logo, then search, then the usage meters — all at natural
+// width. Only `.right` flexes, so it absorbs the slack and stays right-aligned.
 .logo {
   @include t-logo;
   color: var(--text);
   display: flex;
   align-items: center;
   gap: 10px;
-  flex: 1 1 0;
+  flex: 0 0 auto;
   min-width: 0;
   user-select: none;
 }
@@ -68,11 +70,15 @@
   justify-content: center;
 }
 
-// Center search — grows to fill, capped at 440px, self-centered.
+// Sits immediately right of the logo. Shrinkable (0 1) so a narrow window squeezes the
+// field rather than pushing the icon rail off the edge — but with a floor, because this is
+// the bar's primary control and a search box narrower than its own placeholder is useless.
+// The usage meters shrink too, so the squeeze is shared rather than landing entirely here.
 .searchWrap {
   position: relative;
-  flex: 0 1 440px;
-  margin: 0 auto;
+  flex: 0 1 340px;
+  min-width: 180px;
+  margin: 0;
 }
 
 .searchWrap :global(input) {
@@ -163,14 +169,12 @@
   .liveBadge {
     display: none;
   }
-  // Logo + icons take their natural width; search fills what's left so the logo
-  // isn't crushed to "se" by three competing flex:1 rails.
-  .logo {
-    flex: 0 0 auto;
-  }
+  // Search fills whatever the logo and icons leave, rather than holding a 340px basis
+  // it can't have at 390px wide. The desktop floor is dropped with it: at 390px there is
+  // no room to honour it, and this layout worked before the floor existed.
   .searchWrap {
     flex: 1 1 auto;
-    margin: 0;
+    min-width: 0;
   }
   .right {
     flex: 0 0 auto;
