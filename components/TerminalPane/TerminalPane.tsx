@@ -130,6 +130,11 @@ export default function TerminalPane({
   // Same escape hatch for writing INTO the PTY from outside the effect (the
   // file-drop handler below). Null while unmounted/reconnecting — drops no-op.
   const sendRef = useRef<((data: string) => void) | null>(null);
+  // Cmd/Ctrl-V only reaches the PTY when xterm's hidden textarea holds focus.
+  // Nothing focused it on mount/reveal, and a click landing on the wrap's
+  // padding (not xterm's screen) never focused it either — so paste silently
+  // did nothing "more times than not". Focus explicitly on both paths.
+  const focusRef = useRef<(() => void) | null>(null);
   const [dropping, setDropping] = useState(false);
 
   // Drop a file on the terminal → its path is typed at the cursor.
@@ -146,7 +151,12 @@ export default function TerminalPane({
       sendRef.current?.(pasteText(paths));
       return;
     }
-    const files = Array.from(e.dataTransfer.files);
+    await uploadAndType(Array.from(e.dataTransfer.files));
+  }
+
+  // Upload real Files to the repo's .seshmux/dropped/ and type their paths at
+  // the cursor. Shared by the drop handler and the image-paste handler below.
+  async function uploadAndType(files: File[]) {
     if (!files.length || !projectId) return;
     try {
       const saved: string[] = [];
@@ -155,6 +165,18 @@ export default function TerminalPane({
     } catch {
       /* the drop simply types nothing; no statusbar error surface here */
     }
+  }
+
+  // Pasting a screenshot (Cmd-V with an image on the clipboard) carries no
+  // text, so xterm has nothing to write and the paste silently did nothing.
+  // Same trick as a Chrome file drop: upload the bytes, type the path — which
+  // is what an agent needs to read the image anyway. Text pastes fall through
+  // to xterm untouched.
+  async function handlePaste(e: React.ClipboardEvent) {
+    const images = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith('image/'));
+    if (!images.length) return;
+    e.preventDefault();
+    await uploadAndType(images);
   }
 
   // Reassert PTY size on EVERY tabs⇄grid⇄(future views) switch — panes that
@@ -171,8 +193,14 @@ export default function TerminalPane({
   // Reassert size on the next frame once the reveal has laid out. No-op for
   // always-visible agent panes (visible defaults true and never flips).
   useEffect(() => {
-    if (visible) requestAnimationFrame(() => pushSizeRef.current?.());
-  }, [visible]);
+    if (!visible) return;
+    requestAnimationFrame(() => {
+      pushSizeRef.current?.();
+      // Grid mounts many panes at once — they'd fight over focus, so only the
+      // single-pane view claims it (mount = a tab switch to this terminal).
+      if (variant !== 'grid') focusRef.current?.();
+    });
+  }, [visible, variant]);
 
   useEffect(() => {
     let disposed = false;
@@ -214,6 +242,11 @@ export default function TerminalPane({
         }),
       );
       term.open(mountRef.current);
+      focusRef.current = () => term?.focus();
+      // The reveal effect above already fired (its rAF beats these dynamic
+      // imports), so claim focus here too — otherwise a freshly opened tab
+      // can't paste until it's clicked.
+      if (visible && variant !== 'grid') term.focus();
 
       // ATTACH FLOW (no raw replay — see ws-term.ts replay=0): raw ring bytes
       // are recorded at whatever widths the pane historically had, and painting
@@ -453,6 +486,7 @@ export default function TerminalPane({
       disposed = true;
       pushSizeRef.current = null;
       sendRef.current = null;
+      focusRef.current = null;
       if (roTimer) clearTimeout(roTimer);
       ro?.disconnect();
       themeObserver?.disconnect();
@@ -699,6 +733,8 @@ export default function TerminalPane({
     <div className={styles.pane}>
       <div
         className={`${styles.termWrap} ${dropping ? styles.dropTarget : ''}`}
+        onMouseDown={() => focusRef.current?.()}
+        onPaste={(e) => void handlePaste(e)}
         onDragOver={(e) => {
           // Only intercept FILE/URI drags. text/plain is deliberately excluded:
           // a text selection dragged inside xterm carries only that, and
