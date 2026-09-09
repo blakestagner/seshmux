@@ -24,7 +24,13 @@ describe('registerBridge — claude json', () => {
     const { deps, claudePath } = makeDeps();
     await registerBridge(deps);
     const cfg = JSON.parse(readFileSync(claudePath, 'utf8'));
-    expect(cfg.mcpServers['seshmux-bridge']).toEqual({ command: 'npx', args: ['seshmux', 'mcp-bridge'] });
+    expect(cfg.mcpServers['seshmux-bridge']).toEqual({
+      command: 'npx',
+      args: ['seshmux', 'mcp-bridge'],
+      // The bridge is spawned BY the agent and inherits its env, so it is told which
+      // agent it serves; without this, memory writes could not be attributed.
+      env: { SESHMUX_AGENT: 'claude' },
+    });
   });
 
   it('preserves existing unrelated config and other mcpServers entries', async () => {
@@ -39,7 +45,13 @@ describe('registerBridge — claude json', () => {
     const cfg = JSON.parse(readFileSync(claudePath, 'utf8'));
     expect(cfg.someOtherSetting).toBe(true);
     expect(cfg.mcpServers.other).toEqual({ command: 'foo' });
-    expect(cfg.mcpServers['seshmux-bridge']).toEqual({ command: 'npx', args: ['seshmux', 'mcp-bridge'] });
+    expect(cfg.mcpServers['seshmux-bridge']).toEqual({
+      command: 'npx',
+      args: ['seshmux', 'mcp-bridge'],
+      // The bridge is spawned BY the agent and inherits its env, so it is told which
+      // agent it serves; without this, memory writes could not be attributed.
+      env: { SESHMUX_AGENT: 'claude' },
+    });
   });
 
   it('aborts (never clobbers) when the file exists but is not valid JSON (R2-2)', async () => {

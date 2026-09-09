@@ -26,6 +26,10 @@ export type EventMessage =
   | { event: 'session-touch'; provider: ProviderId; sessionId: string; projectId: string }
   // <repo>/.seshmux/handoff.md changed → refetch the open scratchpad tab (16.6).
   | { event: 'scratchpad'; projectId: string }
+  // Agent memory changed — harvested, distilled, edited here, or written by an agent
+  // through the `remember` MCP tool from a DIFFERENT process. Ping-only: the client
+  // refetches GET /api/memory. projectId is absent for a store-wide change (compaction).
+  | { event: 'memory'; projectId?: string }
   // a session's subagent tree changed (new agent file, or an agent progressed).
   // Ping-only — the client refetches GET /api/subagents. Lazily watched once a
   // viewer opens the session (spec: docs/todo/2026-07-10-subagent-viewer.md).
@@ -48,7 +52,7 @@ export type EventMessage =
   | {
       event: 'approval';
       requestId: string;
-      tool: 'ask_codex' | 'ask_claude' | 'wait_for_status' | 'read_terminal';
+      tool: 'ask_codex' | 'ask_claude' | 'wait_for_status' | 'read_terminal' | 'remember';
       question: string;
       cwd: string;
       hop: number;

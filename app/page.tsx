@@ -20,6 +20,7 @@ import TerminalPane from '../components/TerminalPane/TerminalPane';
 import SubagentViewer from '../components/SubagentViewer/SubagentViewer';
 import ChangesPanel from '../components/ChangesPanel/ChangesPanel';
 import PortsPanel from '../components/PortsPanel/PortsPanel';
+import MemoryPanel from '../components/MemoryPanel/MemoryPanel';
 import GridView from '../components/GridView/GridView';
 import AgentsView from '../components/AgentsView/AgentsView';
 import TeamPanel from '../components/TeamPanel/TeamPanel';
@@ -57,6 +58,7 @@ const PANEL_LABELS: Record<string, string> = {
   team: 'Team',
   changes: 'Folder',
   ports: 'Ports',
+  memory: 'Memory',
 };
 
 // Rail drag-resize bounds. MIN matches Rail.module.scss's fixed 288px (the
@@ -140,6 +142,15 @@ function AppShell() {
   const [teamPings, setTeamPings] = useState<Record<string, number>>({});
   const [touchPings, setTouchPings] = useState<Record<string, number>>({});
   const [scratchpadPings, setScratchpadPings] = useState<Record<string, number>>({});
+  // Bumped by {event:'memory'} — harvested, distilled, edited here, or written by an agent
+  // through the `remember` MCP tool in a different process. A single counter, not a map:
+  // the store watcher reports that the store changed, not which project changed.
+  const [memoryPings, setMemoryPings] = useState(0);
+  // Memory settings live in the free-form config.settings bag, same as the notification
+  // prefs above. Read here rather than in TerminalPane so the dropdown stays a dumb
+  // presentational component with no config dependency of its own.
+  const memoryBudgetTokens = Number(state.config.settings?.memoryBudgetTokens) || 1500;
+  const memorySubmitOnLoad = state.config.settings?.memorySubmitOnLoad === true;
   // BUG-3: true from {event:'server-restarting'} until the first event after
   // auto-reconnect (the server replays events on reconnect, so the next
   // message proves the server is back) — no timer, no fake progress.
@@ -561,6 +572,9 @@ function AppShell() {
         case 'scratchpad':
           setScratchpadPings((prev) => ({ ...prev, [e.projectId]: (prev[e.projectId] ?? 0) + 1 }));
           break;
+        case 'memory':
+          setMemoryPings((n) => n + 1);
+          break;
         // server-restarting is handled above (top of this callback), before the switch.
         default:
           break;
@@ -778,6 +792,10 @@ function AppShell() {
           onOpenTeam={tab.isTeamLead ? () => handleTogglePanel(tab.id, 'team') : undefined}
           onOpenChanges={tab.projectId ? () => handleTogglePanel(tab.id, 'changes') : undefined}
           onOpenPorts={tab.projectId ? () => handleTogglePanel(tab.id, 'ports') : undefined}
+          onOpenMemory={tab.projectId ? () => handleTogglePanel(tab.id, 'memory') : undefined}
+          memoryRefreshKey={memoryPings}
+          memoryBudgetTokens={memoryBudgetTokens}
+          memorySubmitOnLoad={memorySubmitOnLoad}
           onOpenTerminal={tab.ptyId ? () => handleOpenTerminal(tab) : undefined}
         />
       );
@@ -861,6 +879,12 @@ function AppShell() {
           icon: '▤',
           label: 'Folder / changes',
           onClick: () => handleTogglePanel(activeTab.id, 'changes'),
+        },
+        activeTab.projectId && {
+          key: 'memory',
+          icon: '◆',
+          label: 'Memory',
+          onClick: () => handleTogglePanel(activeTab.id, 'memory'),
         },
         { key: 'grid', icon: '▦', label: 'Grid / split view', hint: 'desktop only', disabled: true },
         { key: 'close', icon: '✕', label: 'Close session', danger: true, onClick: () => closeActiveSession(activeTab) },
@@ -965,6 +989,7 @@ function AppShell() {
                     return !!team;
                   case 'changes':
                   case 'ports':
+                  case 'memory':
                     return !!activeTab.projectId;
                   default:
                     return false;
@@ -1032,6 +1057,17 @@ function AppShell() {
                         branch={activeTab.branch}
                         ptyId={activeTab.ptyId}
                         onClose={() => handleClosePanel(activeTab.id, 'ports')}
+                      />
+                    );
+                  case 'memory':
+                    return (
+                      <MemoryPanel
+                        projectId={activeTab.projectId!}
+                        sessionId={activeTab.sessionId}
+                        provider={activeTab.provider}
+                        branch={activeTab.branch}
+                        refreshKey={memoryPings}
+                        onClose={() => handleClosePanel(activeTab.id, 'memory')}
                       />
                     );
                 }

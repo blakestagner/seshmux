@@ -1,0 +1,81 @@
+@use '../../styles/typography' as *;
+
+// Right-pane layout only. Filters and rows are composed from components/Memory.
+// Chrome copies ChangesPanel/PortsPanel's head/body so the right-pane slot reads as one
+// family — including the surface token, which must be --bg like its siblings and not
+// --bg-panel (a visibly different sheet in light theme).
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.title {
+  @include t-section;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.headGlyph {
+  @include t-glyph-panel;
+  color: var(--text-dim);
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.empty {
+  @include t-sub;
+  margin: 0;
+  padding: 20px 14px;
+  color: var(--text-dim);
+}
+
+.compose {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.composeRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+// A status note and a failure must not look the same — the same split as MemoryMenu, so
+// "distilled 4 facts" and "distill failed" read differently on both surfaces.
+.note {
+  @include t-meta;
+  color: var(--text-dim);
+}
+
+.noteError {
+  @include t-meta;
+  color: var(--hot);
+}
+
+.stats {
+  @include t-mono-micro;
+  margin-left: auto;
+  color: var(--text-faint);
+}

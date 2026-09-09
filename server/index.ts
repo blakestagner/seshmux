@@ -5,6 +5,8 @@ import { AuthError, requireAuth } from './lib/auth';
 import { validateBindHost, displayHost } from '../bin/lib/host.js';
 import { dial, withTimeout } from './daemon-client';
 import { readEntries, removeByPtyId } from './lib/live-ledger';
+import { createHarvester, type Harvester } from './lib/memory/harvest';
+import { getProviders } from './lib/providers/types';
 
 // F-new(a): on a clean server shutdown, drop ledger entries the daemon reports as
 // dead/exited right now, so a session that finished while the server was down can't
@@ -93,7 +95,13 @@ export async function startServer({ port = 4700, host, dev = false }: { port?: n
   // Events hub (Task 15/16): owns needs-input status, ctx/session watch fan-out,
   // and the monitor daemon connection. One per server process.
   const { createEventsHub } = await import('./events-hub');
-  const hub = await createEventsHub();
+  // Assigned once config has been read, below. The hub is created first (the WS route
+  // needs it), so the harvest hook is bound through this closure rather than by value.
+  let harvester: Harvester | null = null;
+  const hub = await createEventsHub({
+    onSessionActivity: (provider, projectId, sessionId) =>
+      harvester?.onSessionTouched(provider, projectId, sessionId),
+  });
   // Let the shared session-start machinery attach the monitor on every spawn.
   const { setSpawnListener, startSession } = await import('./session-start');
   setSpawnListener((ptyId) => hub.trackPty(ptyId));
@@ -178,6 +186,48 @@ export async function startServer({ port = 4700, host, dev = false }: { port?: n
   // Read config ONCE at boot for the transcript LRU size (never on the hot path).
   const { readConfig } = await import('./routes/config');
   const bootConfig = await readConfig().catch(() => null);
+  // Agent memory: harvesting is on unless explicitly disabled. It is cheap (a bounded
+  // forward read at the pauses between turns) and a memory store that was never filled is
+  // the one failure mode the feature cannot recover from later.
+  const memorySettings = (bootConfig?.settings ?? {}) as Record<string, unknown>;
+  const memoryEnabled = memorySettings.memoryEnabled !== false;
+  // 'when a session ends' is the only mode that spends anything automatically, so it is
+  // opt-in and checked explicitly rather than by truthiness on a free-form setting.
+  const autoDistill = memorySettings.memoryDistillMode === 'when a session ends';
+  harvester = memoryEnabled
+    ? createHarvester({
+        providers: getProviders,
+        log: (msg, err) => err && console.error('[memory] ' + msg, err),
+        onSessionComplete: autoDistill
+          ? (target) => {
+              // Detached: distillation runs headless agent calls and must never hold up
+              // the harvest queue, let alone the watch fan-out it hangs off.
+              void (async () => {
+                try {
+                  const { distillSession } = await import('./lib/memory/distill');
+                  const provider = (await getProviders()).find((pr) => pr.id === target.provider);
+                  if (!provider) return;
+                  await distillSession({
+                    provider,
+                    sessionId: target.session.id,
+                    projectId: target.session.projectId,
+                    repo: target.repo,
+                    branch: target.session.branch,
+                  });
+                  hub.emit({ event: 'memory', projectId: target.session.projectId });
+                } catch (err) {
+                  console.error('[memory] auto-distill failed:', err);
+                }
+              })();
+            }
+          : undefined,
+      })
+    : null;
+  if (harvester) {
+    // Bounded pass over recent sessions so memory is not empty on first run. Detached and
+    // swallowed: a slow or failing backfill must not delay the server coming up.
+    void harvester.backfill().catch((err) => console.error('[memory] backfill failed:', err));
+  }
   const rawCacheSize = bootConfig?.settings?.transcriptCacheSize;
   const transcriptCacheSize = typeof rawCacheSize === 'number' && rawCacheSize > 0 ? rawCacheSize : 10;
   await f.register((await import('./routes/transcript')).default, { cacheSize: transcriptCacheSize });
@@ -238,6 +288,22 @@ export async function startServer({ port = 4700, host, dev = false }: { port?: n
   // .seshmux/handoff.md so either agent's write pushes {event:'scratchpad'}.
   await f.register((await import('./routes/scratchpad')).default, {
     onOpen: (projectId: string, repo: string) => hub.watchScratchpad(projectId, repo),
+  });
+  // Agent memory. Mutations ping {event:'memory'} so the panel and the statusbar
+  // dropdown refresh; the same event also carries an agent's `remember`, which lands
+  // from the mcp-bridge process and is only visible to us through the store watcher.
+  await f.register((await import('./routes/memory')).default, {
+    // Arm the store watcher as soon as anything LOOKS at memory. The write it exists to
+    // notice — an agent's `remember` — comes from the mcp-bridge process and never reaches
+    // these routes, so arming on mutation alone meant it was never armed in time.
+    onOpen: () => hub.watchMemory(),
+    onChanged: (projectId?: string) => {
+      hub.watchMemory();
+      hub.emit(projectId ? { event: 'memory', projectId } : { event: 'memory' });
+    },
+    // Borrow the harvester's serial queue so a compaction cannot rewrite shards from a
+    // snapshot while a harvest is appending to them.
+    serialize: harvester ? <T,>(fn: () => Promise<T>) => harvester!.runExclusive(fn) : undefined,
   });
   // Read-only subagent-transcript viewer. onOpen starts the lazy per-session chokidar
   // watch → {event:'subagents'} pings drive live-refetch.

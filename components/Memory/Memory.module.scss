@@ -1,0 +1,164 @@
+@use '../../styles/typography' as *;
+
+// Shared memory visuals: the filter cluster and one record row. Layout/spacing/state only —
+// all text styling comes from the t-* mixins (hard rule 1), and the checkbox, icon buttons
+// and meta line are ui/ primitives rather than redrawn here (hard rule 2).
+
+.filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.kindChip {
+  @include t-chip;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.kindChip:hover {
+  border-color: var(--border-bright);
+  color: var(--text);
+}
+
+.kindOn {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+// ── row ─────────────────────────────────────────────────────────────────────
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.row:hover {
+  background: var(--bg-hover);
+}
+
+// --accent is reserved for STATE (selected, pinned, active filter). Kind is carried by the
+// glyph shape and by text weight, so a selected pinned decision still reads as selected
+// instead of dissolving into three overlapping accents.
+.rowOn,
+.rowOn:hover {
+  background: var(--accent-soft);
+}
+
+// A superseded record is inactive history. Dimmed with a token colour rather than
+// `opacity`, which on a light ground drove --text-faint below readable contrast.
+.rowStale .text,
+.rowStale .textFull {
+  color: var(--text-dim);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  margin-top: 4px;
+  flex: none;
+}
+
+.rowBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  text-align: left;
+  color: inherit;
+}
+
+button.rowBody {
+  cursor: pointer;
+}
+
+.rowTop {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.glyph {
+  @include t-glyph-statusbar;
+  flex: none;
+  color: var(--text-dim);
+}
+
+// Distilled facts are the ones worth spotting in a list, and an error is a warning. Every
+// other kind stays neutral so the list does not become a colour chart.
+.k_error {
+  color: var(--hot);
+}
+.k_decision,
+.k_lesson {
+  color: var(--text);
+}
+
+.text {
+  @include t-row;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.textFull {
+  @include t-body;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.cite {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+  color: var(--text-faint);
+}
+
+.pin {
+  color: var(--accent);
+}
+
+// Inactive history, not a warning: --waiting is the needs-input amber and means something
+// else everywhere in the app.
+.stale {
+  color: var(--done);
+}
+
+.cost {
+  white-space: nowrap;
+  color: var(--text-faint);
+}
+
+.rowActions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}

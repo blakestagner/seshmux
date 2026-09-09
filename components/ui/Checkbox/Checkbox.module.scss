@@ -1,0 +1,56 @@
+@use '../../../styles/typography' as *;
+
+// Checkbox — the native input carries behaviour, this box carries the look.
+
+.wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+// Kept in the layout (not display:none) so focus, keyboard and AT behaviour are the
+// browser's, not a reimplementation.
+.input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.box {
+  @include t-mono-micro-strong;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius-xs);
+  background: var(--bg-raised);
+  color: var(--accent-contrast);
+  pointer-events: none;
+}
+
+.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.input:hover:not(:disabled) + .box {
+  border-color: var(--accent);
+}
+
+.input:focus-visible + .box {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.input:disabled + .box {
+  opacity: 0.5;
+  cursor: default;
+}

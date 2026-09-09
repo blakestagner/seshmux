@@ -45,9 +45,16 @@ function bridgeCommand(): { command: string; args: string[] } {
   return { command: 'npx', args: ['seshmux', 'mcp-bridge'] };
 }
 
-function bridgeServerConfig(): { command: string; args: string[]; env?: Record<string, string> } {
+// Which agent this registration is for. The mcp-bridge is spawned BY the agent and
+// inherits its environment, so without being told it has no way to know whether it is
+// serving claude or codex — and `remember` would have to guess at the provider it records
+// against. Passed as env rather than argv so the visible command is unchanged.
+export const AGENT_ENV = 'SESHMUX_AGENT';
+
+function bridgeServerConfig(agent: string): { command: string; args: string[]; env?: Record<string, string> } {
   const cfg: { command: string; args: string[]; env?: Record<string, string> } = bridgeCommand();
-  if (process.env.SESHMUX_CONFIG_DIR) cfg.env = { SESHMUX_CONFIG_DIR: process.env.SESHMUX_CONFIG_DIR };
+  cfg.env = { [AGENT_ENV]: agent };
+  if (process.env.SESHMUX_CONFIG_DIR) cfg.env.SESHMUX_CONFIG_DIR = process.env.SESHMUX_CONFIG_DIR;
   return cfg;
 }
 
@@ -90,7 +97,7 @@ async function registerClaude(path: string): Promise<void> {
   const mcpServers = (cfg.mcpServers && typeof cfg.mcpServers === 'object'
     ? (cfg.mcpServers as Record<string, unknown>)
     : {});
-  mcpServers['seshmux-bridge'] = bridgeServerConfig();
+  mcpServers['seshmux-bridge'] = bridgeServerConfig('claude');
   cfg.mcpServers = mcpServers;
   await atomicWrite(path, JSON.stringify(cfg, null, 2) + '\n');
 }
@@ -110,15 +117,17 @@ async function isClaudeRegistered(path: string): Promise<boolean> {
 // SESHMUX_CONFIG_DIR env only when explicitly overridden (see bridgeServerConfig).
 function codexTomlBlock(): string {
   const { command, args } = bridgeCommand();
+  const env = [`${AGENT_ENV} = "codex"`];
+  if (process.env.SESHMUX_CONFIG_DIR) {
+    env.push(`SESHMUX_CONFIG_DIR = ${JSON.stringify(process.env.SESHMUX_CONFIG_DIR)}`);
+  }
   const lines = [
     '[mcp_servers.seshmux-bridge]',
     `command = ${JSON.stringify(command)}`,
     `args = [${args.map((a) => JSON.stringify(a)).join(', ')}]`,
+    `env = { ${env.join(', ')} }`,
+    '',
   ];
-  if (process.env.SESHMUX_CONFIG_DIR) {
-    lines.push(`env = { SESHMUX_CONFIG_DIR = ${JSON.stringify(process.env.SESHMUX_CONFIG_DIR)} }`);
-  }
-  lines.push('');
   return lines.join('\n');
 }
 

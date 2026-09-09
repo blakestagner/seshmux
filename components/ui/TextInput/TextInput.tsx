@@ -20,6 +20,10 @@ export type TextInputProps = {
   // id for inputs that offer suggestions.
   onKeyDown?: KeyboardEventHandler<HTMLInputElement>;
   list?: string;
+  // Focus on mount. Behaviour, not chrome — for inputs that ARE the reason a surface
+  // opened (a dropdown whose whole purpose is its search box), where making the user click
+  // once more is just friction.
+  autoFocus?: boolean;
 };
 
 export default function TextInput({
@@ -32,6 +36,7 @@ export default function TextInput({
   className,
   onKeyDown,
   list,
+  autoFocus,
 }: TextInputProps) {
   if (multiline) {
     const onArea: ChangeEventHandler<HTMLTextAreaElement> = (e) => onChange(e.target.value);
@@ -43,6 +48,7 @@ export default function TextInput({
         placeholder={placeholder}
         rows={multiline}
         disabled={disabled}
+        autoFocus={autoFocus}
       />
     );
   }
@@ -58,6 +64,7 @@ export default function TextInput({
         list={list}
         placeholder={placeholder}
         disabled={disabled}
+        autoFocus={autoFocus}
       />
       {kbdHint ? <span className={styles.kbd}>{kbdHint}</span> : null}
     </span>
