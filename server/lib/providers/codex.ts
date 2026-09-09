@@ -40,6 +40,7 @@ import { Lru } from '../store/lru';
 import { decodeProjectDir, derivedWorkspaceParent, encodeProjectId, pathLeaf, storeBytes } from '../store/scan';
 import type { SearchHit, SearchOpts } from '../store/search';
 import { pricingFor, type UsageSummary } from '../store/usage';
+import { readForward } from '../store/transcript';
 import type { Ctx, Msg, ToolCall } from '../store/transcript';
 import { loadNeedsInputPatterns } from './manifest';
 import { whichBin } from '../which';
@@ -284,6 +285,77 @@ function outputToString(output: unknown): string {
   }
 }
 
+// The per-line half of parseTranscript, extracted for the same reason as claude's
+// createClaudeLineParser: two readers with opposite reading directions share one schema
+// parser. The display read streams the whole rollout; the memory harvester (harvestFrom)
+// feeds forward slices and keeps the offset. Stateful — call_id pairing and the trailing
+// token_count both span lines.
+export interface CodexLineParser {
+  readonly msgs: Msg[];
+  feed(line: string): void;
+  ctx(): Ctx | null;
+}
+
+export function createCodexLineParser(): CodexLineParser {
+  const msgs: Msg[] = [];
+  const toolById = new Map<string, ToolCall>();
+  let model = '';
+  let window = DEFAULT_WINDOW;
+  let tokens: number | null = null;
+
+  function feed(line: string): void {
+    if (!line.trim()) return;
+    let obj: any;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      return;
+    }
+    const p = obj.payload;
+    if (!p) return;
+    const ts = typeof obj.timestamp === 'string' ? Date.parse(obj.timestamp) : 0;
+
+    if (obj.type === 'turn_context' && typeof p.model === 'string') {
+      model = p.model;
+      if (MODEL_WINDOWS[model]) window = MODEL_WINDOWS[model];
+    } else if (obj.type === 'event_msg' && p.type === 'task_started' && p.model_context_window) {
+      window = p.model_context_window;
+    } else if (obj.type === 'event_msg' && p.type === 'user_message') {
+      const text = typeof p.message === 'string' ? p.message : '';
+      if (text) msgs.push({ role: 'user', text, tools: [], ts });
+    } else if (obj.type === 'event_msg' && p.type === 'agent_message') {
+      const text = typeof p.message === 'string' ? p.message : '';
+      if (text) msgs.push({ role: 'assistant', text, tools: [], ts });
+    } else if (obj.type === 'response_item' && p.type === 'function_call') {
+      const call: ToolCall = {
+        name: String(p.name ?? ''),
+        input: toolArgsToString(p.arguments),
+        output: '',
+      };
+      if (p.call_id) toolById.set(p.call_id, call);
+      // Attach to the most recent assistant msg, else create a carrier.
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === 'assistant') last.tools.push(call);
+      else msgs.push({ role: 'assistant', text: '', tools: [call], ts });
+    } else if (obj.type === 'response_item' && p.type === 'function_call_output') {
+      const tool = toolById.get(p.call_id);
+      if (tool) tool.output = outputToString(p.output);
+    } else if (obj.type === 'event_msg' && p.type === 'token_count' && p.info) {
+      const total = p.info.last_token_usage?.total_tokens;
+      if (typeof total === 'number') tokens = total;
+      if (p.info.model_context_window) window = p.info.model_context_window;
+    }
+  }
+
+  function ctx(): Ctx | null {
+    return tokens !== null
+      ? { tokens, window, pct: Math.round((tokens / window) * 100), model }
+      : null;
+  }
+
+  return { msgs, feed, ctx };
+}
+
 export interface CodexProviderOpts {
   root?: string;
   homeDir?: string;
@@ -465,69 +537,37 @@ export class CodexProvider implements AgentProvider {
     const file = await this.fileForSession(projectId, sessionId);
     if (!file) return { msgs: [], ctx: null, truncated: false };
 
-    const msgs: Msg[] = [];
-    const toolById = new Map<string, ToolCall>();
-    let model = '';
-    let window = DEFAULT_WINDOW;
-    let tokens: number | null = null;
-
+    const parser = createCodexLineParser();
     const rl = createInterface({
       input: createReadStream(file, { encoding: 'utf8' }),
       crlfDelay: Infinity,
     });
     try {
-      for await (const line of rl) {
-        if (!line.trim()) continue;
-        let obj: any;
-        try {
-          obj = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        const p = obj.payload;
-        if (!p) continue;
-        const ts = typeof obj.timestamp === 'string' ? Date.parse(obj.timestamp) : 0;
-
-        if (obj.type === 'turn_context' && typeof p.model === 'string') {
-          model = p.model;
-          if (MODEL_WINDOWS[model]) window = MODEL_WINDOWS[model];
-        } else if (obj.type === 'event_msg' && p.type === 'task_started' && p.model_context_window) {
-          window = p.model_context_window;
-        } else if (obj.type === 'event_msg' && p.type === 'user_message') {
-          const text = typeof p.message === 'string' ? p.message : '';
-          if (text) msgs.push({ role: 'user', text, tools: [], ts });
-        } else if (obj.type === 'event_msg' && p.type === 'agent_message') {
-          const text = typeof p.message === 'string' ? p.message : '';
-          if (text) msgs.push({ role: 'assistant', text, tools: [], ts });
-        } else if (obj.type === 'response_item' && p.type === 'function_call') {
-          const call: ToolCall = {
-            name: String(p.name ?? ''),
-            input: toolArgsToString(p.arguments),
-            output: '',
-          };
-          if (p.call_id) toolById.set(p.call_id, call);
-          // Attach to the most recent assistant msg, else create a carrier.
-          const last = msgs[msgs.length - 1];
-          if (last && last.role === 'assistant') last.tools.push(call);
-          else msgs.push({ role: 'assistant', text: '', tools: [call], ts });
-        } else if (obj.type === 'response_item' && p.type === 'function_call_output') {
-          const tool = toolById.get(p.call_id);
-          if (tool) tool.output = outputToString(p.output);
-        } else if (obj.type === 'event_msg' && p.type === 'token_count' && p.info) {
-          const total = p.info.last_token_usage?.total_tokens;
-          if (typeof total === 'number') tokens = total;
-          if (p.info.model_context_window) window = p.info.model_context_window;
-        }
-      }
+      for await (const line of rl) parser.feed(line);
     } finally {
       rl.close();
     }
 
-    const ctx: Ctx | null =
-      tokens !== null ? { tokens, window, pct: Math.round((tokens / window) * 100), model } : null;
     // ponytail: codex rollout files are small (single-digit count in practice), so no byte
     // cap here — always false. Apply transcript.ts's tail-cap shape if the codex store grows.
-    return { msgs, ctx, truncated: false };
+    return { msgs: parser.msgs, ctx: parser.ctx(), truncated: false };
+  }
+
+  // Forward slice for the memory harvester — see AgentProvider.harvestFrom. Rollouts are
+  // small today, but the harvester's contract is byte-offset resumption regardless, so this
+  // uses the same bounded reader claude does rather than assuming they stay small.
+  async harvestFrom(
+    projectId: string,
+    sessionId: string,
+    offset: number,
+    maxBytes: number,
+  ): Promise<{ msgs: Msg[]; nextOffset: number; done: boolean }> {
+    const file = await this.fileForSession(projectId, sessionId);
+    if (!file) return { msgs: [], nextOffset: offset, done: true };
+    const slice = await readForward(file, offset, maxBytes);
+    const parser = createCodexLineParser();
+    for (const line of slice.lines) parser.feed(line);
+    return { msgs: parser.msgs, nextOffset: slice.nextOffset, done: slice.done };
   }
 
   async readCtx(projectId: string, sessionId: string): Promise<Ctx | null> {

@@ -16,7 +16,12 @@ import {
 } from '../store/scan';
 import { searchStore, type SearchHit, type SearchOpts } from '../store/search';
 import { aggregateUsage, type UsageSummary } from '../store/usage';
-import { parseTranscriptFile as parseFile, readCtx as tailCtx } from '../store/transcript';
+import {
+  createClaudeLineParser,
+  parseTranscriptFile as parseFile,
+  readCtx as tailCtx,
+  readForward,
+} from '../store/transcript';
 import { listSubagentNodes, parseSubagentDetail } from '../store/subagents';
 import { teamRoster, teamByLeadSession } from '../store/teams-store';
 import { loadNeedsInputPatterns } from './manifest';
@@ -140,6 +145,23 @@ export class ClaudeProvider implements AgentProvider {
     const file = await this.sessionFile(projectId, sessionId);
     if (!file) return { msgs: [], ctx: null, truncated: false };
     return parseFile(file, windowForModel);
+  }
+
+  // Forward slice for the memory harvester — see AgentProvider.harvestFrom. Reuses the same
+  // line parser parseTranscript does (createClaudeLineParser), so the two reading directions
+  // can never drift apart on schema.
+  async harvestFrom(
+    projectId: string,
+    sessionId: string,
+    offset: number,
+    maxBytes: number,
+  ): Promise<{ msgs: Msg[]; nextOffset: number; done: boolean }> {
+    const file = await this.sessionFile(projectId, sessionId);
+    if (!file) return { msgs: [], nextOffset: offset, done: true };
+    const slice = await readForward(file, offset, maxBytes);
+    const parser = createClaudeLineParser();
+    for (const line of slice.lines) parser.feed(line);
+    return { msgs: parser.msgs, nextOffset: slice.nextOffset, done: slice.done };
   }
 
   async readCtx(projectId: string, sessionId: string): Promise<Ctx | null> {

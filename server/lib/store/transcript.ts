@@ -87,51 +87,32 @@ export async function parseTranscript(
   return parseTranscriptFile(join(root, projectId, `${sessionId}.jsonl`), window);
 }
 
-// File-path form, mirroring readCtx below: callers that already resolved the owning
-// file (scan.ts sessionFilePath — a folded worktree session's jsonl lives under the
-// worktree's OWN dirent, not root/projectId) parse it directly.
-export async function parseTranscriptFile(
-  filePath: string,
-  window: number | ((model: string) => number),
-): Promise<{ msgs: Msg[]; ctx: Ctx | null; truncated: boolean }> {
+// The per-line half of parseTranscriptFile, extracted so the two readers with opposite
+// reading directions can share one schema parser: the tail-bounded DISPLAY read below, and
+// the memory harvester's resumable FORWARD read (AgentProvider.harvestFrom). Stateful,
+// because tool_use/tool_result pairing and the trailing `usage` record both span lines.
+export interface TranscriptLineParser {
+  readonly msgs: Msg[];
+  feed(line: string): void;
+  ctx(window: number | ((model: string) => number)): Ctx | null;
+}
+
+export function createClaudeLineParser(): TranscriptLineParser {
   const msgs: Msg[] = [];
   const toolById = new Map<string, ToolCall>();
   let lastUsage: any = null;
   let lastModel = '';
 
-  // Bounded tail-read (BUG-C2): read at most the last MAX_TRANSCRIPT_BYTES so a giant
-  // session can't be buffered whole. Same discipline as readCtx below.
-  let size: number;
-  try {
-    size = (await stat(filePath)).size;
-  } catch {
-    return { msgs: [], ctx: null, truncated: false };
-  }
-  const start = Math.max(0, size - MAX_TRANSCRIPT_BYTES);
-  const truncated = start > 0;
-  let chunk: string;
-  const fh = await open(filePath, 'r');
-  try {
-    const buf = Buffer.alloc(size - start);
-    await fh.read(buf, 0, buf.length, start);
-    chunk = buf.toString('utf8');
-  } finally {
-    await fh.close();
-  }
-  const lines = chunk.split('\n');
-  // If we started mid-file, the first line is almost certainly a partial — drop it.
-  if (start > 0) lines.shift();
-
-  for (const line of lines) {
-    if (!line.trim()) continue;
+  function feed(line: string): void {
+    if (!line.trim()) return;
     let obj: any;
     try {
       obj = JSON.parse(line);
     } catch {
-      continue; // tolerate malformed lines
+      return; // tolerate malformed lines
     }
     const msg = obj.message;
-    if (!msg || typeof msg !== 'object') continue;
+    if (!msg || typeof msg !== 'object') return;
     const ts = typeof obj.timestamp === 'string' ? Date.parse(obj.timestamp) : 0;
 
     if (obj.type === 'user' && msg.role === 'user') {
@@ -145,13 +126,13 @@ export async function parseTranscriptFile(
             if (tool) tool.output = stringifyContent(block.content);
           }
         }
-        continue;
+        return;
       }
       const text = extractText(content).trim();
       const isMeta = SKIP_TITLE_PREFIXES.some((p) => text.startsWith(p));
-      if (isMeta) continue;
+      if (isMeta) return;
       msgs.push({ role: 'user', text, tools: [], ts });
-      continue;
+      return;
     }
 
     if (obj.type === 'assistant' && msg.role === 'assistant') {
@@ -183,20 +164,114 @@ export async function parseTranscriptFile(
     }
   }
 
-  const ctx: Ctx | null = lastUsage
-    ? (() => {
-        const tokens = tokensFromUsage(lastUsage);
-        const win = typeof window === 'function' ? window(lastModel) : window;
-        return {
-          tokens,
-          window: win,
-          pct: Math.round((tokens / win) * 100),
-          model: lastModel,
-        };
-      })()
-    : null;
+  function ctx(window: number | ((model: string) => number)): Ctx | null {
+    if (!lastUsage) return null;
+    const tokens = tokensFromUsage(lastUsage);
+    const win = typeof window === 'function' ? window(lastModel) : window;
+    return { tokens, window: win, pct: Math.round((tokens / win) * 100), model: lastModel };
+  }
 
-  return { msgs, ctx, truncated };
+  return { msgs, feed, ctx };
+}
+
+// Forward, resumable slice read — the mirror image of the tail reads in this file. The
+// harvester walks a session from the front and must never buffer a 46MB transcript whole,
+// so it asks for `maxBytes` at a time and stores `nextOffset`.
+//
+// Byte-exact rather than string-exact: the cut is placed at the last newline BYTE in the
+// buffer, so a multi-byte character can never be split across two calls and the returned
+// offset is directly re-seekable.
+export interface ForwardSlice {
+  lines: string[];
+  nextOffset: number;
+  done: boolean;
+}
+
+// Ceiling on the grow-to-fit window below. Past this a "line" is not a record we could
+// usefully remember anyway, and holding it whole would defeat the point of slicing.
+const MAX_FORWARD_LINE_BYTES = 32 * 1024 * 1024;
+
+export async function readForward(filePath: string, offset: number, maxBytes: number): Promise<ForwardSlice> {
+  let size: number;
+  try {
+    size = (await stat(filePath)).size;
+  } catch {
+    return { lines: [], nextOffset: offset, done: true };
+  }
+  // A file that shrank was rotated or rewritten under us — restart from the top rather than
+  // reading from a now-meaningless offset.
+  const from = offset > size ? 0 : offset;
+  if (from >= size) return { lines: [], nextOffset: from, done: true };
+
+  const fh = await open(filePath, 'r');
+  try {
+    // Grow the window until it holds at least one complete line, the same doubling readCtx
+    // below uses. A single 300KB tool-result line is ordinary and must survive a 4MB ask
+    // intact; only past MAX_FORWARD_LINE_BYTES do we give up and skip, so a pathological
+    // newline-free file (scan.ts documents a real 209MB one) still makes progress.
+    for (let want = Math.min(maxBytes, size - from); ; want = Math.min(want * 2, size - from)) {
+      const buf = Buffer.alloc(want);
+      const { bytesRead: read } = await fh.read(buf, 0, want, from);
+      const lastNl = buf.lastIndexOf(0x0a, read - 1);
+
+      if (lastNl >= 0) {
+        const text = buf.subarray(0, lastNl).toString('utf8');
+        const nextOffset = from + lastNl + 1;
+        return { lines: text.split('\n'), nextOffset, done: nextOffset >= size };
+      }
+
+      // No terminator anywhere in the window.
+      if (from + read >= size) {
+        // We hold the file's tail: the line is simply still being written. Stay put so the
+        // next harvest tick picks it up whole rather than half-parsing it now.
+        return { lines: [], nextOffset: from, done: true };
+      }
+      if (want >= MAX_FORWARD_LINE_BYTES) {
+        // Genuinely oversized. Skip past what we read; the next slice starts mid-line and
+        // its leading fragment fails JSON.parse, which every consumer here tolerates.
+        return { lines: [], nextOffset: from + read, done: false };
+      }
+    }
+  } finally {
+    await fh.close();
+  }
+}
+
+// File-path form, mirroring readCtx below: callers that already resolved the owning
+// file (scan.ts sessionFilePath — a folded worktree session's jsonl lives under the
+// worktree's OWN dirent, not root/projectId) parse it directly.
+export async function parseTranscriptFile(
+  filePath: string,
+  window: number | ((model: string) => number),
+): Promise<{ msgs: Msg[]; ctx: Ctx | null; truncated: boolean }> {
+  const parser = createClaudeLineParser();
+
+  // Bounded tail-read (BUG-C2): read at most the last MAX_TRANSCRIPT_BYTES so a giant
+  // session can't be buffered whole. Same discipline as readCtx below.
+  let size: number;
+  try {
+    size = (await stat(filePath)).size;
+  } catch {
+    return { msgs: [], ctx: null, truncated: false };
+  }
+  const start = Math.max(0, size - MAX_TRANSCRIPT_BYTES);
+  const truncated = start > 0;
+  let chunk: string;
+  const fh = await open(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(size - start);
+    await fh.read(buf, 0, buf.length, start);
+    chunk = buf.toString('utf8');
+  } finally {
+    await fh.close();
+  }
+  const lines = chunk.split('\n');
+  // If we started mid-file, the first line is almost certainly a partial — drop it.
+  if (start > 0) lines.shift();
+
+  for (const line of lines) parser.feed(line);
+
+  return { msgs: parser.msgs, ctx: parser.ctx(window), truncated };
 }
 
 // Tail-read a session file and scan backwards for the last assistant line carrying

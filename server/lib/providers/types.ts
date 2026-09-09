@@ -125,6 +125,22 @@ export interface AgentProvider {
     sessionId: string,
   ): Promise<{ msgs: Msg[]; ctx: Ctx | null; truncated: boolean }>;
   readCtx(projectId: string, sessionId: string): Promise<Ctx | null>;
+  // Forward, resumable read for the memory harvester (server/lib/memory/harvest.ts).
+  //
+  // The opposite of parseTranscript in every respect that matters: that one tail-reads a
+  // bounded window because a human opening a transcript wants the END of it (and BUG-C2
+  // proved an unbounded read OOMs the server on a 325MB file). Harvesting wants the WHOLE
+  // session, oldest first, and gets there across several calls — `offset` in, `nextOffset`
+  // out — so a 46MB transcript is consumed in `maxBytes` slices and never buffered whole.
+  //
+  // Optional: a provider that omits it is simply skipped by the harvester, so memory
+  // degrades to "the providers that support it" rather than failing.
+  harvestFrom?(
+    projectId: string,
+    sessionId: string,
+    offset: number,
+    maxBytes: number,
+  ): Promise<{ msgs: Msg[]; nextOffset: number; done: boolean }>;
   search(q: string, opts?: SearchOpts): Promise<SearchHit[]>;
   usage(days: number): Promise<UsageSummary>;
   commands: ProviderCommands;
