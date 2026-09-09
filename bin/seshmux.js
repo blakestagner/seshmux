@@ -197,6 +197,52 @@ async function autoUpgradeDaemon(ourVersion, quiet) {
 // harmless while stale (protocol frozen at 1; newer RPCs degrade, they don't fail), so it can
 // simply WAIT for a safe moment: every live session ended, or all remaining ones are tmux-backed.
 // Then it upgrades itself, with nothing killed and nothing for the user to type.
+// Daemon heartbeat. ensureDaemon() ran ONCE at startup and never again, so a
+// daemon that died mid-run stayed dead: the server deliberately never spawns one
+// (ensure.js is the single sanctioned spawn path), so every "new session" then
+// failed with `connect ENOENT ...seshmuxd.sock` and seshmux was bricked for
+// starting work until the user restarted the whole app by hand. Nothing in the
+// product noticed or said why.
+//
+// ensureDaemon() is idempotent and already classifies every case correctly — a
+// live daemon dials 'ok' and returns spawned:false, an alive-but-busy one
+// classifies 'wait' (so this can NEVER race a healthy daemon into a duplicate),
+// and a dead pidfile classifies 'stale' and is cleaned up and respawned. So the
+// fix is simply to keep asking.
+//
+// This does not resurrect PTYs — a plain-tier PTY dies with the daemon that owns
+// its master fd, which is the OS, not something we can fix. It restores the
+// ability to START work, which is what was actually lost.
+const DAEMON_HEARTBEAT_MS = Number(process.env.SESHMUX_DAEMON_HEARTBEAT_MS) || 30_000;
+function scheduleDaemonHeartbeat() {
+  // ensureDaemon() can sit on its 'wait' ladder for up to ~10s (a daemon that is
+  // starting, or dying), so a tick can still be in flight when the next fires.
+  // Overlap is harmless — the mkdir spawnlock serializes spawns and a duplicate
+  // daemon cannot bind the socket anyway — but skipping is free and keeps the
+  // invariant "one ensure at a time" true by construction rather than by luck.
+  let inFlight = false;
+  const tick = async () => {
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      const { spawned } = await ensureDaemon();
+      if (spawned) {
+        console.log(
+          `[seshmux] daemon was not running — started it (pid ${readDaemonPid() ?? '?'}). ` +
+            'Any sessions it owned ended with it; see seshmuxd.log in the seshmux config dir.',
+        );
+      }
+    } catch (e) {
+      console.error('[seshmux] daemon heartbeat failed:', e.message);
+    } finally {
+      inFlight = false;
+    }
+  };
+  // No leading tick: startup already ensured the daemon a moment ago.
+  const timer = setInterval(tick, DAEMON_HEARTBEAT_MS);
+  if (timer.unref) timer.unref(); // never hold the process open on this alone
+}
+
 const UPGRADE_RETRY_MS = Number(process.env.SESHMUX_UPGRADE_RETRY_MS) || 60_000;
 function scheduleDaemonUpgrade(getVersion) {
   let announced = false;
@@ -632,6 +678,10 @@ async function main() {
   // (sessions were running), or the user updated and quit before it could finish. Without this, a
   // daemon that was stale once could stay stale forever.
   scheduleDaemonUpgrade(currentVersion);
+
+  // Runs for the life of the supervisor (unlike the upgrade check, which stops
+  // once there is nothing left to upgrade) — the daemon can die at any point.
+  scheduleDaemonHeartbeat();
 
   // NOTE: shutdown kills the SERVER child only — never the daemon. The daemon is
   // detached and holds live PTYs across this process's death (update-safety).

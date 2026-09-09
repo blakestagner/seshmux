@@ -277,6 +277,21 @@ if (require.main === module) {
   process.on('unhandledRejection', (reason) => {
     process.stderr.write('[seshmuxd] unhandled rejection: ' + reason + '\n');
   });
+  // Same net, same reason, for the SYNCHRONOUS half. A throw from any callback
+  // this process owns — a node-pty event handler, an fs callback, a socket
+  // handler outside the per-request try — defaults to killing the process, and
+  // this process holds every live PTY: one throw would end every agent session
+  // at once. That is precisely the failure seshmuxd exists to prevent, so the
+  // rejection guard above was only ever half the job.
+  //
+  // Staying up after an uncaught exception can leave state inconsistent. That is
+  // the deliberate trade: a possibly-degraded daemon still owning live sessions
+  // beats a dead one that certainly took them all with it, and every RPC is
+  // already individually try/caught (see onMessage) so the damage is contained
+  // to whatever was in flight.
+  process.on('uncaughtException', (err) => {
+    process.stderr.write('[seshmuxd] uncaught exception: ' + ((err && err.stack) || err) + '\n');
+  });
   startDaemon().then(
     ({ sockPath }) => {
       process.stderr.write('[seshmuxd] listening on ' + sockPath + '\n');
