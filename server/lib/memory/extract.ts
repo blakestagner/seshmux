@@ -15,10 +15,15 @@
 // no number. Record ids are content-addressed over (kind, session, target) so the same
 // tool call re-derived from an overlapping slice collapses instead of duplicating.
 
-import type { Msg, ToolCall } from '../store/transcript';
-import type { ProviderId } from '../store/scan';
-import { contentId, sanitizeText } from './store';
-import { MEMORY_SCHEMA, type MemoryEntities, type MemoryKind, type MemoryRecord } from './types';
+import type { Msg, ToolCall } from "../store/transcript";
+import type { ProviderId } from "../store/scan";
+import { contentId, sanitizeText } from "./store";
+import {
+  MEMORY_SCHEMA,
+  type MemoryEntities,
+  type MemoryKind,
+  type MemoryRecord,
+} from "./types";
 
 export interface ExtractCtx {
   provider: ProviderId;
@@ -35,22 +40,54 @@ export interface ExtractCtx {
 // Same framing prefixes scan.ts skips when picking a title: these are harness plumbing, not
 // something anyone would want recalled.
 const SKIP_PROMPT_PREFIXES = [
-  '<command-name>',
-  '<local-command',
-  '<system-reminder',
-  '<teammate-message',
-  '<task-notification',
-  '<environment_context',
-  '<permissions',
+  "<command-name>",
+  "<local-command",
+  "<system-reminder",
+  "<teammate-message",
+  "<task-notification",
+  "<environment_context",
+  "<permissions",
 ];
 
+// Memory's own output, in every form it can re-enter a transcript.
+//
+// THE FEEDBACK LOOP: recalling memory pastes a pack into the terminal, that paste lands in
+// the session's jsonl, and the harvester reads that jsonl. Without a guard, memory would
+// re-remember its own recollections — each pass wrapping the last (`x` failed: `y` failed:
+// …) and slowly filling the store with echoes of itself. Observed on the first live run.
+//
+// The envelope tag is emitted by pack.ts on every pack, and the "` failed: " shape is this
+// file's own error-record format, so between them they identify anything memory wrote.
+const MEMORY_ECHO = [
+  /<seshmux-memory/,
+  /<\/seshmux-memory>/,
+  // Our own error-record shape: as a whole line (a record printed back at us) and nested
+  // inside another (a record about a record — the loop already one turn in).
+  /^`[^`\n]+` failed: /,
+  /` failed: `[^`]*` failed: /,
+];
+
+export function isMemoryEcho(text: string): boolean {
+  return MEMORY_ECHO.some((re) => re.test(text));
+}
+
 const PROMPT_MAX = 600;
+// A command record should read as a memory, not as a transcript line. Real agent shell
+// calls are routinely 200-char `a && echo … && cat …` chains where only the first segment
+// is the actual action; storing the whole thing buries the signal and wastes recall budget.
+const COMMAND_MAX = 120;
 const OUTCOME_MAX = 800;
 const ERROR_MAX = 400;
 
 // Per-session caps. A runaway session must not be able to flood the store and push every
 // other project's memory past the global cap.
-const CAP = { prompt: 20, 'tool-call': 40, error: 20, artifact: 30, outcome: 1 } as const;
+const CAP = {
+  prompt: 20,
+  "tool-call": 40,
+  error: 20,
+  artifact: 30,
+  outcome: 1,
+} as const;
 
 // ---------------------------------------------------------------------------
 // Tool-call interpretation
@@ -59,10 +96,25 @@ const CAP = { prompt: 20, 'tool-call': 40, error: 20, artifact: 30, outcome: 1 }
 function parseInput(input: string): any {
   try {
     const v = JSON.parse(input);
-    return v && typeof v === 'object' ? v : { _raw: String(v) };
+    return v && typeof v === "object" ? v : { _raw: String(v) };
   } catch {
     return { _raw: input };
   }
+}
+
+/**
+ * A readable form of a shell command: the first segment of a chain, clamped.
+ *
+ * `npm run build && echo done && cat log` is one action followed by incidental noise, so
+ * the record keeps `npm run build`. The full line is never worth storing — it is already in
+ * the transcript, which is what memory is a summary OF.
+ */
+export function shortCommand(command: string): string {
+  const first = command.split(/\s*(?:&&|\|\||;)\s*/)[0]?.trim() ?? "";
+  const line = first || command.trim();
+  return line.length > COMMAND_MAX
+    ? line.slice(0, COMMAND_MAX - 1) + "…"
+    : line;
 }
 
 /** First meaningful token of a shell command — `npm`, `git`, `cargo`. */
@@ -73,12 +125,12 @@ export function commandHead(command: string): string | null {
   const parts = trimmed.split(/\s+/);
   for (const part of parts) {
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(part)) continue;
-    return part.replace(/^["']|["']$/g, '');
+    return part.replace(/^["']|["']$/g, "");
   }
   return null;
 }
 
-export type TargetKind = 'file' | 'command' | 'pattern' | 'url' | 'query';
+export type TargetKind = "file" | "command" | "pattern" | "url" | "query";
 
 /**
  * What a tool call acted ON — the value that becomes both the record id and its label.
@@ -87,29 +139,41 @@ export type TargetKind = 'file' | 'command' | 'pattern' | 'url' | 'query';
  * authoritatively that this is a file, which is far better evidence than the path regex
  * (`nav.css` has no separator and the regex would miss it).
  */
-export function toolTarget(name: string, args: any): { value: string; kind: TargetKind } | null {
+export function toolTarget(
+  name: string,
+  args: any,
+): { value: string; kind: TargetKind } | null {
   const n = name.toLowerCase();
-  for (const field of ['file_path', 'notebook_path', 'path'] as const) {
-    if (typeof args[field] === 'string' && args[field].trim()) {
-      return { value: args[field], kind: 'file' };
+  for (const field of ["file_path", "notebook_path", "path"] as const) {
+    if (typeof args[field] === "string" && args[field].trim()) {
+      return { value: args[field], kind: "file" };
     }
   }
-  if (n.includes('bash') || n.includes('shell') || n.includes('exec')) {
-    const cmd = typeof args.command === 'string' ? args.command : typeof args._raw === 'string' ? args._raw : '';
+  if (n.includes("bash") || n.includes("shell") || n.includes("exec")) {
+    const cmd =
+      typeof args.command === "string"
+        ? args.command
+        : typeof args._raw === "string"
+          ? args._raw
+          : "";
     // Keep the first line only: a heredoc or a && chain is not a useful identity.
-    const head = commandHead(cmd.split('\n')[0] ?? '');
-    return head ? { value: head, kind: 'command' } : null;
+    const head = commandHead(cmd.split("\n")[0] ?? "");
+    return head ? { value: head, kind: "command" } : null;
   }
-  if (typeof args.pattern === 'string' && args.pattern.trim()) return { value: args.pattern, kind: 'pattern' };
-  if (typeof args.url === 'string' && args.url.trim()) return { value: args.url, kind: 'url' };
-  if (typeof args.query === 'string' && args.query.trim()) return { value: args.query, kind: 'query' };
+  if (typeof args.pattern === "string" && args.pattern.trim())
+    return { value: args.pattern, kind: "pattern" };
+  if (typeof args.url === "string" && args.url.trim())
+    return { value: args.url, kind: "url" };
+  if (typeof args.query === "string" && args.query.trim())
+    return { value: args.query, kind: "query" };
   return null;
 }
 
-const WRITE_TOOLS = /^(write|edit|multiedit|notebookedit|apply_patch|str_replace|create_file)/i;
+const WRITE_TOOLS =
+  /^(write|edit|multiedit|notebookedit|apply_patch|str_replace|create_file)/i;
 
 function isWriteTool(name: string): boolean {
-  return WRITE_TOOLS.test(name.replace(/[^a-z_]/gi, ''));
+  return WRITE_TOOLS.test(name.replace(/[^a-z_]/gi, ""));
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +185,9 @@ function isWriteTool(name: string): boolean {
 // worse than a missed one — it teaches the next agent something untrue.
 const ERROR_SIGNATURES: RegExp[] = [
   /^\s*(?:error|fatal|panic)\b[:\s]/im,
-  /\b(?:E[A-Z]{3,}\b)/, // ENOENT, EACCES, EBUSY, EMFILE
+  // An EXPLICIT errno list rather than /E[A-Z]{3,}/, which matched any shouted word and
+  // recorded "-> EXACT match to expected string [OK]" as a failure on the first live run.
+  /\b(?:EACCES|EADDRINUSE|EAGAIN|EBUSY|ECANCELED|ECONNREFUSED|ECONNRESET|EEXIST|EINVAL|EIO|EISDIR|EMFILE|ENOENT|ENOMEM|ENOSPC|ENOTDIR|ENOTEMPTY|EPERM|EPIPE|EROFS|ETIMEDOUT|EXDEV)\b/,
   /\bTraceback \(most recent call last\)/,
   /\b(?:SyntaxError|TypeError|ReferenceError|RangeError|AssertionError)\b/,
   /\bcommand not found\b/i,
@@ -137,22 +203,56 @@ const ERROR_SIGNATURES: RegExp[] = [
   /^\s*[\w.\/\\-]+: [^\n]*\b(?:cannot|can't|unable to|no such|not found|denied|busy|already exists|invalid|failed|fatal)\b/im,
 ];
 
-export function looksLikeError(output: string): boolean {
+// An explicit harness marker. Trusted for ANY tool, because it is a statement that the
+// call failed rather than an inference from what the call printed.
+const EXPLICIT_ERROR = /<tool_use_error>/;
+
+// How much output a heuristic signature may be found in.
+//
+// Deliberately small. A command that fails leads with its error; a command that SUCCEEDS
+// while printing something error-shaped — `cat build.log`, `grep -r TypeError src`, a test
+// runner listing failures it then fixed — buries that text further down. Scanning 4KB found
+// "errors" in the output of `sleep` and of a question containing the word EMFILE. A false
+// error record is worse than a missed one: it teaches the next agent something untrue.
+const ERROR_HEAD_CHARS = 600;
+
+export interface ErrorScanOpts {
+  /**
+   * Did a command actually run? Heuristic signatures only apply when one did.
+   *
+   * Tool results that merely CONTAIN error text — a file read, a grep hit, a question whose
+   * options mention a failure mode — are content, not failures, and must not be recorded as
+   * things that went wrong.
+   */
+  executed?: boolean;
+}
+
+export function looksLikeError(
+  output: string,
+  opts: ErrorScanOpts = { executed: true },
+): boolean {
   if (!output) return false;
-  // Only the head matters: a stack trace or a compiler error leads with its signature, and
-  // scanning a 300KB output end-to-end for every tool call is wasted work.
-  const head = output.slice(0, 4000);
-  return ERROR_SIGNATURES.some((re) => re.test(head));
+  if (EXPLICIT_ERROR.test(output.slice(0, 4000))) return true;
+  if (!opts.executed) return false;
+  return ERROR_SIGNATURES.some((re) =>
+    re.test(output.slice(0, ERROR_HEAD_CHARS)),
+  );
 }
 
 /** The single most informative line of an error output. */
 export function errorGist(output: string): string {
-  const head = output.slice(0, 4000);
+  const head = output.slice(0, ERROR_HEAD_CHARS);
   for (const re of ERROR_SIGNATURES) {
-    const line = head.split('\n').find((l) => re.test(l));
+    const line = head.split("\n").find((l) => re.test(l));
     if (line && line.trim()) return line.trim().slice(0, ERROR_MAX);
   }
-  return head.split('\n').find((l) => l.trim())?.trim().slice(0, ERROR_MAX) ?? '';
+  return (
+    head
+      .split("\n")
+      .find((l) => l.trim())
+      ?.trim()
+      .slice(0, ERROR_MAX) ?? ""
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +265,8 @@ export function errorGist(output: string): string {
 // The drive prefix carries its OWN separator (`C:\Users\…`): without it the alternation
 // demanded a name segment straight after `C:` and the match silently restarted at `Users`,
 // dropping the drive letter from every absolute Windows path.
-const PATH_RE = /(?:[A-Za-z]:[/\\])?(?:[\w.@~-]+[/\\])+[\w.@-]+\.[A-Za-z][\w]{0,9}/g;
+const PATH_RE =
+  /(?:[A-Za-z]:[/\\])?(?:[\w.@~-]+[/\\])+[\w.@-]+\.[A-Za-z][\w]{0,9}/g;
 
 // Identifiers the author chose to mark as code. A far better symbol signal than guessing at
 // camelCase in prose, and essentially free.
@@ -173,7 +274,7 @@ const BACKTICK_RE = /`([^`\n]{2,80})`/g;
 
 export function extractPaths(text: string): string[] {
   const out = new Set<string>();
-  for (const m of text.matchAll(PATH_RE)) out.add(m[0].replace(/\\/g, '/'));
+  for (const m of text.matchAll(PATH_RE)) out.add(m[0].replace(/\\/g, "/"));
   return [...out];
 }
 
@@ -193,7 +294,10 @@ function emptyEntities(): MemoryEntities {
   return { files: [], commands: [], symbols: [] };
 }
 
-function entitiesFrom(text: string, extra: Partial<MemoryEntities> = {}): MemoryEntities {
+function entitiesFrom(
+  text: string,
+  extra: Partial<MemoryEntities> = {},
+): MemoryEntities {
   const files = new Set(extra.files ?? []);
   for (const p of extractPaths(text)) files.add(p);
   const symbols = new Set(extra.symbols ?? []);
@@ -220,7 +324,12 @@ function makeRecord(
   const clean = sanitizeText(text);
   return {
     v: MEMORY_SCHEMA,
-    id: contentId({ kind, text: target ? '' : clean, scope: ctx.sessionId, target }),
+    id: contentId({
+      kind,
+      text: target ? "" : clean,
+      scope: ctx.sessionId,
+      target,
+    }),
     kind,
     text: clean,
     scope: { projectId: ctx.projectId, repo: ctx.repo, branch: ctx.branch },
@@ -249,12 +358,17 @@ export function extract(msgs: Msg[], ctx: ExtractCtx): MemoryRecord[] {
   for (const msg of msgs) {
     const ts = msg.ts || ctx.now;
 
-    if (msg.role === 'user') {
+    if (msg.role === "user") {
       const text = msg.text.trim();
       if (!text) continue;
       if (SKIP_PROMPT_PREFIXES.some((p) => text.startsWith(p))) continue;
-      const clipped = text.length > PROMPT_MAX ? text.slice(0, PROMPT_MAX - 1) + '…' : text;
-      push(makeRecord('prompt', clipped, undefined, ts, entitiesFrom(text), ctx));
+      // A pasted memory pack is a recollection, not a new instruction.
+      if (isMemoryEcho(text)) continue;
+      const clipped =
+        text.length > PROMPT_MAX ? text.slice(0, PROMPT_MAX - 1) + "…" : text;
+      push(
+        makeRecord("prompt", clipped, undefined, ts, entitiesFrom(text), ctx),
+      );
       continue;
     }
 
@@ -268,12 +382,21 @@ export function extract(msgs: Msg[], ctx: ExtractCtx): MemoryRecord[] {
   // `outcome` is the session's closing statement, so it only exists once the session is
   // actually over. Mid-session it would be "whatever the agent last said", which reads as a
   // conclusion while being nothing of the sort.
-  if (ctx.final && lastAssistant) {
+  if (ctx.final && lastAssistant && !isMemoryEcho(lastAssistant.text)) {
     const text =
       lastAssistant.text.length > OUTCOME_MAX
-        ? lastAssistant.text.slice(0, OUTCOME_MAX - 1) + '…'
+        ? lastAssistant.text.slice(0, OUTCOME_MAX - 1) + "…"
         : lastAssistant.text;
-    push(makeRecord('outcome', text, 'outcome', lastAssistant.ts, entitiesFrom(lastAssistant.text), ctx));
+    push(
+      makeRecord(
+        "outcome",
+        text,
+        "outcome",
+        lastAssistant.ts,
+        entitiesFrom(lastAssistant.text),
+        ctx,
+      ),
+    );
   }
 
   return out;
@@ -286,7 +409,7 @@ function pushToolRecords(
   push: (r: MemoryRecord) => void,
   seenTarget: Set<string>,
 ): void {
-  const name = tool.name || 'tool';
+  const name = tool.name || "tool";
   const args = parseInput(tool.input);
   const target = toolTarget(name, args);
   const isShell = /bash|shell|exec/i.test(name);
@@ -294,34 +417,61 @@ function pushToolRecords(
   // shell tool that raw string IS the command line, so it must be honoured here too or the
   // record degrades to just the binary name.
   const rawCommand =
-    typeof args.command === 'string' ? args.command : typeof args._raw === 'string' ? args._raw : null;
-  const command = isShell && rawCommand ? rawCommand.split('\n')[0].trim() : null;
-  const targetFiles = target?.kind === 'file' ? [target.value.replace(/\\/g, '/')] : [];
-  const targetCommands = target?.kind === 'command' ? [target.value] : [];
+    typeof args.command === "string"
+      ? args.command
+      : typeof args._raw === "string"
+        ? args._raw
+        : null;
+  const command =
+    isShell && rawCommand ? shortCommand(rawCommand.split("\n")[0]) : null;
+  const targetFiles =
+    target?.kind === "file" ? [target.value.replace(/\\/g, "/")] : [];
+  const targetCommands = target?.kind === "command" ? [target.value] : [];
 
   // An error is the highest-value deterministic record there is: it is the thing a future
   // agent most wants to have been told before it repeats the attempt.
-  if (looksLikeError(tool.output)) {
+  // A command genuinely ran only for shell-ish tools. Everything else is trusted for an
+  // explicit <tool_use_error> marker and nothing more.
+  if (looksLikeError(tool.output, { executed: isShell })) {
     const gist = errorGist(tool.output);
-    const what = command ?? (target ? `${name} ${target.value}` : name);
-    push(
-      makeRecord(
-        'error',
-        `\`${what}\` failed: ${gist}`,
-        `err:${what}:${gist.slice(0, 60)}`,
-        ts,
-        entitiesFrom(`${what} ${gist}`, { commands: targetCommands, files: targetFiles }),
-        ctx,
-      ),
-    );
+    // A command that merely PRINTED an old memory record did not itself fail. Suppress the
+    // ERROR record only — the command still ran, and is still worth remembering as one.
+    const echo =
+      isMemoryEcho(gist) ||
+      isMemoryEcho(tool.output.slice(0, ERROR_HEAD_CHARS));
+    if (!echo) {
+      const what = command ?? (target ? `${name} ${target.value}` : name);
+      push(
+        makeRecord(
+          "error",
+          `\`${what}\` failed: ${gist}`,
+          `err:${what}:${gist.slice(0, 60)}`,
+          ts,
+          entitiesFrom(`${what} ${gist}`, {
+            commands: targetCommands,
+            files: targetFiles,
+          }),
+          ctx,
+        ),
+      );
+    }
   }
 
-  if (isWriteTool(name) && target?.kind === 'file') {
-    const file = target.value.replace(/\\/g, '/');
+  if (isWriteTool(name) && target?.kind === "file") {
+    const file = target.value.replace(/\\/g, "/");
     const key = `artifact:${file}`;
     if (!seenTarget.has(key)) {
       seenTarget.add(key);
-      push(makeRecord('artifact', `edited ${file}`, key, ts, entitiesFrom('', { files: [file] }), ctx));
+      push(
+        makeRecord(
+          "artifact",
+          `edited ${file}`,
+          key,
+          ts,
+          entitiesFrom("", { files: [file] }),
+          ctx,
+        ),
+      );
     }
     return; // an edit is already recorded as an artifact; a tool-call row would say nothing more
   }
@@ -332,10 +482,12 @@ function pushToolRecords(
   if (seenTarget.has(key)) return; // stateless dedup within the slice; ids collapse across slices
   seenTarget.add(key);
 
-  const text = isShell ? `ran \`${command ?? target.value}\`` : `${name} → ${target.value}`;
+  const text = isShell
+    ? `ran \`${command ?? target.value}\``
+    : `${name} → ${target.value}`;
   push(
     makeRecord(
-      'tool-call',
+      "tool-call",
       text,
       key,
       ts,
