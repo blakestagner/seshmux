@@ -9,7 +9,7 @@
 // Both surfaces call through here so the MCP tool and the statusbar dropdown cannot drift:
 // same filters, same ranking, same envelope, same hit accounting.
 
-import { rank } from './rank';
+import { effectiveScope, rankWithTotal } from './rank';
 import { pack, type PackOpts } from './pack';
 import { appendOverlay, appendRecords, contentId, readAllRecords, sanitizeText } from './store';
 import {
@@ -36,17 +36,19 @@ export interface RecallResult extends MemoryPack {
   ranked: RankedRecord[];
 }
 
+// Derived from the SAME helper the filter uses, so the envelope can never claim a scope
+// the query did not actually run under.
 function scopeLabel(q: MemoryQuery): string {
-  return (q.scope ?? 'project') === 'all' ? 'all repos' : 'this repo';
+  return effectiveScope(q) === 'all' ? 'all repos' : 'this repo';
 }
 
 export async function recall(q: MemoryQuery, opts: RecallOpts = {}): Promise<RecallResult> {
   const now = opts.now ?? Date.now();
   const records = await readAllRecords();
-  const ranked = rank(records, q, { now });
+  const { ranked, total } = rankWithTotal(records, q, { now });
   const packed = pack(ranked, {
     budgetTokens: opts.budgetTokens,
-    totalMatches: ranked.length,
+    totalMatches: total,
     scopeLabel: opts.scopeLabel ?? scopeLabel(q),
   });
 

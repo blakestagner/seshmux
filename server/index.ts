@@ -293,10 +293,17 @@ export async function startServer({ port = 4700, host, dev = false }: { port?: n
   // dropdown refresh; the same event also carries an agent's `remember`, which lands
   // from the mcp-bridge process and is only visible to us through the store watcher.
   await f.register((await import('./routes/memory')).default, {
+    // Arm the store watcher as soon as anything LOOKS at memory. The write it exists to
+    // notice — an agent's `remember` — comes from the mcp-bridge process and never reaches
+    // these routes, so arming on mutation alone meant it was never armed in time.
+    onOpen: () => hub.watchMemory(),
     onChanged: (projectId?: string) => {
       hub.watchMemory();
       hub.emit(projectId ? { event: 'memory', projectId } : { event: 'memory' });
     },
+    // Borrow the harvester's serial queue so a compaction cannot rewrite shards from a
+    // snapshot while a harvest is appending to them.
+    serialize: harvester ? <T,>(fn: () => Promise<T>) => harvester!.runExclusive(fn) : undefined,
   });
   // Read-only subagent-transcript viewer. onOpen starts the lazy per-session chokidar
   // watch → {event:'subagents'} pings drive live-refetch.

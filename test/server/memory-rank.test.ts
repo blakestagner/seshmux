@@ -3,7 +3,7 @@
 // hides history, and the budget guarantee the whole context-management story rests on.
 import { describe, it, expect } from 'vitest';
 import { bm25, buildIndex, fileKeys, tokenize } from '../../server/lib/memory/index';
-import { candidates, exactNeedles, modifier, rank } from '../../server/lib/memory/rank';
+import { candidates, effectiveScope, exactNeedles, modifier, rank, rankWithTotal } from '../../server/lib/memory/rank';
 import { estimateTokens, pack, renderRecord } from '../../server/lib/memory/pack';
 import { MEMORY_SCHEMA, type MemoryKind, type MemoryRecord } from '../../server/lib/memory/types';
 import type { ProviderId } from '../../server/lib/store/scan';
@@ -203,6 +203,50 @@ describe('rank — filters', () => {
 
   it('returns nothing rather than everything when a filter excludes all', () => {
     expect(rank([mine], { query: 'alpha', projectId: 'nope' }, { now: NOW })).toEqual([]);
+  });
+});
+
+describe('rank — scope resolution', () => {
+  const mine = rec('alpha thing', { id: 'mine', scope: { projectId: 'p1', repo: '/repo/alpha', branch: null } });
+  const other = rec('alpha thing', { id: 'other', scope: { projectId: 'p2', repo: '/repo/beta', branch: null } });
+
+  it('searches everything when there is no scope and no project to scope by', () => {
+    expect(effectiveScope({})).toBe('all');
+    expect(ids(rank([mine, other], { query: 'alpha' }, { now: NOW })).sort()).toEqual(['mine', 'other']);
+  });
+
+  it('is repo-first as soon as a project is supplied', () => {
+    expect(effectiveScope({ projectId: 'p1' })).toBe('project');
+  });
+
+  it('matches nothing for an explicit project scope with no project', () => {
+    // The dangerous case: this used to fall through to "no filter" and return every repo's
+    // records under an envelope that said "this repo".
+    expect(effectiveScope({ scope: 'project' })).toBe('project');
+    expect(rank([mine, other], { scope: 'project', query: 'alpha' }, { now: NOW })).toEqual([]);
+  });
+
+  it('labels the pack with the scope actually used, not the one requested', () => {
+    const out = pack(rank([mine, other], { query: 'alpha' }, { now: NOW }), { scopeLabel: undefined });
+    // Unscoped searched both repos, so the envelope must not claim otherwise.
+    expect(out.records.length).toBe(2);
+  });
+});
+
+describe('rank — total before the limit', () => {
+  const many = Array.from({ length: 80 }, (_, i) => rec(`durable fact number ${i} about builds`, { id: `r${i}` }));
+
+  it('reports every candidate, not just the returned page', () => {
+    // The pack footer and the dropdown's match count are read as the size of the whole
+    // result set, and the MCP tool description tells the agent to trust that number.
+    const { ranked, total } = rankWithTotal(many, { query: 'durable builds', limit: 5 }, { now: NOW });
+    expect(ranked).toHaveLength(5);
+    expect(total).toBe(80);
+  });
+
+  it('agrees with rank() on the returned page', () => {
+    const { ranked } = rankWithTotal(many, { query: 'durable builds', limit: 5 }, { now: NOW });
+    expect(ids(ranked)).toEqual(ids(rank(many, { query: 'durable builds', limit: 5 }, { now: NOW })));
   });
 });
 

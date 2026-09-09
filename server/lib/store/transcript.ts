@@ -184,7 +184,19 @@ export function createClaudeLineParser(): TranscriptLineParser {
 export interface ForwardSlice {
   lines: string[];
   nextOffset: number;
+  /** Nothing further to read right now. */
   done: boolean;
+  /**
+   * We are sitting on an unterminated final line.
+   *
+   * Distinct from `done`, because the two mean opposite things to a caller deciding
+   * whether a session is finished: a clean EOF really is the end, while a partial tail is
+   * a line still being written (or a file that simply never got its last newline). Treating
+   * the second as "complete" makes the harvester write a watermark short of the tail and
+   * never come back — permanently losing the last turn, which is the one the session's
+   * outcome is derived from.
+   */
+  stalled?: boolean;
 }
 
 // Ceiling on the grow-to-fit window below. Past this a "line" is not a record we could
@@ -224,7 +236,7 @@ export async function readForward(filePath: string, offset: number, maxBytes: nu
       if (from + read >= size) {
         // We hold the file's tail: the line is simply still being written. Stay put so the
         // next harvest tick picks it up whole rather than half-parsing it now.
-        return { lines: [], nextOffset: from, done: true };
+        return { lines: [], nextOffset: from, done: true, stalled: true };
       }
       if (want >= MAX_FORWARD_LINE_BYTES) {
         // Genuinely oversized. Skip past what we read; the next slice starts mid-line and

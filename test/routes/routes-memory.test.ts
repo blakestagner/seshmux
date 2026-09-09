@@ -130,6 +130,38 @@ describe('GET /api/memory', () => {
     const f = await build();
     expect((await f.inject({ url: '/api/memory?q=anything&project=p1' })).json()).toEqual({ rows: [], total: 0 });
   });
+
+  it('refuses a project-scoped query with no project instead of searching everything', async () => {
+    // This used to fall through to "no filter" and return every repo's records — under an
+    // envelope that said "this repo".
+    const f = await build();
+    const res = await f.inject({ url: '/api/memory?q=x&scope=project' });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('reports the true match count, not just the page size', async () => {
+    // The dropdown footer and the pack's "N more matches" both read this number.
+    const s = await store();
+    await s.appendRecords(Array.from({ length: 80 }, (_, i) => rec(`durable fact ${i} about builds`, { id: `r${i}` })));
+    const f = await build();
+    const body = (await f.inject({ url: '/api/memory?q=durable+builds&project=p1&limit=5' })).json();
+    expect(body.rows).toHaveLength(5);
+    expect(body.total).toBe(80);
+  });
+
+  it('arms the store watcher on a READ, not only on a write', async () => {
+    // The write it exists to notice is an agent's `remember`, which arrives from the
+    // mcp-bridge process and never touches these routes.
+    let armed = 0;
+    const f = Fastify();
+    await f.register((await import('../../server/routes/memory')).default, {
+      resolveProject: async () => ({ repo: '/repo/alpha' }),
+      onOpen: () => armed++,
+      now: () => NOW,
+    });
+    await f.inject({ url: '/api/memory?project=p1' });
+    expect(armed).toBe(1);
+  });
 });
 
 describe('POST /api/memory/pack', () => {
@@ -278,6 +310,32 @@ describe('PATCH / DELETE /api/memory/:id', () => {
     expect(
       (await f.inject({ method: 'PATCH', url: '/api/memory/a', headers: { origin }, payload: {} })).statusCode,
     ).toBe(400);
+  });
+});
+
+describe('POST /api/memory/compact — serialization', () => {
+  it('runs through the injected serializer, not straight at the store', async () => {
+    // compact() rewrites shards from a snapshot, so an append landing between its read and
+    // its rename is lost. store.ts documents that the caller must serialize it against
+    // harvesting; this is what makes that true rather than aspirational.
+    const s = await store();
+    await s.appendRecords([rec('a fact', { id: 'a' })]);
+
+    const order: string[] = [];
+    const f = Fastify();
+    await f.register((await import('../../server/routes/memory')).default, {
+      resolveProject: async () => ({ repo: '/repo/alpha' }),
+      now: () => NOW,
+      serialize: async <T,>(fn: () => Promise<T>) => {
+        order.push('enter');
+        const out = await fn();
+        order.push('exit');
+        return out;
+      },
+    });
+
+    await f.inject({ method: 'POST', url: '/api/memory/compact', headers: { origin }, payload: {} });
+    expect(order).toEqual(['enter', 'exit']);
   });
 });
 

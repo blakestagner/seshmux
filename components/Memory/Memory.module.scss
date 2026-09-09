@@ -1,7 +1,8 @@
 @use '../../styles/typography' as *;
 
 // Shared memory visuals: the filter cluster and one record row. Layout/spacing/state only —
-// all text styling comes from the t-* mixins (hard rule 1).
+// all text styling comes from the t-* mixins (hard rule 1), and the checkbox, icon buttons
+// and meta line are ui/ primitives rather than redrawn here (hard rule 2).
 
 .filters {
   display: flex;
@@ -9,10 +10,6 @@
   gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
-}
-
-.autofocus {
-  display: contents;
 }
 
 .kinds {
@@ -56,23 +53,26 @@
   background: var(--bg-hover);
 }
 
-.rowOn {
-  background: var(--accent-soft);
-}
-
+// --accent is reserved for STATE (selected, pinned, active filter). Kind is carried by the
+// glyph shape and by text weight, so a selected pinned decision still reads as selected
+// instead of dissolving into three overlapping accents.
+.rowOn,
 .rowOn:hover {
   background: var(--accent-soft);
 }
 
-// A superseded record is history, not current belief — dim it rather than hide it.
-.rowStale {
-  opacity: 0.55;
+// A superseded record is inactive history. Dimmed with a token colour rather than
+// `opacity`, which on a light ground drove --text-faint below readable contrast.
+.rowStale .text,
+.rowStale .textFull {
+  color: var(--text-dim);
 }
 
 .check {
-  margin-top: 5px;
-  accent-color: var(--accent);
-  cursor: pointer;
+  display: flex;
+  align-items: center;
+  margin-top: 4px;
+  flex: none;
 }
 
 .rowBody {
@@ -86,6 +86,9 @@
   border: none;
   text-align: left;
   color: inherit;
+}
+
+button.rowBody {
   cursor: pointer;
 }
 
@@ -97,19 +100,19 @@
 }
 
 .glyph {
-  @include t-mono-micro-strong;
+  @include t-glyph-statusbar;
   flex: none;
   color: var(--text-dim);
 }
 
-// Kind identity. Errors read as a problem, distilled facts as the valuable ones; everything
-// else stays neutral so the list does not turn into a colour chart.
+// Distilled facts are the ones worth spotting in a list, and an error is a warning. Every
+// other kind stays neutral so the list does not become a colour chart.
 .k_error {
   color: var(--hot);
 }
 .k_decision,
 .k_lesson {
-  color: var(--accent);
+  color: var(--text);
 }
 
 .text {
@@ -130,11 +133,11 @@
 }
 
 .cite {
-  @include t-meta;
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+  min-width: 0;
   color: var(--text-faint);
 }
 
@@ -142,12 +145,14 @@
   color: var(--accent);
 }
 
+// Inactive history, not a warning: --waiting is the needs-input amber and means something
+// else everywhere in the app.
 .stale {
-  color: var(--waiting);
+  color: var(--done);
 }
 
 .cost {
-  margin-left: auto;
+  white-space: nowrap;
   color: var(--text-faint);
 }
 
@@ -156,19 +161,4 @@
   align-items: center;
   gap: 2px;
   flex: none;
-}
-
-.act {
-  @include t-mono-micro;
-  padding: 2px 5px;
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-xs);
-  color: var(--text-dim);
-  cursor: pointer;
-}
-
-.act:hover {
-  background: var(--bg-hover);
-  color: var(--text);
 }

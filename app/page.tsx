@@ -1067,6 +1067,7 @@ function AppShell() {
                         provider={activeTab.provider}
                         branch={activeTab.branch}
                         refreshKey={memoryPings}
+                        onClose={() => handleClosePanel(activeTab.id, 'memory')}
                       />
                     );
                 }

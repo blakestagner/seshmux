@@ -10,14 +10,14 @@
 // It opens on something useful rather than a blank box: with no query the server returns
 // pinned records first, then the best of this repo by recency and use.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Button from '../ui/Button/Button';
 import menu from '../ui/Menu/Menu.module.scss';
 import { useDropdown } from '../ui/Menu/useDropdown';
 import MemoryFilters from '../Memory/MemoryFilters';
 import MemoryRowItem from '../Memory/MemoryRowItem';
 import { useMemorySearch } from '../Memory/useMemorySearch';
-import { packMemory } from '../../lib/client/api';
+import { packMemory, type MemoryRow } from '../../lib/client/api';
 import { budgetLabel, estimateRowTokens, memoryPaste } from '../../lib/client/memory-paste';
 import styles from './MemoryMenu.module.scss';
 
@@ -48,22 +48,35 @@ export default function MemoryMenu({
   up = true,
 }: MemoryMenuProps) {
   const { open, setOpen, wrapRef } = useDropdown();
-  const [selected, setSelected] = useState<string[]>([]);
+  // The selected ROWS, not just their ids. Keeping ids alone meant the footer's token
+  // count was derived by intersecting with the currently visible results, so narrowing the
+  // query after selecting silently under-counted while Load still sent everything picked.
+  const [selected, setSelected] = useState<MemoryRow[]>([]);
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
+  const [note, setNote] = useState<{ text: string; error: boolean } | null>(null);
 
   const search = useMemorySearch(projectId, refreshKey + (open ? 1 : 0));
 
-  const selectedRows = useMemo(
-    () => selected.map((id) => search.rows.find((r) => r.id === id)).filter((r): r is NonNullable<typeof r> => !!r),
-    [selected, search.rows],
-  );
-  const used = estimateRowTokens(selectedRows);
+  // A fresh open is a fresh decision — carrying a stale selection across sessions or
+  // filter states is never what someone means.
+  useEffect(() => {
+    if (!open) {
+      setSelected([]);
+      setNote(null);
+    }
+  }, [open]);
+
+  const selectedIds = useMemo(() => new Set(selected.map((r) => r.id)), [selected]);
+  const used = estimateRowTokens(selected);
   const over = used > budgetTokens;
 
   const toggle = (id: string) => {
     setNote(null);
-    setSelected((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+    const row = search.rows.find((r) => r.id === id);
+    setSelected((cur) => {
+      if (cur.some((r) => r.id === id)) return cur.filter((r) => r.id !== id);
+      return row ? [...cur, row] : cur;
+    });
   };
 
   async function load() {
@@ -73,38 +86,41 @@ export default function MemoryMenu({
     try {
       // The server composes the block, so what lands here is byte-identical to what an
       // agent gets from recall_memory — one composer, not two.
-      const packed = await packMemory(selected, { budgetTokens, scope: search.scope });
+      const packed = await packMemory(
+        selected.map((r) => r.id),
+        { budgetTokens, scope: search.scope },
+      );
       const payload = memoryPaste(packed.text, { submit: submitOnLoad });
       if (!payload) {
-        setNote('nothing to load');
+        setNote({ text: 'nothing to load', error: false });
         return;
       }
       onSend(payload);
       setOpen(false);
       setSelected([]);
     } catch (err) {
-      setNote(err instanceof Error ? err.message : 'load failed');
+      setNote({ text: err instanceof Error ? err.message : 'load failed', error: true });
     } finally {
       setBusy(false);
     }
   }
 
-  const trigger = (
-    <Button
-      variant={variant}
-      className={className}
-      title="Load memory from earlier sessions into this one"
-      onClick={() => setOpen((v) => !v)}
-    >
-      ◆ memory <span className={styles.caret}>{up ? '▴' : '▾'}</span>
-    </Button>
-  );
-
   return (
     <span className={styles.wrap} ref={wrapRef}>
-      {trigger}
+      <Button
+        variant={variant}
+        className={className}
+        title="Load memory from earlier sessions into this one"
+        onClick={() => setOpen((v) => !v)}
+      >
+        ◆ memory <span className={styles.caret}>{up ? '▴' : '▾'}</span>
+      </Button>
       {open ? (
-        <div className={`${menu.menu} ${styles.menu} ${up ? styles.up : ''}`} role="dialog" aria-label="Agent memory">
+        <div
+          className={`${menu.menu} ${menu.flush} ${styles.menu} ${up ? styles.up : ''}`}
+          role="dialog"
+          aria-label="Agent memory"
+        >
           <MemoryFilters
             query={search.query}
             onQuery={search.setQuery}
@@ -130,7 +146,7 @@ export default function MemoryMenu({
               <MemoryRowItem
                 key={row.id}
                 row={row}
-                selected={selected.includes(row.id)}
+                selected={selectedIds.has(row.id)}
                 onToggle={toggle}
                 showRepo={search.scope === 'all'}
               />
@@ -143,7 +159,9 @@ export default function MemoryMenu({
                 ? `${search.total} match${search.total === 1 ? '' : 'es'}`
                 : `${selected.length} selected · ${budgetLabel(used, budgetTokens)}`}
             </span>
-            {note ? <span className={styles.note}>{note}</span> : null}
+            {note ? (
+              <span className={note.error ? styles.noteError : styles.note}>{note.text}</span>
+            ) : null}
             <span className={styles.actions}>
               {onOpenPanel ? (
                 <button type="button" className={styles.link} onClick={onOpenPanel}>

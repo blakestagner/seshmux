@@ -214,6 +214,7 @@ export async function harvestSession(
   let harvested = 0;
   let slices = 0;
   let done = false;
+  let stalled = false;
 
   try {
     // Several slices per call, not one: at one 4MB slice per 60s throttle tick, the 46MB
@@ -227,6 +228,7 @@ export async function harvestSession(
     for (; slices < maxSlices; slices++) {
       const slice = await provider.harvestFrom(target.projectId, target.session.id, offset, maxBytes);
       done = slice.done;
+      stalled = !!slice.stalled;
 
       if (slice.msgs.length) {
         const records = extract(slice.msgs, {
@@ -262,12 +264,23 @@ export async function harvestSession(
   } catch (err) {
     // A harvest failure must never disturb the caller — same contract as ledger-binding.
     log(`harvest failed for ${key}`, err);
+    // Advance the CLOCK even though the offset did not move. Without this the throttle
+    // never trips for a session that reliably fails, and every session-touch re-attempts
+    // it — re-reading the whole store and up to maxSlices x maxBytes of transcript, for
+    // ever. A first-ever failure has no mark at all, so it would retry indefinitely.
+    await getStore()
+      .update((cur) => ({
+        ...cur,
+        marks: { ...cur.marks, [key]: { offset, at: now(), mtime: target.session.mtime, complete: false } },
+      }))
+      .catch(() => {});
     return { harvested, slices, skipped: null };
   }
 
-  // "Complete" is only true for a session that is both finished and fully read —
-  // otherwise a restart would never pick the rest of it up.
-  const complete = done && !target.session.live;
+  // "Complete" is only true for a session that is finished, fully read, AND not sitting on
+  // a partial final line — otherwise a file that never got its trailing newline would be
+  // marked done with its last turn unread, and never revisited.
+  const complete = done && !stalled && !target.session.live;
 
   await getStore().update((cur) => ({
     ...cur,
@@ -329,6 +342,15 @@ export interface Harvester {
   onSessionTouched(provider: ProviderId, projectId: string, sessionId: string): void;
   /** Bounded pass over recent sessions so memory is not empty on first run. */
   backfill(): Promise<number>;
+  /**
+   * Run something on the harvester's own queue.
+   *
+   * compact() rewrites shards from a snapshot, so an append landing between its read and
+   * its rename is silently lost. store.ts documents that the caller must serialize it
+   * against harvesting; this is what makes that actually true, since the queue is otherwise
+   * private to this closure.
+   */
+  runExclusive<T>(fn: () => Promise<T>): Promise<T>;
   /** Await whatever is currently queued — tests and shutdown. */
   drain(): Promise<void>;
   stop(): void;
@@ -416,6 +438,10 @@ export function createHarvester(deps: HarvestDeps): Harvester {
         }
         return total;
       });
+    },
+
+    runExclusive(fn) {
+      return enqueue(fn);
     },
 
     async drain() {

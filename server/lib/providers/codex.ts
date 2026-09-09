@@ -561,13 +561,13 @@ export class CodexProvider implements AgentProvider {
     sessionId: string,
     offset: number,
     maxBytes: number,
-  ): Promise<{ msgs: Msg[]; nextOffset: number; done: boolean }> {
+  ): Promise<{ msgs: Msg[]; nextOffset: number; done: boolean; stalled?: boolean }> {
     const file = await this.fileForSession(projectId, sessionId);
     if (!file) return { msgs: [], nextOffset: offset, done: true };
     const slice = await readForward(file, offset, maxBytes);
     const parser = createCodexLineParser();
     for (const line of slice.lines) parser.feed(line);
-    return { msgs: parser.msgs, nextOffset: slice.nextOffset, done: slice.done };
+    return { msgs: parser.msgs, nextOffset: slice.nextOffset, done: slice.done, stalled: slice.stalled };
   }
 
   async readCtx(projectId: string, sessionId: string): Promise<Ctx | null> {

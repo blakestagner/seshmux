@@ -140,7 +140,10 @@ export interface AgentProvider {
     sessionId: string,
     offset: number,
     maxBytes: number,
-  ): Promise<{ msgs: Msg[]; nextOffset: number; done: boolean }>;
+    // `stalled` distinguishes a clean EOF from an unterminated final line — see
+    // ForwardSlice in store/transcript.ts. A caller deciding whether a session is FINISHED
+    // must not treat the second as the first.
+  ): Promise<{ msgs: Msg[]; nextOffset: number; done: boolean; stalled?: boolean }>;
   search(q: string, opts?: SearchOpts): Promise<SearchHit[]>;
   usage(days: number): Promise<UsageSummary>;
   commands: ProviderCommands;

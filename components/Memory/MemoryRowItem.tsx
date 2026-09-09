@@ -1,18 +1,21 @@
 'use client';
 
-// One memory record, as a selectable row. Shared by the dropdown and the panel; the panel
-// passes `expanded` to show the full body and the actions.
+// One memory record, as a row. Shared by the dropdown and the panel; the panel passes
+// `expanded` for the full body and the curate actions.
 //
 // The citation is not decoration. Recalled text was written by an earlier agent run, and
-// being able to see which agent, which repo and when is what makes a claim checkable rather
-// than something to be taken on faith.
+// seeing which agent, which repo and when is what makes a claim checkable rather than
+// something taken on faith.
 
+import Checkbox from '../ui/Checkbox/Checkbox';
+import IconButton from '../ui/IconButton/IconButton';
+import MetaLine from '../ui/MetaLine/MetaLine';
 import ProviderBadge from '../ui/ProviderBadge/ProviderBadge';
 import type { MemoryRow } from '../../lib/client/api';
 import styles from './Memory.module.scss';
 
 const KIND_GLYPH: Record<string, string> = {
-  decision: '◆',
+  decision: '✧',
   lesson: '✦',
   error: '✕',
   artifact: '✎',
@@ -51,57 +54,66 @@ export default function MemoryRowItem({
   onDelete,
   showRepo = true,
 }: MemoryRowItemProps) {
-  const cite = [row.provider, showRepo ? leaf(row.repo) : null, day(row.ts)].filter(Boolean).join(' · ');
+  // Provider identity is the badge's job — repeating it as text renders "✳ claude · claude".
+  const cite = [showRepo ? leaf(row.repo) : null, day(row.ts), row.sessionId.slice(0, 8)]
+    .filter(Boolean)
+    .join(' · ');
+
+  const body = (
+    <>
+      <span className={styles.rowTop}>
+        <span className={`${styles.glyph} ${styles[`k_${row.kind.replace('-', '_')}`] ?? ''}`}>
+          {KIND_GLYPH[row.kind] ?? '·'}
+        </span>
+        <span className={expanded ? styles.textFull : styles.text}>{row.text}</span>
+      </span>
+      <MetaLine
+        left={
+          <span className={styles.cite}>
+            <ProviderBadge provider={row.provider} />
+            <span>{cite}</span>
+            {row.pinned ? <span className={styles.pin}>pinned</span> : null}
+            {row.superseded ? <span className={styles.stale}>superseded</span> : null}
+          </span>
+        }
+        right={<span className={styles.cost}>~{row.tokens} tok</span>}
+      />
+    </>
+  );
 
   return (
     <div className={`${styles.row} ${selected ? styles.rowOn : ''} ${row.superseded ? styles.rowStale : ''}`}>
       {onToggle ? (
-        <input
-          type="checkbox"
-          className={styles.check}
-          checked={!!selected}
-          onChange={() => onToggle(row.id)}
-          aria-label={`select ${row.kind}`}
-        />
+        <span className={styles.check}>
+          <Checkbox checked={!!selected} onChange={() => onToggle(row.id)} label={`select ${row.kind}`} />
+        </span>
       ) : null}
 
-      <button
-        type="button"
-        className={styles.rowBody}
-        onClick={() => onToggle?.(row.id)}
-        title={expanded ? undefined : row.text}
-      >
-        <span className={styles.rowTop}>
-          <span className={`${styles.glyph} ${styles[`k_${row.kind.replace('-', '_')}`] ?? ''}`}>
-            {KIND_GLYPH[row.kind] ?? '·'}
-          </span>
-          <span className={expanded ? styles.textFull : styles.text}>{row.text}</span>
-        </span>
-        <span className={styles.cite}>
-          <ProviderBadge provider={row.provider} />
-          <span>{cite}</span>
-          {row.pinned ? <span className={styles.pin}>pinned</span> : null}
-          {row.superseded ? <span className={styles.stale}>superseded</span> : null}
-          <span className={styles.cost}>~{row.tokens} tok</span>
-        </span>
-      </button>
+      {/* A control only where it does something. In the panel there is nothing to select,
+          so a button here would be a focusable no-op in every row. */}
+      {onToggle ? (
+        <button type="button" className={styles.rowBody} onClick={() => onToggle(row.id)} title={expanded ? undefined : row.text}>
+          {body}
+        </button>
+      ) : (
+        <div className={styles.rowBody}>{body}</div>
+      )}
 
       {onPin || onDelete ? (
         <span className={styles.rowActions}>
           {onPin ? (
-            <button
-              type="button"
-              className={styles.act}
+            <IconButton
+              label={row.pinned ? 'Unpin' : 'Pin — always keep this to hand'}
+              active={row.pinned}
               onClick={() => onPin(row)}
-              title={row.pinned ? 'unpin' : 'pin — always keep this to hand'}
             >
-              {row.pinned ? '★' : '☆'}
-            </button>
+              ★
+            </IconButton>
           ) : null}
           {onDelete ? (
-            <button type="button" className={styles.act} onClick={() => onDelete(row)} title="forget this">
+            <IconButton label="Forget this" onClick={() => onDelete(row)}>
               ✕
-            </button>
+            </IconButton>
           ) : null}
         </span>
       ) : null}

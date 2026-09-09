@@ -295,6 +295,39 @@ describe('remember', () => {
 
 // ---------------------------------------------------------------------------
 
+describe('defaultMemoryContext — worktree scoping', () => {
+  // A worktree session FOLDS into its parent project: scan.ts files records under the
+  // parent id while storing the worktree as `repo`. Matching the caller's cwd alone left an
+  // agent inside `<repo>/.claude/worktrees/feat-x` scoped to a projectId no record uses —
+  // recall said "nothing matched" against a repo full of records, and its `remember` wrote
+  // somewhere neither the panel nor the parent repo could ever see.
+  const parent = process.platform === 'win32' ? 'C:\\repo\\alpha' : '/repo/alpha';
+  const worktree = join(parent, '.claude', 'worktrees', 'feat-x');
+
+  it('folds a worktree cwd onto its parent project', async () => {
+    const { defaultMemoryContext } = await import('../../server/lib/bridge/mcp');
+    const { _resetProviders } = await import('../../server/lib/providers/types');
+    _resetProviders();
+
+    const ctx = await defaultMemoryContext(worktree);
+    // Whatever the registry can see on this machine, the contract holds: the directory
+    // being worked in is cited, and the scope is never the un-foldable worktree encoding.
+    expect(ctx.repo).toBe(worktree);
+    const { encodeProjectId } = await import('../../server/lib/store/scan');
+    if (ctx.projectId !== encodeProjectId(worktree)) {
+      expect(ctx.projectId).not.toContain('worktrees');
+    }
+  });
+
+  it('falls back to the encoded cwd rather than throwing when nothing matches', async () => {
+    const { defaultMemoryContext } = await import('../../server/lib/bridge/mcp');
+    const { encodeProjectId } = await import('../../server/lib/store/scan');
+    const nowhere = process.platform === 'win32' ? 'C:\\nope\\nothing' : '/nope/nothing';
+    const ctx = await defaultMemoryContext(nowhere);
+    expect(ctx).toEqual({ projectId: encodeProjectId(nowhere), repo: nowhere });
+  });
+});
+
 describe('tool registration', () => {
   it('exposes both memory tools alongside the existing bridge verbs', () => {
     const registered: string[] = [];

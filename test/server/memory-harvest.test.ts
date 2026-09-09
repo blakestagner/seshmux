@@ -313,6 +313,51 @@ describe('harvestSession', () => {
     ).toEqual(['first question', 'resumed question']);
   });
 
+  it('does not mark a session complete while its last line is unterminated', async () => {
+    // A file that never got its trailing newline used to be marked done with its final turn
+    // unread — and since the mtime never moves again, never revisited. That turn is the one
+    // the `outcome` record comes from.
+    const { s, h } = await freshModules();
+    const file = join(store, '-repo-alpha', 'partial.jsonl');
+    writeFileSync(file, line('user', 'a complete question', '2026-09-01T10:00:00.000Z') + '{"type":"user","mess');
+
+    await harvestSession(target('partial'), provider(), { providers: async () => [], schedule: noThrottle });
+
+    const marks = await (await import('../../server/lib/json-store'))
+      .createJsonStore<any>(h.watermarksPath(), () => ({ v: 1, marks: {} }))
+      .read();
+    expect(marks.marks[markKey('claude', 'partial')].complete).toBe(false);
+    expect((await s.readAllRecords()).some((r) => r.kind === 'prompt')).toBe(true);
+  });
+
+  it('advances the throttle clock on failure, so a broken session is not retried hot', async () => {
+    // Returning early on error left mark.at unset, so the throttle never tripped and every
+    // session-touch re-read the whole store plus megabytes of transcript, for ever.
+    const { h } = await freshModules();
+    const broken = {
+      id: 'claude',
+      harvestFrom: async () => {
+        throw new Error('disk on fire');
+      },
+    } as unknown as AgentProvider;
+
+    await harvestSession(target('s1'), broken, {
+      providers: async () => [],
+      schedule: noThrottle,
+      log: () => {},
+      now: () => NOW,
+    });
+
+    const marks = await (await import('../../server/lib/json-store'))
+      .createJsonStore<any>(h.watermarksPath(), () => ({ v: 1, marks: {} }))
+      .read();
+    expect(marks.marks[markKey('claude', 's1')].at).toBe(NOW);
+
+    // With a real throttle the next attempt is now suppressed rather than hammering.
+    const again = await harvestSession(target('s1'), broken, { providers: async () => [], now: () => NOW + 1000 });
+    expect(again.skipped).toBe('throttled');
+  });
+
   it('swallows a provider failure rather than disturbing the caller', async () => {
     const broken = {
       id: 'claude',

@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Button from '../ui/Button/Button';
+import IconButton from '../ui/IconButton/IconButton';
 import TextInput from '../ui/TextInput/TextInput';
 import MemoryFilters from '../Memory/MemoryFilters';
 import MemoryRowItem from '../Memory/MemoryRowItem';
@@ -32,14 +33,22 @@ export type MemoryPanelProps = {
   branch?: string | null;
   /** Bumped by the {event:'memory'} ping. */
   refreshKey?: number;
+  onClose?: () => void;
 };
 
-export default function MemoryPanel({ projectId, sessionId, provider, branch, refreshKey = 0 }: MemoryPanelProps) {
+export default function MemoryPanel({
+  projectId,
+  sessionId,
+  provider,
+  branch,
+  refreshKey = 0,
+  onClose,
+}: MemoryPanelProps) {
   const search = useMemorySearch(projectId, refreshKey, 200);
   const [stats, setStats] = useState<MemoryStats | null>(null);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
+  const [note, setNote] = useState<{ text: string; error: boolean } | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -59,7 +68,7 @@ export default function MemoryPanel({ projectId, sessionId, provider, branch, re
         await fn();
         search.refresh();
       } catch (err) {
-        setNote(err instanceof Error ? err.message : `${label} failed`);
+        setNote({ text: err instanceof Error ? err.message : `${label} failed`, error: true });
       } finally {
         setBusy(null);
       }
@@ -84,14 +93,30 @@ export default function MemoryPanel({ projectId, sessionId, provider, branch, re
       const res = await distillMemory({ projectId, sessionId, provider, branch });
       setNote(
         res.error
-          ? `distill failed: ${res.error}`
-          : `distilled ${res.facts} fact${res.facts === 1 ? '' : 's'} from ${res.chunks} chunk${res.chunks === 1 ? '' : 's'}`,
+          ? { text: `distill failed: ${res.error}`, error: true }
+          : {
+              text: `distilled ${res.facts} fact${res.facts === 1 ? '' : 's'} from ${res.chunks} chunk${res.chunks === 1 ? '' : 's'}`,
+              error: false,
+            },
       );
     });
   };
 
   return (
     <div className={styles.panel}>
+      {/* Same head as ChangesPanel/PortsPanel/TeamPanel, so the right-pane slot reads as
+          one family and the panel is closable from the panel itself, not only its tab. */}
+      <div className={styles.head}>
+        <span className={styles.headGlyph} aria-hidden="true">
+          ◆
+        </span>
+        <span className={styles.title}>Memory</span>
+        {onClose ? (
+          <IconButton label="Close memory" onClick={onClose}>
+            ✕
+          </IconButton>
+        ) : null}
+      </div>
       <MemoryFilters
         query={search.query}
         onQuery={search.setQuery}
@@ -143,7 +168,9 @@ export default function MemoryPanel({ projectId, sessionId, provider, branch, re
           >
             {busy === 'distill' ? 'distilling…' : 'Distil session'}
           </Button>
-          {note ? <span className={styles.note}>{note}</span> : null}
+          {note ? (
+            <span className={note.error ? styles.noteError : styles.note}>{note.text}</span>
+          ) : null}
           {stats ? (
             <span className={styles.stats}>
               {search.total} shown · {stats.total} stored · {stats.pinned} pinned

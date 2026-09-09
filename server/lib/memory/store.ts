@@ -181,6 +181,29 @@ function parseNdjson<T>(raw: string): T[] {
   return out;
 }
 
+/**
+ * Structural validation, not just a schema-version check.
+ *
+ * Consumers reach straight into nested fields — `documentText` reads `entities.files`,
+ * `renderRecord` reads `scope.repo` — so a record that parses as JSON but is missing a
+ * sub-object throws from inside index building and takes down EVERY memory read at once:
+ * recall, the panel, /stats and the MCP tool, with no recovery but hand-editing NDJSON.
+ * Two independent writer processes and a documented "torn or hand-edited" case make that
+ * reachable, so a malformed line is dropped here the same way an unparseable one is.
+ */
+export function isWellFormed(r: unknown): r is MemoryRecord {
+  if (!r || typeof r !== 'object') return false;
+  const rec = r as Partial<MemoryRecord>;
+  if (rec.v !== MEMORY_SCHEMA) return false;
+  if (typeof rec.id !== 'string' || !rec.id) return false;
+  if (typeof rec.kind !== 'string' || typeof rec.text !== 'string') return false;
+  if (!rec.scope || typeof rec.scope.projectId !== 'string' || typeof rec.scope.repo !== 'string') return false;
+  if (!rec.origin || typeof rec.origin.provider !== 'string' || typeof rec.origin.ts !== 'number') return false;
+  const e = rec.entities;
+  if (!e || !Array.isArray(e.files) || !Array.isArray(e.commands) || !Array.isArray(e.symbols)) return false;
+  return true;
+}
+
 export interface ReadOpts {
   /** Include records hidden by a delete/expire op. Compaction needs this; recall does not. */
   includeRemoved?: boolean;
@@ -205,7 +228,7 @@ export async function readAllRecords(opts: ReadOpts = {}): Promise<MemoryRecord[
       continue;
     }
     for (const r of parseNdjson<MemoryRecord>(raw)) {
-      if (!r || typeof r.id !== 'string' || r.v !== MEMORY_SCHEMA) continue;
+      if (!isWellFormed(r)) continue;
       byId.set(r.id, r); // later line wins — an intentional re-append is an update
     }
   }
@@ -263,12 +286,33 @@ export async function knownIds(): Promise<Set<string>> {
 // whole point of distillation is that a lesson outlives the session that produced it.
 // Deterministic records are the volume, and volume is what the cap defends against.
 export function evictionValue(r: MemoryRecord, now: number): number {
-  if (r.pinned) return Number.POSITIVE_INFINITY;
-  if (isDistilled(r.kind)) return Number.POSITIVE_INFINITY;
   const ageDays = Math.max(0, (now - r.origin.ts) / 86_400_000);
   const kindWeight = r.kind === 'error' ? 3 : r.kind === 'outcome' ? 2 : 1;
   const hitBoost = 1 + Math.min(10, r.hits ?? 0);
   return (kindWeight * hitBoost) / (1 + ageDays);
+}
+
+/** Pinned and distilled records are protected; everything else is evictable. */
+export function isProtected(r: MemoryRecord): boolean {
+  return !!r.pinned || isDistilled(r.kind);
+}
+
+/**
+ * Eviction order, least valuable last.
+ *
+ * TIERED rather than an Infinity sentinel in evictionValue: `Infinity - Infinity` is NaN, so
+ * a comparator built on it returned NaN for every protected-vs-protected pair and left their
+ * order engine-defined. Once protected records alone exceeded maxRecords, the slice then
+ * dropped an arbitrary subset of them — contradicting the guarantee that pinned and
+ * distilled records are never evicted.
+ */
+export function byEvictionOrder(now: number) {
+  return (a: MemoryRecord, b: MemoryRecord): number => {
+    const pa = isProtected(a) ? 1 : 0;
+    const pb = isProtected(b) ? 1 : 0;
+    if (pa !== pb) return pb - pa;
+    return evictionValue(b, now) - evictionValue(a, now);
+  };
 }
 
 /** Pure: which ids compaction should drop, given the current set. Unit-tested directly. */
@@ -286,8 +330,14 @@ export function planCompaction(
   }
   let keep = records.filter((r) => !drop.has(r.id));
   if (keep.length > settings.maxRecords) {
-    const ranked = [...keep].sort((a, b) => evictionValue(b, now) - evictionValue(a, now));
-    for (const r of ranked.slice(settings.maxRecords)) drop.add(r.id);
+    const ranked = [...keep].sort(byEvictionOrder(now));
+    for (const r of ranked.slice(settings.maxRecords)) {
+      // The cap never breaks the protection guarantee. If pinned + distilled records alone
+      // exceed maxRecords the store is allowed to exceed it too — silently discarding what
+      // the user pinned would be a far worse failure than a large store.
+      if (isProtected(r)) continue;
+      drop.add(r.id);
+    }
     keep = keep.filter((r) => !drop.has(r.id));
   }
   return { drop, keep };

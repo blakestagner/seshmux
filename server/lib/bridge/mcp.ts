@@ -458,10 +458,25 @@ export function callerProvider(): BridgeTarget {
 export async function defaultMemoryContext(cwd: string): Promise<{ projectId: string; repo: string }> {
   try {
     const { getProviders } = await import('../providers/types');
+    const { derivedWorkspaceParent } = await import('../store/scan');
+
+    // A worktree session FOLDS into its parent project — scan.ts groups it under the parent
+    // id while the harvester stores the worktree as `repo`. So the worktree path is never
+    // itself a listed project, and matching cwd alone left an agent working in
+    // `<repo>/.claude/worktrees/feat-x` scoped to a projectId no record uses: recall
+    // returned "nothing matched" against a repo with hundreds of records, and its
+    // `remember` wrote somewhere neither the panel nor the parent repo could ever see.
+    const parent = derivedWorkspaceParent(cwd);
+    const candidates = parent && parent !== cwd ? [cwd, parent] : [cwd];
+
     for (const provider of await getProviders()) {
       const projects = await provider.scanProjects().catch(() => []);
-      const hit = projects.find((p) => p.path === cwd);
-      if (hit) return { projectId: hit.id, repo: hit.path };
+      for (const path of candidates) {
+        const hit = projects.find((p) => p.path === path);
+        // Scope by the project the records are filed under; cite the directory actually
+        // being worked in.
+        if (hit) return { projectId: hit.id, repo: cwd };
+      }
     }
   } catch {
     /* fall through to the encoded form */

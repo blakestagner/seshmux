@@ -37,9 +37,7 @@ export default function MemoryFilters({
 }: MemoryFiltersProps) {
   return (
     <div className={styles.filters}>
-      <div className={autoFocus ? styles.autofocus : undefined}>
-        <TextInput value={query} onChange={onQuery} placeholder={placeholder} />
-      </div>
+      <TextInput value={query} onChange={onQuery} placeholder={placeholder} autoFocus={autoFocus} />
       <Segmented
         options={SCOPE_OPTIONS}
         value={scope}

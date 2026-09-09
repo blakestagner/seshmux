@@ -182,6 +182,38 @@ describe('memory store — overlay replay', () => {
   });
 });
 
+describe('memory store — malformed records', () => {
+  // Consumers reach into nested fields (documentText -> entities.files, renderRecord ->
+  // scope.repo), so one structurally broken line used to throw from inside index building
+  // and take down every memory read at once.
+  it('drops a record missing entities rather than poisoning every read', async () => {
+    const s = await fresh();
+    await s.appendRecords([rec('good')]);
+    const { entities, ...noEntities } = rec('bad', { id: 'bad' });
+    appendFileSync(join(dir, 'memory', 'records', s.shardName(NOW)), JSON.stringify(noEntities) + '\n');
+    s._resetMemoryForTest();
+    expect((await s.readAllRecords()).map((r) => r.id)).toEqual(['good']);
+  });
+
+  it('drops a record missing scope or origin', async () => {
+    const s = await fresh();
+    await s.appendRecords([rec('good')]);
+    const shard = join(dir, 'memory', 'records', s.shardName(NOW));
+    const { scope, ...noScope } = rec('a', { id: 'noScope' });
+    const { origin, ...noOrigin } = rec('b', { id: 'noOrigin' });
+    appendFileSync(shard, JSON.stringify(noScope) + '\n' + JSON.stringify(noOrigin) + '\n');
+    s._resetMemoryForTest();
+    expect((await s.readAllRecords()).map((r) => r.id)).toEqual(['good']);
+  });
+
+  it('accepts a well-formed record', async () => {
+    const s = await fresh();
+    expect(s.isWellFormed(rec('ok'))).toBe(true);
+    expect(s.isWellFormed({ v: 1, id: 'x' })).toBe(false);
+    expect(s.isWellFormed(null)).toBe(false);
+  });
+});
+
 describe('memory store — sanitizeText', () => {
   it('strips C0/C1 controls but keeps tab and newline', async () => {
     const s = await fresh();
@@ -248,6 +280,34 @@ describe('memory store — retention (planCompaction, pure)', () => {
       lastHit: NOW - 2 * DAY,
     });
     expect(s.planCompaction([used], settings, NOW).drop.size).toBe(0);
+  });
+
+  it('never evicts protected records to satisfy the cap', async () => {
+    // The comparator used to subtract Infinity from Infinity — NaN for every
+    // protected-vs-protected pair — leaving their order engine-defined, so once pinned and
+    // distilled records alone exceeded the cap an arbitrary subset was dropped.
+    const s = await fresh();
+    const protectedRecords = [
+      rec('p1', { pinned: true }),
+      rec('p2', { pinned: true }),
+      rec('l1', { kind: 'lesson' }),
+      rec('l2', { kind: 'decision' }),
+    ];
+    const { drop, keep } = s.planCompaction(protectedRecords, { ...settings, maxRecords: 1 }, NOW);
+    expect(drop.size).toBe(0);
+    expect(keep).toHaveLength(4); // the store exceeds the cap rather than losing a pin
+  });
+
+  it('evicts the unprotected records first when mixed', async () => {
+    const s = await fresh();
+    const records = [
+      rec('pinned', { pinned: true }),
+      rec('lesson', { kind: 'lesson' }),
+      rec('tool-a', { kind: 'tool-call' }),
+      rec('tool-b', { kind: 'tool-call', origin: { provider: 'claude', sessionId: 's', ts: NOW - 5 * DAY } }),
+    ];
+    const { drop } = s.planCompaction(records, { ...settings, maxRecords: 3 }, NOW);
+    expect([...drop]).toEqual(['tool-b']); // oldest unprotected
   });
 
   it('enforces the record cap by evicting the least valuable first', async () => {

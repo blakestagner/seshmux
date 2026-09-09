@@ -16,7 +16,7 @@
 // does have, K, only controls how much a top-1 in one strategy outweighs a top-3 in another.
 
 import { bm25, fileKeys, getIndex, tokenize } from './index';
-import type { MemoryQuery, MemoryRecord, RankedRecord } from './types';
+import type { MemoryQuery, MemoryRecord, MemoryScopeMode, RankedRecord } from './types';
 
 const RRF_K = 60; // the conventional value; larger flattens the fusion, smaller sharpens it
 
@@ -34,16 +34,41 @@ export interface RankOpts {
 // ---------------------------------------------------------------------------
 
 /**
+ * The scope a query actually runs under.
+ *
+ * Repo-first when there is a repo to be first about. The distinction matters because
+ * "scope defaults to project" plus "projectId is optional" used to combine into: an
+ * un-scoped query silently searched EVERY repo while `pack` stamped the envelope
+ * "this repo". Two different callers then disagreed about what one query meant.
+ *
+ * - explicit scope wins;
+ * - no scope + a projectId → 'project' (the repo-first default);
+ * - no scope + no projectId → 'all', because there is nothing to scope BY and searching
+ *   everything is the honest reading;
+ * - explicit 'project' + no projectId → 'project', which matches nothing. That is a caller
+ *   error, and matching nothing is far safer than silently widening. (`GET /api/memory`
+ *   rejects it before it gets here.)
+ *
+ * Exported so the label and the filter can never be computed differently.
+ */
+export function effectiveScope(q: MemoryQuery): MemoryScopeMode {
+  if (q.scope) return q.scope;
+  return q.projectId ? 'project' : 'all';
+}
+
+/**
  * Candidate docs after the hard filters. Always a set — every query has at least the
  * supersession rule to apply, so there is no "everything" fast path worth branching for.
  */
 export function candidates(records: MemoryRecord[], q: MemoryQuery): Set<number> {
-  const scope = q.scope ?? 'project'; // repo-first by default
+  const scope = effectiveScope(q);
   const wantFile = q.file ? q.file.replace(/\\/g, '/').toLowerCase() : null;
   const out = new Set<number>();
 
+  if (scope === 'project' && !q.projectId) return out;
+
   records.forEach((r, i) => {
-    if (scope === 'project' && q.projectId && r.scope.projectId !== q.projectId) return;
+    if (scope === 'project' && r.scope.projectId !== q.projectId) return;
     if (q.kind?.length && !q.kind.includes(r.kind)) return;
     if (q.provider && r.origin.provider !== q.provider) return;
     if (q.since && r.origin.ts < q.since) return;
@@ -114,9 +139,31 @@ export function modifier(r: MemoryRecord, now: number): number {
 // rank
 // ---------------------------------------------------------------------------
 
-export function rank(records: MemoryRecord[], q: MemoryQuery, opts: RankOpts = {}): RankedRecord[] {
-  const now = opts.now ?? Date.now();
+/**
+ * Ranked results PLUS how many candidates there were before the limit cut.
+ *
+ * The count has to come from here: computing it from rank()'s return value can never exceed
+ * the limit, and both the pack footer ("N more matches not shown; narrow your query") and
+ * the dropdown's match count are read as the size of the whole result set. The MCP tool
+ * description tells the agent to trust that number, so it must be true.
+ */
+export function rankWithTotal(
+  records: MemoryRecord[],
+  q: MemoryQuery,
+  opts: RankOpts = {},
+): { ranked: RankedRecord[]; total: number } {
+  const all = rankAll(records, q, opts);
   const limit = q.limit ?? opts.limit ?? 50;
+  return { ranked: all.slice(0, limit), total: all.length };
+}
+
+export function rank(records: MemoryRecord[], q: MemoryQuery, opts: RankOpts = {}): RankedRecord[] {
+  return rankWithTotal(records, q, opts).ranked;
+}
+
+/** Every candidate, ordered. The limit is applied by the callers above. */
+function rankAll(records: MemoryRecord[], q: MemoryQuery, opts: RankOpts = {}): RankedRecord[] {
+  const now = opts.now ?? Date.now();
   const allowed = candidates(records, q);
   if (allowed.size === 0) return [];
 
@@ -139,8 +186,7 @@ export function rank(records: MemoryRecord[], q: MemoryQuery, opts: RankOpts = {
       .sort((a, b) => {
         const pinDiff = Number(!!b.record.pinned) - Number(!!a.record.pinned);
         return pinDiff !== 0 ? pinDiff : b.score - a.score;
-      })
-      .slice(0, limit);
+      });
   }
 
   const tokens = tokenize(query);
@@ -187,6 +233,5 @@ export function rank(records: MemoryRecord[], q: MemoryQuery, opts: RankOpts = {
       score: score * modifier(records[doc], now),
       matched: { bm25: bm.has(doc), exact: exact.has(doc), entity: entity.has(doc) },
     }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+    .sort((a, b) => b.score - a.score);
 }

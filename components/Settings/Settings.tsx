@@ -192,8 +192,12 @@ export default function Settings() {
       alive = false;
     };
   }, [memoryBusy]);
-  const memoryStatsLabel =
-    memoryNote ?? (memoryTotal === null ? '—' : memoryTotal + ' records');
+  // Show what compaction did ALONGSIDE the count, not instead of it: replacing the label
+  // left the row stuck on "dropped 12, kept 400" for the rest of the settings session, with
+  // the record count — the thing the row is for — gone until reload.
+  const memoryStatsLabel = [memoryTotal === null ? '—' : `${memoryTotal} records`, memoryNote]
+    .filter(Boolean)
+    .join(' · ');
 
   // Full-page overlay: Escape closes it (mirrors the ← Back button).
   useEffect(() => {

@@ -41,3 +41,10 @@
   margin: 6px 0;
   background: var(--border);
 }
+
+// Flush surface: no vertical padding, for a menu whose content owns its own edges
+// (a filter cluster with a bottom border, a scrolling list, a footer). Lives here rather
+// than as a `padding: 0` override in the consumer, which only won by import order.
+.flush {
+  padding: 0;
+}
