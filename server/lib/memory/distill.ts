@@ -149,7 +149,8 @@ export function planDistillWrite(
 
   for (const fact of facts) {
     const text = sanitizeText(fact.text);
-    const id = contentId({ kind: fact.kind, text, sessionId: ctx.sessionId, target: fact.key });
+    // Project-scoped: a distilled fact belongs to the repo, not to the run that noticed it.
+    const id = contentId({ kind: fact.kind, text, scope: ctx.projectId, target: fact.key });
 
     // Same key, same project, still current. Identical text is a no-op — re-distilling a
     // session must not append a fresh copy of a fact it already produced.

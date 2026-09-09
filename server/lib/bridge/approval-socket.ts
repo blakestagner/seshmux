@@ -23,7 +23,7 @@ import { ipcPath } from '../ipc';
 // union widens accordingly, no new transport.
 export interface ApprovalRequest {
   requestId: string;
-  tool: 'ask_codex' | 'ask_claude' | 'wait_for_status' | 'read_terminal';
+  tool: 'ask_codex' | 'ask_claude' | 'wait_for_status' | 'read_terminal' | 'remember';
   question: string;
   cwd: string;
   hop: number;

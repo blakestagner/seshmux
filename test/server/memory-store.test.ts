@@ -206,15 +206,15 @@ describe('memory store — sanitizeText', () => {
 describe('memory store — contentId', () => {
   it('is stable for identical content', async () => {
     const s = await fresh();
-    const a = s.contentId({ kind: 'error', text: 'boom', sessionId: 's1' });
-    const b = s.contentId({ kind: 'error', text: 'boom', sessionId: 's1' });
+    const a = s.contentId({ kind: 'error', text: 'boom', scope: 's1' });
+    const b = s.contentId({ kind: 'error', text: 'boom', scope: 's1' });
     expect(a).toBe(b);
   });
 
-  it('separates the same lesson learned in two different sessions', async () => {
+  it('separates the same observation made in two different scopes', async () => {
     const s = await fresh();
-    const a = s.contentId({ kind: 'lesson', text: 'same', sessionId: 's1' });
-    const b = s.contentId({ kind: 'lesson', text: 'same', sessionId: 's2' });
+    const a = s.contentId({ kind: 'lesson', text: 'same', scope: 's1' });
+    const b = s.contentId({ kind: 'lesson', text: 'same', scope: 's2' });
     expect(a).not.toBe(b);
   });
 });

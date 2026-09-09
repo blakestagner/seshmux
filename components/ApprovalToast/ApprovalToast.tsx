@@ -13,7 +13,7 @@ import styles from './ApprovalToast.module.scss';
 // we count down and auto-dismiss.
 export type ApprovalToastProps = {
   open: boolean;
-  tool: 'ask_codex' | 'ask_claude' | 'wait_for_status' | 'read_terminal';
+  tool: 'ask_codex' | 'ask_claude' | 'wait_for_status' | 'read_terminal' | 'remember';
   question: string;
   cwd: string;
   hop: number;

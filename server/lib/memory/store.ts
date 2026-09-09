@@ -46,11 +46,16 @@ export function overlayPath(): string {
 
 // A record's identity is its CONTENT, not a counter: re-harvesting a session that has grown
 // re-derives the same records for the part already seen, and they must collapse rather than
-// duplicate. Session id is included so the same lesson learned twice in two sessions stays
-// two citable records.
-export function contentId(parts: { kind: string; text: string; sessionId: string; target?: string }): string {
+// duplicate.
+//
+// `scope` is the discriminator, and WHICH scope differs by record family. Harvested records
+// use the session id, so the same error hit in two sessions stays two citable observations.
+// Agent- and user-authored facts use the PROJECT id, because "we decided X here" is one fact
+// about the repo however many sessions restate it — keying those by session would mint a new
+// record on every write and make `remember` non-idempotent.
+export function contentId(parts: { kind: string; text: string; scope: string; target?: string }): string {
   return createHash('sha256')
-    .update(`${parts.kind} ${parts.sessionId} ${parts.target ?? ''} ${parts.text}`)
+    .update(`${parts.kind} ${parts.scope} ${parts.target ?? ''} ${parts.text}`)
     .digest('hex')
     .slice(0, 16);
 }

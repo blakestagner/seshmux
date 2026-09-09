@@ -33,6 +33,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { requestApprovalOverSocket } from './approval-socket';
+import { AGENT_ENV } from './registry';
 import { execCapture } from '../exec-capture';
 
 export const HOP_ENV = 'SESHMUX_HOP';
@@ -65,7 +66,7 @@ export interface BridgeLogEntry {
 // Spec 5: wait_for_status/read_terminal go through the SAME approval gate as
 // ask_* but don't spawn a specific agent bin — ApprovalTarget widens beyond
 // BridgeTarget to cover them (approval-socket.ts's `tool` union already does).
-export type ApprovalTarget = BridgeTarget | 'wait_for_status' | 'read_terminal';
+export type ApprovalTarget = BridgeTarget | 'wait_for_status' | 'read_terminal' | 'remember';
 
 export interface BridgeDeps {
   runAgent: (args: RunAgentArgs) => Promise<{ text: string; ok: boolean }>;
@@ -83,6 +84,16 @@ export interface BridgeDeps {
   // session (cwd === process.cwd()).
   resolveLivePty?: (project: string) => Promise<{ ptyId: string; cwd: string } | null>;
   peekTerminal?: (ptyId: string, lines?: number) => Promise<{ ptyId: string; lines: string[] }>;
+  // Agent memory. Disk-only — no socket hop, so these stay plain function deps.
+  memoryContext?: (cwd: string) => Promise<{ projectId: string; repo: string }>;
+  memoryRecall?: (q: unknown, o: unknown) => Promise<{ text: string; records: unknown[] }>;
+  memoryRemember?: (
+    input: unknown,
+    opts: unknown,
+  ) => Promise<{ record: { key?: string } | null; superseded: string[]; note?: string }>;
+  /** Gate `remember` on UI approval. Off by default — see the memory section below. */
+  memoryApproval?: boolean;
+  memoryBudgetTokens?: number;
 }
 
 export interface BridgeCall {
@@ -220,7 +231,7 @@ export async function defaultRequestApproval(info: {
 }): Promise<boolean> {
   const requestId = randomBytes(12).toString('hex');
   const tool =
-    info.target === 'wait_for_status' || info.target === 'read_terminal'
+    info.target === 'wait_for_status' || info.target === 'read_terminal' || info.target === 'remember'
       ? info.target
       : info.target === 'codex'
         ? 'ask_codex'
@@ -390,6 +401,143 @@ export async function handleReadTerminal(
   return { content: [{ type: 'text' as const, text: result.lines.join('\n') }] };
 }
 
+// ---------------------------------------------------------------------------
+// Agent memory (recall_memory / remember)
+// ---------------------------------------------------------------------------
+//
+// GATING: unlike every other verb here, these two do NOT go through guardBridgeCall's
+// approval prompt by default. ask_* spawns a process and read_terminal reads another
+// session's live screen; these only read and append to a local file seshmux owns, which is
+// fully reviewable and deletable in the Memory panel. An agent recalls many times per
+// session, and prompting each time would make the feature unusable. The
+// "Require approval for agent memory writes" setting turns the gate back on for `remember`,
+// which is why memoryApproval is threaded through rather than hardcoded off.
+//
+// They are also DISK-ONLY: no socket, no web server. That is the peek.ts precedent, and it
+// means recall keeps working while the server is restarting.
+
+/** Which agent this bridge serves, stamped into the MCP registration by registry.ts. */
+export function callerProvider(): BridgeTarget {
+  return process.env[AGENT_ENV] === 'codex' ? 'codex' : 'claude';
+}
+
+/**
+ * Resolve the caller's cwd to the same projectId the harvester stored records under.
+ *
+ * Asks the providers rather than re-deriving an encoding here: a worktree session folds to
+ * its parent project, and guessing that mapping would silently scope recall to a project
+ * with no records. Falls back to the encoded cwd so recall degrades to "no matches" rather
+ * than throwing.
+ */
+export async function defaultMemoryContext(cwd: string): Promise<{ projectId: string; repo: string }> {
+  try {
+    const { getProviders } = await import('../providers/types');
+    for (const provider of await getProviders()) {
+      const projects = await provider.scanProjects().catch(() => []);
+      const hit = projects.find((p) => p.path === cwd);
+      if (hit) return { projectId: hit.id, repo: hit.path };
+    }
+  } catch {
+    /* fall through to the encoded form */
+  }
+  const { encodeProjectId } = await import('../store/scan');
+  return { projectId: encodeProjectId(cwd), repo: cwd };
+}
+
+export interface RecallArgs {
+  query?: string;
+  scope?: 'project' | 'all';
+  kind?: string[];
+  file?: string;
+  sinceDays?: number;
+  limit?: number;
+}
+
+export async function handleRecall(args: RecallArgs, deps: BridgeDeps) {
+  const cwd = process.cwd();
+  try {
+    const context = await (deps.memoryContext ?? defaultMemoryContext)(cwd);
+    const recall = deps.memoryRecall ?? ((q: any, o: any) => import('../memory/recall').then((m) => m.recall(q, o)));
+
+    const result = await recall(
+      {
+        query: args.query,
+        projectId: context.projectId,
+        scope: args.scope ?? 'project',
+        kind: args.kind as never,
+        file: args.file,
+        since: args.sinceDays ? Date.now() - args.sinceDays * 86_400_000 : undefined,
+        limit: args.limit,
+      },
+      { countHits: true, budgetTokens: deps.memoryBudgetTokens },
+    );
+
+    if (!result.records.length) {
+      // Say what to try next rather than just "nothing" — an agent that gets an empty
+      // result with no guidance tends to give up on the tool entirely.
+      const where = (args.scope ?? 'project') === 'all' ? 'any project' : 'this project';
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `No memory matched in ${where}. Try scope:"all", different wording, or a file path.`,
+          },
+        ],
+      };
+    }
+    return { content: [{ type: 'text' as const, text: result.text }] };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { content: [{ type: 'text' as const, text: `recall failed: ${message}` }], isError: true };
+  }
+}
+
+export interface RememberArgs {
+  text: string;
+  kind?: 'decision' | 'lesson';
+  key?: string;
+  files?: string[];
+  pin?: boolean;
+}
+
+export async function handleRemember(args: RememberArgs, deps: BridgeDeps) {
+  const cwd = process.cwd();
+  try {
+    // Opt-in gate. Off by default (see the note above); when on, this is the same
+    // loop-guard-then-approval preamble every other verb uses.
+    if (deps.memoryApproval) {
+      await guardBridgeCall(
+        { target: 'remember', question: args.text, cwd, hopEnv: process.env[HOP_ENV] },
+        { ...deps, approvalMode: true },
+      );
+    }
+
+    const context = await (deps.memoryContext ?? defaultMemoryContext)(cwd);
+    const remember =
+      deps.memoryRemember ?? ((i: any, o: any) => import('../memory/recall').then((m) => m.remember(i, o)));
+
+    const res = await remember(
+      {
+        text: args.text,
+        kind: args.kind ?? 'lesson',
+        key: args.key,
+        files: args.files,
+        pin: args.pin,
+        scope: { projectId: context.projectId, repo: context.repo },
+        origin: { provider: callerProvider(), sessionId: `mcp-${Date.now().toString(36)}` },
+      },
+      {},
+    );
+
+    if (!res.record) return { content: [{ type: 'text' as const, text: res.note ?? 'nothing written' }] };
+    const superseded = res.superseded.length ? `, superseding ${res.superseded.length} earlier version(s)` : '';
+    return { content: [{ type: 'text' as const, text: `Remembered as "${res.record.key}"${superseded}.` }] };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { content: [{ type: 'text' as const, text: message }], isError: true };
+  }
+}
+
 // Creates (but does not connect) the MCP server exposing ask_codex/ask_claude.
 // Split out from startMcpBridge so tests can register tools without opening stdio.
 export function createMcpBridgeServer(deps: BridgeDeps = defaultBridgeDeps()): McpServer {
@@ -445,6 +593,39 @@ export function createMcpBridgeServer(deps: BridgeDeps = defaultBridgeDeps()): M
       },
     },
     async ({ project, lines }) => handleReadTerminal(project, lines, deps),
+  );
+
+  server.registerTool(
+    'recall_memory',
+    {
+      description:
+        "Recall what agents did in earlier seshmux sessions — decisions, lessons, errors, files touched, commands run — across BOTH Claude and Codex. Searches this project by default; pass scope:'all' to search every project. Returns a budgeted, cited block; if it says more matched, narrow the query rather than raising the limit.",
+      inputSchema: {
+        query: z.string().optional(),
+        scope: z.enum(['project', 'all']).optional(),
+        kind: z.array(z.enum(['prompt', 'tool-call', 'error', 'artifact', 'outcome', 'decision', 'lesson'])).optional(),
+        file: z.string().optional(),
+        sinceDays: z.number().optional(),
+        limit: z.number().optional(),
+      },
+    },
+    async (args) => handleRecall(args, deps),
+  );
+
+  server.registerTool(
+    'remember',
+    {
+      description:
+        'Record a durable fact for future sessions in this project: a decision and why it was made, or a non-obvious lesson. Use it for things that will still be true next week, not for progress notes. Reusing a previous key revises that fact rather than duplicating it.',
+      inputSchema: {
+        text: z.string(),
+        kind: z.enum(['decision', 'lesson']).optional(),
+        key: z.string().optional(),
+        files: z.array(z.string()).optional(),
+        pin: z.boolean().optional(),
+      },
+    },
+    async (args) => handleRemember(args, deps),
   );
 
   return server;

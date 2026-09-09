@@ -220,7 +220,7 @@ function makeRecord(
   const clean = sanitizeText(text);
   return {
     v: MEMORY_SCHEMA,
-    id: contentId({ kind, text: target ? '' : clean, sessionId: ctx.sessionId, target }),
+    id: contentId({ kind, text: target ? '' : clean, scope: ctx.sessionId, target }),
     kind,
     text: clean,
     scope: { projectId: ctx.projectId, repo: ctx.repo, branch: ctx.branch },

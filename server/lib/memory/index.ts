@@ -30,17 +30,36 @@ const STOP = new Set([
  *    "mode". Dropping the whole form is exactly the terminology-mismatch failure that makes
  *    single-strategy retrieval brittle.
  */
+/**
+ * The one piece of stemming worth having: a trailing plural `s`.
+ *
+ * Without it a query for "build" does not match a record saying "builds", which is a miss
+ * a user reads as the search being broken. Applied to queries and documents alike, so it
+ * works in both directions. Deliberately not a real stemmer — Porter would fold "provider"
+ * and "provide" together and start producing matches nobody asked for.
+ */
+function depluralize(token: string): string | null {
+  if (token.length < 4 || !token.endsWith('s')) return null;
+  if (/(?:ss|us|is|as)$/.test(token)) return null; // class, status, axis, alias
+  return token.slice(0, -1);
+}
+
 export function tokenize(text: string): string[] {
   const camel = text.replace(/([a-z0-9])([A-Z])/g, '$1 $2');
   const out: string[] = [];
+  const add = (token: string): void => {
+    out.push(token);
+    const stem = depluralize(token);
+    if (stem && !STOP.has(stem)) out.push(stem);
+  };
   for (const rough of camel.toLowerCase().split(/[^a-z0-9_$+-]+/)) {
     if (!rough) continue;
     const clean = rough.replace(/^[-_+.]+/, '').replace(/[-_+.]+$/, '');
     if (clean.length < 2 || STOP.has(clean)) continue;
-    out.push(clean);
+    add(clean);
     if (/[-_]/.test(clean)) {
       for (const part of clean.split(/[-_]+/)) {
-        if (part.length >= 2 && !STOP.has(part)) out.push(part);
+        if (part.length >= 2 && !STOP.has(part)) add(part);
       }
     }
   }

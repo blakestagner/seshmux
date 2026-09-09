@@ -48,7 +48,7 @@ export type EventMessage =
   | {
       event: 'approval';
       requestId: string;
-      tool: 'ask_codex' | 'ask_claude' | 'wait_for_status' | 'read_terminal';
+      tool: 'ask_codex' | 'ask_claude' | 'wait_for_status' | 'read_terminal' | 'remember';
       question: string;
       cwd: string;
       hop: number;
