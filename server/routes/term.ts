@@ -180,10 +180,17 @@ export default async function termRoutes(f: FastifyInstance, deps: TermRouteDeps
           return { ptyId: p.ptyId, cwd: p.cwd, tmuxName: p.tmuxName, projectId, sessionId, branch, kind: 'agent' as const };
         }),
       );
-      return { live };
+      // `authoritative` = this list is the daemon's real answer. The rail only
+      // ever wanted "which dots are green", so the catch below has always
+      // flattened a dial failure into an empty 200 — but a CLIENT THAT PRUNES
+      // STATE against this list cannot tell "nothing is running" from "I could
+      // not ask", and destroys perfectly good state on a daemon that is merely
+      // still starting. Additive: a client predating this treats it as before.
+      return { live, authoritative: true };
     } catch {
-      // Daemon not up yet → no live sessions, not an error for the rail.
-      return reply.send({ live: [] });
+      // Daemon not up yet → no live sessions, not an error for the rail. Still
+      // a 200 (the rail must render), but flagged NOT authoritative.
+      return reply.send({ live: [], authoritative: false });
     } finally {
       if (conn) conn.close();
     }

@@ -125,3 +125,18 @@ describe('legacy key migration', () => {
     expect(localStorage.getItem(LEGACY_KEY)).toBeNull();
   });
 });
+
+// Guard for the "daemon unreachable" case: GET /api/sessions/live answers 200
+// with an EMPTY list when it could not dial the daemon, so the caller must not
+// prune against it. These cover the pure helper's half of that contract — the
+// route's half is in test/routes/routes-term.test.ts.
+describe('pruning is only safe against a real daemon answer', () => {
+  it('an empty live set would drop a dismissal covering a still-running PTY', () => {
+    // The failed-kill case api.ts deliberately keeps: pty-3 is alive and must
+    // stay suppressed. Pruning against a bogus empty list destroys that.
+    expect(keepLiveDismissals(['pty-3'], [])).toEqual([]);
+    // ...which is why page.tsx skips the prune entirely unless the live list
+    // came back authoritative.
+    expect(keepLiveDismissals(['pty-3'], ['pty-3'])).toEqual(['pty-3']);
+  });
+});

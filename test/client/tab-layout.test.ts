@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   readTabLayout,
   writeTabLayout,
+  persistTabLayout,
   orderByLayout,
   minimizedFromLayout,
 } from '../../lib/client/tab-layout';
@@ -93,6 +94,18 @@ describe('read/writeTabLayout', () => {
     expect(readTabLayout()).toEqual([]);
     localStorage.setItem('seshmux-tab-layout', JSON.stringify({ id: 'x' }));
     expect(readTabLayout()).toEqual([]);
+  });
+
+  it('persistTabLayout lands the value on the trailing edge', async () => {
+    vi.useFakeTimers();
+    try {
+      persistTabLayout([{ id: 'term-pty-1', minimized: true }]);
+      expect(localStorage.getItem('seshmux-tab-layout')).toBeNull(); // debounced
+      vi.advanceTimersByTime(300);
+      expect(readTabLayout()).toEqual([{ id: 'term-pty-1', minimized: true }]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('drops malformed entries and defaults a missing minimized flag to false', () => {

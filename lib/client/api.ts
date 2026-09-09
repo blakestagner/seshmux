@@ -235,8 +235,18 @@ export type LiveSession = {
   ownerTmuxName?: string | null;
 };
 
-export function getLive(): Promise<{ live: LiveSession[] }> {
+// `authoritative` is false when the server could not actually ask the daemon
+// (not up yet / mid-relaunch), in which case `live` is an empty list that means
+// "unknown", NOT "nothing is running". Callers that PRUNE state against this
+// list must check it. Absent on a server predating the field → treat as true,
+// which is exactly the old behaviour.
+export function getLive(): Promise<{ live: LiveSession[]; authoritative?: boolean }> {
   return req('/api/sessions/live');
+}
+
+/** The live list is safe to prune persisted client state against. */
+export function liveIsAuthoritative(r: { authoritative?: boolean }): boolean {
+  return r.authoritative !== false;
 }
 
 // ── Scratch terminal (a plain shell bound to a session's cwd) ────────────────

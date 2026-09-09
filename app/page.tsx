@@ -2,9 +2,9 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AppStateProvider, useAppState, activePair, activeTeam, shouldMarkUnviewed, shouldShowRestoreBanner, findTabToBindSession, dismissalKey, type Tab } from '../lib/client/store';
-import { getProjects, getConfig, getEnv, getLive, notify, resolveApproval, putConfig, getTeamMembers, startScratchTerminal, killScratchTerminal, endTermSession, type SearchHit, type LiveSession } from '../lib/client/api';
-import { pruneDismissed, removeDismissed } from '../lib/client/dismissed';
-import { readTabLayout, writeTabLayout, orderByLayout, minimizedFromLayout } from '../lib/client/tab-layout';
+import { getProjects, getConfig, getEnv, getLive, liveIsAuthoritative, notify, resolveApproval, putConfig, getTeamMembers, startScratchTerminal, killScratchTerminal, endTermSession, type SearchHit, type LiveSession } from '../lib/client/api';
+import { pruneDismissed, readDismissed, removeDismissed } from '../lib/client/dismissed';
+import { readTabLayout, persistTabLayout, orderByLayout, minimizedFromLayout, type TabLayoutEntry } from '../lib/client/tab-layout';
 import { openEventsSocket } from '../lib/client/ws';
 import type { EventMessage } from '../lib/client/ws';
 import TopNav from '../components/TopNav/TopNav';
@@ -375,14 +375,24 @@ function AppShell() {
   // would overwrite a perfectly good saved layout with `[]` — losing the order
   // for the next load, which would have restored it fine.
   const layoutLoadedRef = useRef(false);
+  // Keyed on 'term-<ptyId>' — the id REHYDRATE will regenerate — not on t.id.
+  // resumeToTerm converts a transcript tab into a live terminal in place and
+  // keeps its 'tab-<sessionId>' id, so persisting t.id wrote an entry rehydrate
+  // could never match: a resumed session the user had minimized came back
+  // un-minimized, appended last, and (being the final openTerm) stole focus.
+  const layoutEntries = state.tabs
+    .filter((t) => t.kind === 'term' && t.ptyId)
+    .map((t) => ({ id: 'term-' + t.ptyId, minimized: t.minimized === true }));
+  // The effect keys on this signature rather than on `state.tabs`: setTermStatus /
+  // setTermCtx / markUnviewed all map() over the tabs and hand back a fresh array
+  // on every events-hub tick, so a `state.tabs` dep re-ran this several times a
+  // second per live agent while only id/minimized — which change rarely — are
+  // actually persisted.
+  const layoutSig = JSON.stringify(layoutEntries);
   useEffect(() => {
     if (!layoutLoadedRef.current) return; // rehydrate owns the restore
-    writeTabLayout(
-      state.tabs
-        .filter((t) => t.kind === 'term')
-        .map((t) => ({ id: t.id, minimized: t.minimized === true })),
-    );
-  }, [state.tabs]);
+    persistTabLayout(JSON.parse(layoutSig) as TabLayoutEntry[]);
+  }, [layoutSig]);
 
   // Looking at a terminal IS acknowledging it — drop its pending "needs input"
   // toast on focus, not only when the next status event happens to arrive.
@@ -411,15 +421,26 @@ function AppShell() {
     // id (matched by cwd), not the raw path — bridge/session lookups key on it.
     // Tabs the user explicitly closed stay closed across reloads (the PTY is
     // still alive + in the rail; dismissal is a UI preference, localStorage).
-    Promise.all([getProjects(), getLive().catch(() => ({ live: [] as LiveSession[] }))])
-      .then(([projects, { live }]) => {
+    Promise.all([
+      getProjects(),
+      getLive().catch(() => ({ live: [] as LiveSession[], authoritative: false })),
+    ])
+      .then(([projects, liveRes]) => {
+        const { live } = liveRes;
         dispatch({ type: 'setProjects', projects });
-        // Prune first: a dismissal whose PTY is no longer alive has nothing left
-        // to suppress, and keeping it is what let a RECYCLED ptyId inherit it —
-        // a fresh daemon numbers from pty-1 again, so a long-dead `pty-1`
-        // dismissal silently hid the next session that was handed that id, on
-        // every single refresh. See lib/client/dismissed.ts.
-        const dismissed = pruneDismissed(live.map(dismissalKey));
+        // An empty live list means "nothing is running" ONLY when the server
+        // actually reached the daemon. On a boot that races the daemon (browser
+        // opened before the socket listens, a reload during a daemon relaunch)
+        // it means "unknown" — and pruning against it would delete state for
+        // sessions that are alive and about to reappear. Everything below that
+        // DESTROYS persisted state is gated on this.
+        const trustLive = liveIsAuthoritative(liveRes);
+        // Prune: a dismissal whose PTY is no longer alive has nothing left to
+        // suppress, and keeping it is what let a RECYCLED ptyId inherit it — a
+        // fresh daemon numbers from pty-1 again, so a long-dead `pty-1`
+        // dismissal silently hid the next session handed that id, on every
+        // single refresh. See lib/client/dismissed.ts.
+        const dismissed = trustLive ? pruneDismissed(live.map(dismissalKey)) : readDismissed();
         // Scratch shells never become their own tab — routeScratchLive splits them
         // out and maps each surviving one to its owner tab's right pane (matched by
         // ownerPtyId, or ownerTmuxName after a daemon-restart ptyId reassignment).
@@ -491,9 +512,23 @@ function AppShell() {
           live.some((s) => 'term-' + s.ptyId === savedActive && !dismissed.includes(dismissalKey(s)))
         ) {
           dispatch({ type: 'activateTab', id: savedActive });
+        } else if (minimized.length) {
+          // Land on a VISIBLE tab. openTerm activates each tab as it dispatches,
+          // so the active tab is whichever was opened last — and on StrictMode's
+          // second pass every openTerm takes the dedup branch, which sets
+          // activeTab WITHOUT clearing `minimized`, so that last tab can already
+          // be minimized (minimizeTab then no-ops on it). The result was an
+          // active session with no entry in the strip. Only engages when
+          // minimizing actually happened, so the ordinary path is untouched.
+          const visible = openedTabIds.filter((id) => !minimized.includes(id));
+          if (visible.length) dispatch({ type: 'activateTab', id: visible[visible.length - 1] });
         }
         activeLoadedRef.current = true;
-        layoutLoadedRef.current = true;
+        // Only arm layout persistence when the live list was the daemon's real
+        // answer — otherwise the first write (an empty or partial tab list)
+        // would overwrite the saved order and minimized flags for sessions that
+        // are actually alive, and the feature would silently self-destruct.
+        if (trustLive) layoutLoadedRef.current = true;
       })
       .catch(() => {
         // No daemon / getProjects failed → nothing to rehydrate, but persistence

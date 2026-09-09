@@ -13,6 +13,8 @@
 // ignored, and a live PTY missing from here still opens (appended at the end),
 // so a stale or absent entry degrades to today's behaviour instead of hiding a
 // terminal — the failure mode the dismissal list already taught us to avoid.
+import { persistDebounced } from './persist';
+
 const KEY = 'seshmux-tab-layout';
 
 export type TabLayoutEntry = { id: string; minimized: boolean };
@@ -36,6 +38,21 @@ export function writeTabLayout(entries: TabLayoutEntry[]): void {
   } catch {
     /* localStorage unavailable — layout just won't persist */
   }
+}
+
+/**
+ * Debounced flavour for the React effect. The effect keys on `state.tabs`, and
+ * the reducer hands back a NEW tabs array on every setTermStatus — a needs-input
+ * classification for any live session — so a synchronous write here would be a
+ * main-thread disk write landing repeatedly while xterm panes repaint. Same
+ * reasoning, and the same helper, as the drag-fed rail/split persists.
+ *
+ * Trailing edge: the last value always lands. Losing a reorder made in the final
+ * 250ms before the tab closes is the accepted trade (a stale layout entry is
+ * ignored on the next load, never shown as a tab).
+ */
+export function persistTabLayout(entries: TabLayoutEntry[]): void {
+  persistDebounced(KEY, JSON.stringify(entries));
 }
 
 /**
