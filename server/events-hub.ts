@@ -31,8 +31,10 @@ import { bindSessionFromWatch } from './lib/ledger-binding';
 import { scratchPtyIds as defaultScratchPtyIds } from './lib/scratch-store';
 import { handleScratchOnExit } from './lib/scratch';
 import { getProviders } from './lib/providers/types';
+import type { ProviderId } from './lib/store/scan';
 import { claudeStoreRoot, claudeSubagentWatchConfig } from './lib/providers/claude';
 import chokidar from 'chokidar';
+import { recordsDir as memoryRecordsDir } from './lib/memory/store';
 import fsSync from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -94,6 +96,15 @@ export interface EventsHub {
    */
   watchScratchpad(projectId: string, repoPath: string): void;
   /**
+   * Watch the memory store for out-of-process writes.
+   *
+   * Unlike the scratchpad watcher this is a SINGLE fixed location, but it is armed lazily
+   * for the same reason: no watcher exists until something is actually looking. The writes
+   * that need it come from the mcp-bridge (a separate process calling `remember`), which
+   * the hub cannot otherwise learn about.
+   */
+  watchMemory(): void;
+  /**
    * Close scratchpad + subagent watchers idle past the cutoff (default: last touched
    * over 15min ago); returns how many were closed. Runs automatically on a background
    * interval — exposed for tests and manual memory-pressure shedding. Re-opening a tab
@@ -152,11 +163,20 @@ export interface EventsHub {
 export interface EventsHubDeps {
   scratchPtyIds?: () => Promise<Set<string>>;
   onOwnerExit?: (ptyId: string) => Promise<void>;
+  /**
+   * Notified whenever a session file is created or appended to.
+   *
+   * The memory harvester hangs off this. It is a DEP rather than an import so the hub keeps
+   * knowing nothing about memory, and so the config read that gates harvesting stays in
+   * server/index.ts where config already lives. Must never throw — see the fan-out below.
+   */
+  onSessionActivity?: (provider: ProviderId, projectId: string, sessionId: string) => void;
 }
 
 export async function createEventsHub(deps: EventsHubDeps = {}): Promise<EventsHub> {
   const scratchIds = deps.scratchPtyIds ?? defaultScratchPtyIds;
   const onOwnerExit = deps.onOwnerExit ?? handleScratchOnExit;
+  const onSessionActivity = deps.onSessionActivity;
   const subscribers = new Set<WebSocket>();
   const statusByPty = new Map<string, NIStatus>();
   const niStateByPty = new Map<string, NIState>();
@@ -492,6 +512,13 @@ export async function createEventsHub(deps: EventsHubDeps = {}): Promise<EventsH
             .then((ps) => ps.find((p) => p.id === ev.provider)?.invalidateCache?.())
             .then(() => bindSessionFromWatch(ev.provider, ev.projectId, ev.sessionId))
             .catch(() => {});
+          // Memory harvest. Fire-and-forget and individually guarded: like the ledger
+          // binding above, nothing bolted onto this fan-out may disturb it.
+          try {
+            onSessionActivity?.(ev.provider, ev.projectId, ev.sessionId);
+          } catch (err) {
+            console.error('[memory] session-activity hook failed:', err);
+          }
         }
         broadcast(ev);
       },
@@ -580,6 +607,29 @@ export async function createEventsHub(deps: EventsHubDeps = {}): Promise<EventsH
       scratchpadWatched.set(projectId, w);
     } catch {
       /* watching unavailable — the tab still works via manual refetch */
+    }
+  }
+
+  // ── Memory watch: an agent's `remember` lands from the mcp-bridge process, so the only
+  //    way the UI learns about it is the filesystem. One watcher for the whole store,
+  //    armed on first use and never swept (it is a single cheap watch on one directory).
+  let memoryWatcher: { close(): Promise<void> } | null = null;
+  function watchMemory() {
+    if (memoryWatcher) return;
+    try {
+      const dir = memoryRecordsDir();
+      const w = chokidar.watch(dir, {
+        ignoreInitial: true,
+        depth: 0,
+        awaitWriteFinish: { stabilityThreshold: 200 },
+      });
+      const ping = () => broadcast({ event: 'memory' });
+      w.on('add', ping);
+      w.on('change', ping);
+      w.on('error', () => {});
+      memoryWatcher = w;
+    } catch {
+      /* watching unavailable — the panel still works via manual refetch */
     }
   }
 
@@ -819,6 +869,7 @@ export async function createEventsHub(deps: EventsHubDeps = {}): Promise<EventsH
     trackPty,
     getStatusExplain,
     watchScratchpad,
+    watchMemory,
     watchSubagents,
     watchTeam,
     sweepIdleWatchers,
