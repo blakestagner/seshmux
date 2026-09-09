@@ -191,8 +191,37 @@ export async function startServer({ port = 4700, host, dev = false }: { port?: n
   // the one failure mode the feature cannot recover from later.
   const memorySettings = (bootConfig?.settings ?? {}) as Record<string, unknown>;
   const memoryEnabled = memorySettings.memoryEnabled !== false;
+  // 'when a session ends' is the only mode that spends anything automatically, so it is
+  // opt-in and checked explicitly rather than by truthiness on a free-form setting.
+  const autoDistill = memorySettings.memoryDistillMode === 'when a session ends';
   harvester = memoryEnabled
-    ? createHarvester({ providers: getProviders, log: (msg, err) => err && console.error('[memory] ' + msg, err) })
+    ? createHarvester({
+        providers: getProviders,
+        log: (msg, err) => err && console.error('[memory] ' + msg, err),
+        onSessionComplete: autoDistill
+          ? (target) => {
+              // Detached: distillation runs headless agent calls and must never hold up
+              // the harvest queue, let alone the watch fan-out it hangs off.
+              void (async () => {
+                try {
+                  const { distillSession } = await import('./lib/memory/distill');
+                  const provider = (await getProviders()).find((pr) => pr.id === target.provider);
+                  if (!provider) return;
+                  await distillSession({
+                    provider,
+                    sessionId: target.session.id,
+                    projectId: target.session.projectId,
+                    repo: target.repo,
+                    branch: target.session.branch,
+                  });
+                  hub.emit({ event: 'memory', projectId: target.session.projectId });
+                } catch (err) {
+                  console.error('[memory] auto-distill failed:', err);
+                }
+              })();
+            }
+          : undefined,
+      })
     : null;
   if (harvester) {
     // Bounded pass over recent sessions so memory is not empty on first run. Detached and

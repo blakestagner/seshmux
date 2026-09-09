@@ -873,3 +873,107 @@ export function replaceInFiles(
     body: JSON.stringify({ project: projectId, branch, ...q, replacement, edits }),
   });
 }
+
+// ── Agent memory ────────────────────────────────────────────────────────────
+
+export type MemoryKind = 'prompt' | 'tool-call' | 'error' | 'artifact' | 'outcome' | 'decision' | 'lesson';
+export type MemoryScopeMode = 'project' | 'all';
+
+export interface MemoryRow {
+  id: string;
+  kind: MemoryKind;
+  text: string;
+  key?: string;
+  provider: ProviderId;
+  sessionId: string;
+  ts: number;
+  repo: string;
+  projectId: string;
+  branch: string | null;
+  files: string[];
+  commands: string[];
+  pinned: boolean;
+  hits: number;
+  superseded: boolean;
+  score: number;
+  /** Estimated tokens this row costs if loaded — drives the dropdown's live budget. */
+  tokens: number;
+}
+
+export interface MemoryQueryArgs {
+  q?: string;
+  project?: string;
+  scope?: MemoryScopeMode;
+  kind?: MemoryKind[];
+  provider?: ProviderId;
+  file?: string;
+  limit?: number;
+}
+
+export function searchMemory(args: MemoryQueryArgs, signal?: AbortSignal): Promise<{ rows: MemoryRow[]; total: number }> {
+  const params = new URLSearchParams();
+  if (args.q) params.set('q', args.q);
+  if (args.project) params.set('project', args.project);
+  if (args.scope) params.set('scope', args.scope);
+  if (args.kind?.length) params.set('kind', args.kind.join(','));
+  if (args.provider) params.set('provider', args.provider);
+  if (args.file) params.set('file', args.file);
+  if (args.limit) params.set('limit', String(args.limit));
+  return req(`/api/memory?${params}`, { signal });
+}
+
+/** Build the block to load into a session. Same composer the MCP tool uses server-side. */
+export function packMemory(
+  ids: string[],
+  opts: { budgetTokens?: number; scope?: MemoryScopeMode } = {},
+): Promise<{ text: string; used: number; budget: number; count: number }> {
+  return req('/api/memory/pack', { method: 'POST', body: JSON.stringify({ ids, ...opts }) });
+}
+
+export function createMemory(input: {
+  projectId: string;
+  text: string;
+  kind?: 'decision' | 'lesson';
+  key?: string;
+  files?: string[];
+  pin?: boolean;
+}): Promise<{ written: boolean; id?: string; superseded?: string[]; note?: string }> {
+  return req('/api/memory', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function updateMemory(id: string, patch: { pinned?: boolean; text?: string }): Promise<{ ok: true }> {
+  return req(`/api/memory/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+}
+
+export function deleteMemory(id: string): Promise<{ ok: true }> {
+  return req(`/api/memory/${id}`, { method: 'DELETE' });
+}
+
+export function distillMemory(input: {
+  projectId: string;
+  sessionId: string;
+  provider?: ProviderId;
+  branch?: string | null;
+}): Promise<{ facts: number; superseded: number; chunks: number; error?: string }> {
+  return req('/api/memory/distill', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export interface MemoryStats {
+  total: number;
+  pinned: number;
+  superseded: number;
+  byKind: Record<string, number>;
+  projects: number;
+  bytes: number;
+}
+
+export function memoryStats(): Promise<MemoryStats> {
+  return req('/api/memory/stats');
+}
+
+export function compactMemory(opts: { retentionDays?: number; maxRecords?: number } = {}): Promise<{
+  dropped: number;
+  kept: number;
+}> {
+  return req('/api/memory/compact', { method: 'POST', body: JSON.stringify(opts) });
+}

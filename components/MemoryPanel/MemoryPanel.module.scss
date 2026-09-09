@@ -1,0 +1,50 @@
+@use '../../styles/typography' as *;
+
+// Right-pane layout only. Filters and rows are composed from components/Memory.
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-panel);
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.empty {
+  @include t-sub;
+  margin: 0;
+  padding: 20px 14px;
+  color: var(--text-dim);
+}
+
+.compose {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.composeRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.note {
+  @include t-meta;
+  color: var(--text-dim);
+}
+
+.stats {
+  @include t-mono-micro;
+  margin-left: auto;
+  color: var(--text-faint);
+}

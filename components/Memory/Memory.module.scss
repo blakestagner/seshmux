@@ -1,0 +1,174 @@
+@use '../../styles/typography' as *;
+
+// Shared memory visuals: the filter cluster and one record row. Layout/spacing/state only —
+// all text styling comes from the t-* mixins (hard rule 1).
+
+.filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.autofocus {
+  display: contents;
+}
+
+.kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.kindChip {
+  @include t-chip;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.kindChip:hover {
+  border-color: var(--border-bright);
+  color: var(--text);
+}
+
+.kindOn {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+// ── row ─────────────────────────────────────────────────────────────────────
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.row:hover {
+  background: var(--bg-hover);
+}
+
+.rowOn {
+  background: var(--accent-soft);
+}
+
+.rowOn:hover {
+  background: var(--accent-soft);
+}
+
+// A superseded record is history, not current belief — dim it rather than hide it.
+.rowStale {
+  opacity: 0.55;
+}
+
+.check {
+  margin-top: 5px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.rowBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+
+.rowTop {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.glyph {
+  @include t-mono-micro-strong;
+  flex: none;
+  color: var(--text-dim);
+}
+
+// Kind identity. Errors read as a problem, distilled facts as the valuable ones; everything
+// else stays neutral so the list does not turn into a colour chart.
+.k_error {
+  color: var(--hot);
+}
+.k_decision,
+.k_lesson {
+  color: var(--accent);
+}
+
+.text {
+  @include t-row;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.textFull {
+  @include t-body;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.cite {
+  @include t-meta;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  color: var(--text-faint);
+}
+
+.pin {
+  color: var(--accent);
+}
+
+.stale {
+  color: var(--waiting);
+}
+
+.cost {
+  margin-left: auto;
+  color: var(--text-faint);
+}
+
+.rowActions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.act {
+  @include t-mono-micro;
+  padding: 2px 5px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.act:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}

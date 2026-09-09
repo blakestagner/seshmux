@@ -230,7 +230,7 @@ describe('POST /api/memory', () => {
 
   it('400s without a project or text, and 404s on an unknown project', async () => {
     const f = await build();
-    const post = (payload: unknown) => f.inject({ method: 'POST', url: '/api/memory', headers: { origin }, payload });
+    const post = (payload: Record<string, unknown>) => f.inject({ method: 'POST', url: '/api/memory', headers: { origin }, payload });
     expect((await post({ text: 'x' })).statusCode).toBe(400);
     expect((await post({ projectId: 'p1', text: '  ' })).statusCode).toBe(400);
     expect((await post({ projectId: 'nope', text: 'a real fact' })).statusCode).toBe(404);

@@ -40,6 +40,7 @@ import MeterBar from '../ui/MeterBar/MeterBar';
 import CtxBadge from '../ui/CtxBadge/CtxBadge';
 import Button from '../ui/Button/Button';
 import BridgeMenu from '../BridgeMenu/BridgeMenu';
+import MemoryMenu from '../MemoryMenu/MemoryMenu';
 import { PrChip, useSessionPrs } from '../PrLinks/PrLinks';
 import WorkspaceFinishPrompt from '../WorkspaceFinishPrompt/WorkspaceFinishPrompt';
 import styles from './TerminalPane.module.scss';
@@ -77,6 +78,12 @@ export type TerminalPaneProps = {
   onOpenChanges?: () => void;
   // Clicking the ports chip opens the listening-ports panel for this repo.
   onOpenPorts?: () => void;
+  // Agent memory (statusbar dropdown). refreshKey is bumped by {event:'memory'} so a
+  // `remember` written by an agent in another process appears without reopening.
+  onOpenMemory?: () => void;
+  memoryRefreshKey?: number;
+  memoryBudgetTokens?: number;
+  memorySubmitOnLoad?: boolean;
   // Clicking the `>_` chip opens (idempotently spawns) a scratch shell in this
   // session's cwd, in the right-pane tab strip. Absent → no chip (grid tiles,
   // and the scratch pane's own TerminalPane, which passes no owner context).
@@ -113,6 +120,10 @@ export default function TerminalPane({
   onOpenTeam,
   onOpenChanges,
   onOpenPorts,
+  onOpenMemory,
+  memoryRefreshKey,
+  memoryBudgetTokens,
+  memorySubmitOnLoad,
   onOpenTerminal,
   visible = true,
 }: TerminalPaneProps) {
@@ -879,6 +890,25 @@ export default function TerminalPane({
           <>
             <span className={styles.divider} aria-hidden="true" />
             <PrChip prs={prs} />
+          </>
+        ) : null}
+        {/* Memory dropdown: load what earlier sessions (either agent) learned into this
+            one. Single-pane only — a grid tile has no room for a picker, and the panel
+            covers that case. */}
+        {variant !== 'grid' && projectId ? (
+          <>
+            <span className={styles.divider} aria-hidden="true" />
+            <MemoryMenu
+              projectId={projectId}
+              // Undefined once the PTY is gone, which disables the load button rather
+              // than writing into a dead terminal.
+              onSend={status === 'live' ? (data) => sendRef.current?.(data) : undefined}
+              refreshKey={memoryRefreshKey}
+              budgetTokens={memoryBudgetTokens}
+              submitOnLoad={memorySubmitOnLoad}
+              onOpenPanel={onOpenMemory}
+              up
+            />
           </>
         ) : null}
         {/* Bridge actions cluster on the right, before the tail. In grid the

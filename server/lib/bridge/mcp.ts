@@ -294,8 +294,34 @@ export async function defaultResolveLivePty(project: string): Promise<{ ptyId: s
   }
 }
 
+/**
+ * Memory settings, read straight off disk.
+ *
+ * The mcp-bridge is a separate process with no web token, so it cannot ask the server for
+ * config. Reading the file is the same trick bridgeConfigDir() plays for the socket path.
+ * Synchronous and best-effort: a missing or malformed config means defaults, never a
+ * failure to start.
+ */
+export function readMemoryPrefs(): { approveWrites: boolean; budgetTokens: number } {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const raw = require('node:fs').readFileSync(join(bridgeConfigDir(), 'config.json'), 'utf8');
+    const settings = (JSON.parse(raw)?.settings ?? {}) as Record<string, unknown>;
+    const budget = Number(settings.memoryBudgetTokens);
+    return {
+      approveWrites: settings.memoryApproveWrites === true,
+      budgetTokens: Number.isFinite(budget) && budget > 0 ? budget : 1500,
+    };
+  } catch {
+    return { approveWrites: false, budgetTokens: 1500 };
+  }
+}
+
 function defaultBridgeDeps(): BridgeDeps {
+  const memory = readMemoryPrefs();
   return {
+    memoryApproval: memory.approveWrites,
+    memoryBudgetTokens: memory.budgetTokens,
     runAgent: defaultRunAgent,
     budget: Number(process.env.SESHMUX_HOP_BUDGET) || 10,
     approvalMode: true,

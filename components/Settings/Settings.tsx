@@ -6,6 +6,8 @@ import { useDetectedProviders } from '../../lib/client/providers';
 import {
   applyUpdate,
   checkUpdate,
+  compactMemory,
+  memoryStats,
   getEnv,
   getHooksStatus,
   getUsage,
@@ -65,6 +67,31 @@ function fmtCount(n: number): string {
 
 const HOP_BUDGETS = ['3 per task', '10 per task', '25 per task'];
 const CACHE_SIZES = ['10 most recent', '25 most recent', '50 most recent'];
+// Recall budget, phrased as what it protects rather than a raw number.
+const MEMORY_BUDGETS = ['750 tokens', '1500 tokens', '3000 tokens', '6000 tokens'];
+const DISTILL_MODES = ['off', 'manual only', 'when a session ends'];
+const MEMORY_RETENTION = ['30 days', '90 days', '1 year', 'forever'];
+
+function budgetLabelFor(v: unknown): string {
+  const n = Number(v);
+  const match = MEMORY_BUDGETS.find((b) => Number(b.replace(/\D/g, '')) === n);
+  return match ?? '1500 tokens';
+}
+
+// "forever" is expressed as a very large window rather than a special case, so the
+// retention path has exactly one shape.
+function retentionDaysFor(v: unknown): number {
+  switch (v) {
+    case '30 days':
+      return 30;
+    case '1 year':
+      return 365;
+    case 'forever':
+      return 36_500;
+    default:
+      return 90;
+  }
+}
 const SCROLLBACK = ['2,000 lines', '5,000 lines', '10,000 lines'];
 const SESSION_WINDOW = ['1 week', '2 weeks', '1 month'];
 const PERMISSION_MODES = ['default', 'plan', 'acceptEdits'];
@@ -151,6 +178,22 @@ export default function Settings() {
   const [updLog, setUpdLog] = useState('');
 
   const settings = state.config.settings as Record<string, unknown>;
+  // Memory store size, for the Compact row. Fetched once on open — a live count would
+  // mean polling a store that only changes when sessions run.
+  const [memoryTotal, setMemoryTotal] = useState<number | null>(null);
+  const [memoryBusy, setMemoryBusy] = useState(false);
+  const [memoryNote, setMemoryNote] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    memoryStats()
+      .then((s) => alive && setMemoryTotal(s.total))
+      .catch(() => alive && setMemoryTotal(null));
+    return () => {
+      alive = false;
+    };
+  }, [memoryBusy]);
+  const memoryStatsLabel =
+    memoryNote ?? (memoryTotal === null ? '—' : memoryTotal + ' records');
 
   // Full-page overlay: Escape closes it (mirrors the ← Back button).
   useEffect(() => {
@@ -514,6 +557,76 @@ export default function Settings() {
               value={(settings.sessionWindow as string) ?? '1 week'}
               onChange={(v) => persistSetting('sessionWindow', v)}
             />
+          </EnvRow>
+          <EnvRow
+            name="Agent memory"
+            sub="harvest what agents do, so later sessions can recall it"
+            subMono={false}
+          >
+            <Toggle
+              on={settings.memoryEnabled !== false}
+              onChange={(on) => persistSetting('memoryEnabled', on)}
+            />
+          </EnvRow>
+          <EnvRow name="Recall budget" sub="cap on what one recall may cost" subMono={false}>
+            <Select
+              options={MEMORY_BUDGETS}
+              value={budgetLabelFor(settings.memoryBudgetTokens)}
+              onChange={(v) => persistSetting('memoryBudgetTokens', Number(v.replace(/\D/g, '')))}
+            />
+          </EnvRow>
+          <EnvRow
+            name="Distil sessions"
+            sub="extract decisions and lessons with a headless agent call"
+            subMono={false}
+          >
+            <Select
+              options={DISTILL_MODES}
+              value={(settings.memoryDistillMode as string) ?? 'manual only'}
+              onChange={(v) => persistSetting('memoryDistillMode', v)}
+            />
+          </EnvRow>
+          <EnvRow
+            name="Submit on load"
+            sub="press Enter after loading, instead of staging the block for review"
+            subMono={false}
+          >
+            <Toggle
+              on={settings.memorySubmitOnLoad === true}
+              onChange={(on) => persistSetting('memorySubmitOnLoad', on)}
+            />
+          </EnvRow>
+          <EnvRow
+            name="Approve agent writes"
+            sub="prompt before an agent's remember is stored"
+            subMono={false}
+          >
+            <Toggle
+              on={settings.memoryApproveWrites === true}
+              onChange={(on) => persistSetting('memoryApproveWrites', on)}
+            />
+          </EnvRow>
+          <EnvRow name="Memory retention" sub="pinned and distilled facts never expire" subMono={false}>
+            <Select
+              options={MEMORY_RETENTION}
+              value={(settings.memoryRetention as string) ?? '90 days'}
+              onChange={(v) => persistSetting('memoryRetention', v)}
+            />
+          </EnvRow>
+          <EnvRow name="Stored memory" sub={memoryStatsLabel} subMono={false}>
+            <Button
+              disabled={memoryBusy}
+              title="Apply retention and the record cap now"
+              onClick={() => {
+                setMemoryBusy(true);
+                compactMemory({ retentionDays: retentionDaysFor(settings.memoryRetention) })
+                  .then((res) => setMemoryNote(`dropped ${res.dropped}, kept ${res.kept}`))
+                  .catch((err: unknown) => setMemoryNote(err instanceof Error ? err.message : 'compact failed'))
+                  .finally(() => setMemoryBusy(false));
+              }}
+            >
+              {memoryBusy ? 'compacting…' : 'Compact now'}
+            </Button>
           </EnvRow>
         </Section>
 

@@ -1,0 +1,93 @@
+@use '../../styles/typography' as *;
+
+// Positioning + the dropdown's own footer. Surface, items and row visuals come from
+// ui/Menu and components/Memory — this module never redraws them.
+
+.wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.menu {
+  top: calc(100% + 6px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 90vw);
+  max-height: min(60vh, 520px);
+  padding: 0;
+  overflow: hidden;
+}
+
+// The statusbar sits at the pane bottom, so open upward and hug the right edge — same as
+// BridgeMenu, which shares this row.
+.menu.up {
+  top: auto;
+  bottom: calc(100% + 6px);
+  left: auto;
+  right: 0;
+}
+
+.caret {
+  color: var(--text-dim);
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.empty {
+  @include t-sub;
+  margin: 0;
+  padding: 18px 14px;
+  color: var(--text-dim);
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+// The running cost of the selection, visible BEFORE it is spent — the reason this is a
+// picker rather than a "load everything" button.
+.budget {
+  @include t-mono-micro;
+  color: var(--text-dim);
+}
+
+.budgetOver {
+  @include t-mono-micro-strong;
+  color: var(--waiting);
+}
+
+.note {
+  @include t-meta;
+  color: var(--hot);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.link {
+  @include t-meta;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.link:hover {
+  color: var(--accent);
+}

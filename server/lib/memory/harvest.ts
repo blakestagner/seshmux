@@ -162,6 +162,14 @@ export interface HarvestDeps {
   /** Injectable so tests assert on what would be written without touching disk. */
   append?: (records: MemoryRecord[]) => Promise<MemoryRecord[]>;
   existingRecords?: () => Promise<MemoryRecord[]>;
+  /**
+   * Called once a session has been read to completion.
+   *
+   * The hook exists so auto-distillation can be driven by the harvester (which is the only
+   * thing that knows a session is finished) without harvest.ts importing distill.ts and
+   * dragging the agent-spawning path into the watch fan-out. Must never throw.
+   */
+  onSessionComplete?: (target: HarvestTarget) => void;
   log?: (msg: string, err?: unknown) => void;
 }
 
@@ -257,20 +265,27 @@ export async function harvestSession(
     return { harvested, slices, skipped: null };
   }
 
+  // "Complete" is only true for a session that is both finished and fully read —
+  // otherwise a restart would never pick the rest of it up.
+  const complete = done && !target.session.live;
+
   await getStore().update((cur) => ({
     ...cur,
     marks: {
       ...cur.marks,
-      [key]: {
-        offset,
-        at: now(),
-        mtime: target.session.mtime,
-        // "Complete" is only true for a session that is both finished and fully read —
-        // otherwise a restart would never pick the rest of it up.
-        complete: done && !target.session.live,
-      },
+      [key]: { offset, at: now(), mtime: target.session.mtime, complete },
     },
   }));
+
+  // Only on the transition into complete, and only when this pass actually read something:
+  // re-notifying on every later no-op visit would re-distil a finished session forever.
+  if (complete && !mark?.complete && harvested > 0) {
+    try {
+      deps.onSessionComplete?.(target);
+    } catch (err) {
+      log(`session-complete hook failed for ${key}`, err);
+    }
+  }
 
   return { harvested, slices, skipped: null };
 }
