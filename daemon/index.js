@@ -73,10 +73,29 @@ async function startDaemon(opts = {}) {
   const subscribers = new Set();
 
   // Fan PTY events out to every subscribed client.
+  //
+  // Every line here runs inside a PTY data|exit callback, outside
+  // handleMessage's try/catch, so an escape from this function reaches
+  // uncaughtException and would end EVERY live session. Nothing in it may
+  // throw: an encode failure drops that one event, and a write failure drops
+  // that one subscriber rather than aborting the fan-out to the rest.
   ptyManager.onEvent((event) => {
-    const frame = encode(event);
+    let frame;
+    try {
+      frame = encode(event);
+    } catch (err) {
+      process.stderr.write(
+        '[seshmuxd] un-encodable event for ' + (event && event.ptyId) + ': ' +
+          ((err && err.message) || err) + '\n'
+      );
+      return;
+    }
     for (const sock of subscribers) {
-      if (!sock.destroyed) sock.write(frame);
+      try {
+        if (!sock.destroyed) sock.write(frame);
+      } catch {
+        subscribers.delete(sock);
+      }
     }
   });
 
@@ -244,6 +263,18 @@ async function startDaemon(opts = {}) {
       server.removeListener('error', reject);
       resolve();
     });
+  });
+
+  // That removeListener left the RPC server with NO 'error' listener for the
+  // rest of its life. Node emits server-level errors on the ACCEPT path
+  // (EMFILE/ENFILE once file handles run out — documented on this project on
+  // Windows, where live PTYs and chokidar watchers compete for handles) while
+  // keeping the server up, and an EventEmitter that emits 'error' with no
+  // listener THROWS synchronously from inside Node internals. No per-request
+  // guard can catch that, and it would end every live session. Log and stay up:
+  // refusing one connection is survivable, losing every agent session is not.
+  server.on('error', (err) => {
+    process.stderr.write('[seshmuxd] server error: ' + ((err && err.stack) || err) + '\n');
   });
 
   // 0o600: the socket is created world-reachable-by-mode by default; lock it to
