@@ -406,6 +406,17 @@ describe('stripHeredocs', () => {
     expect(stripHeredocs(cmd)).toBe(["cat > a.js <<'MARK'", 'node a.js'].join('\n'));
   });
 
+  it('does not mistake a << inside a quoted string for a heredoc', () => {
+    // Unanchored, this swallowed everything after the grep and lost the npm test.
+    const cmd = "grep -n \"a << b\" src.cc\nnpm test";
+    expect(stripHeredocs(cmd)).toBe(cmd);
+  });
+
+  it('recognises a heredoc whose line ends in a redirect', () => {
+    const cmd = ["cat <<'EOF' > out.txt", "body line", "EOF", "node out.txt"].join("\n");
+    expect(stripHeredocs(cmd)).toBe(["cat <<'EOF' > out.txt", "node out.txt"].join("\n"));
+  });
+
   it('leaves a command with no heredoc alone', () => {
     expect(stripHeredocs('npm test && npm run build')).toBe('npm test && npm run build');
   });
@@ -432,6 +443,19 @@ describe('significantCommand', () => {
   it('names what RAN, not the cat that wrote it', () => {
     const cmd = ['SP=/tmp', 'mkdir -p "$SP"', "cat > \"$SP/p.js\" <<'EOF'", 'console.log(1)', 'EOF', 'node "$SP/p.js"'].join('\n');
     expect(significantCommand(cmd)).toBe('node "$SP/p.js"');
+  });
+
+  it('keeps an env-prefixed command — VAR=x cmd is a command, not an assignment', () => {
+    expect(significantCommand("PORT=4900 npm test && tail -5 out.log")).toBe("PORT=4900 npm test");
+  });
+
+  it('still skips a bare assignment, quoted value and all', () => {
+    expect(significantCommand("SP=\"/tmp/a b\"\nnode \"$SP/x.js\"")).toBe("node \"$SP/x.js\"");
+  });
+
+  it('falls back to ONE line when a script is nothing but scaffolding', () => {
+    // shortCommand only splits on &&/||/; so the whole script would come back otherwise.
+    expect(significantCommand("cd /c/repo\nexport X=1\necho hi")).toBe("cd /c/repo");
   });
 
   it('falls back to the first segment when a script is nothing but scaffolding', () => {
@@ -471,6 +495,24 @@ describe('hasErrorMessage', () => {
   it('does not count a bare exit code as a message', () => {
     expect(hasErrorMessage('Exit code 1')).toBe(false);
     expect(hasErrorMessage('Exit code 1\n5:import type { Msg } from "./x";')).toBe(false);
+  });
+
+  it('counts a build tool announcing failure in its own dialect', () => {
+    // Each of these fell to a bare exit code and was dropped as "says nothing".
+    expect(hasErrorMessage("Exit code 1\nnpm ERR! code ELIFECYCLE")).toBe(true);
+    expect(hasErrorMessage("Exit code 101\nerror[E0308]: mismatched types")).toBe(true);
+    expect(hasErrorMessage("Exit code 1\n./main.go:10:2: undefined: foo")).toBe(true);
+    expect(hasErrorMessage("Exit code 124\nCommand timed out after 2m 0.0s")).toBe(true);
+  });
+
+  it('does not read a grep -n hit as a compiler diagnostic', () => {
+    // grep prints file:line:text; a real diagnostic prints file:line:COL: text.
+    expect(hasErrorMessage("Exit code 1\ntypes.ts:126:  ): Promise<void>;")).toBe(false);
+  });
+
+  it('finds a reason past the first screen of output', () => {
+    const noise = Array.from({ length: 60 }, (_, i) => "  ok test case " + i).join("\n");
+    expect(hasErrorMessage("Exit code 1\n" + noise + "\nAssertionError: expected 1 to be 2")).toBe(true);
   });
 
   it('counts a real diagnostic', () => {

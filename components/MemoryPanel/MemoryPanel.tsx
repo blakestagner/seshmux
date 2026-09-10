@@ -88,15 +88,6 @@ export default function MemoryPanel({
     });
   };
 
-  // A record that has been forgotten (or filtered out of existence) must not keep
-  // costing budget in the footer, so reconcile the selection against what still exists.
-  useEffect(() => {
-    setSelected((cur) => {
-      const live = cur.filter((r) => search.rows.some((row) => row.id === r.id));
-      return live.length === cur.length ? cur : live;
-    });
-  }, [search.rows]);
-
   async function load() {
     if (!canLoad || selected.length === 0) return;
     // Resolved HERE, not at render: the writer comes and goes with the terminal socket,
@@ -123,7 +114,12 @@ export default function MemoryPanel({
         return;
       }
       const n = selected.length;
-      send(payload);
+      if (!send(payload)) {
+        // Registered but not writable: the socket is closed or mid-reconnect after a
+        // server update. Keep the selection so the user can simply try again.
+        setNote({ text: 'this terminal is not connected', error: true });
+        return;
+      }
       setSelected([]);
       setNote({ text: `loaded ${n} record${n === 1 ? '' : 's'} into the session`, error: false });
     } catch (err) {
@@ -160,7 +156,15 @@ export default function MemoryPanel({
   );
 
   const onPin = (row: MemoryRow) => act('pin', () => updateMemory(row.id, { pinned: !row.pinned }));
-  const onDelete = (row: MemoryRow) => act('forget', () => deleteMemory(row.id));
+  // Selection is held as ROWS and survives the query changing. Narrowing the search to
+  // find the next record to add is the normal way to use this panel, so reconciling the
+  // selection against what happens to be VISIBLE silently threw away earlier picks.
+  // Being forgotten is the one thing that should unselect a record, so do it here.
+  const onDelete = (row: MemoryRow) =>
+    act('forget', async () => {
+      await deleteMemory(row.id);
+      setSelected((cur) => cur.filter((r) => r.id !== row.id));
+    });
 
   const onRemember = () => {
     if (!projectId || !draft.trim()) return;
@@ -238,9 +242,9 @@ export default function MemoryPanel({
           <span className={over ? styles.budgetOver : styles.budget}>
             {selected.length} selected · {budgetLabel(used, budgetTokens)}
           </span>
-          <button type="button" className={styles.clear} onClick={() => setSelected([])}>
+          <Button variant="link" className={styles.clear} onClick={() => setSelected([])}>
             clear
-          </button>
+          </Button>
           <Button
             variant="primary"
             disabled={busy === 'load' || !canLoad}

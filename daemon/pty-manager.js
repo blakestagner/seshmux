@@ -495,6 +495,10 @@ class PtyManager {
   _wireProc(entry) {
     const { proc, ptyId } = entry;
     proc.onData((data) => {
+      // Drop a non-string chunk WHOLE. The ring guard alone was not enough: the event
+      // still went out, and routes/term.ts relays data by concatenation, so an undefined
+      // chunk printed the literal text "undefined" into the user's terminal.
+      if (typeof data !== 'string') return;
       this._appendRing(entry, data);
       this._emit({ event: 'data', ptyId, data });
     });

@@ -1,6 +1,6 @@
 'use client';
 
-// Search state shared by the statusbar dropdown and the right-pane panel.
+// Search state used by the right-pane memory panel.
 //
 // Built once and used by both, so the two surfaces cannot disagree about what "this repo"
 // means, how debouncing behaves, or which request wins a race. The alternative — each

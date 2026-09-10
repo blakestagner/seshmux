@@ -124,7 +124,9 @@ export function shortCommand(command: string): string {
 // thing that broke.
 const SCAFFOLD_SEGMENT = [
   /^cd\s/i,
-  /^[A-Za-z_][A-Za-z0-9_]*=/, // SP="..." and friends
+  // An assignment ONLY. `PORT=4900 npm test` is an env-prefixed command and naming the
+  // next segment instead would be the very misattribution this exists to prevent.
+  /^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s*$/,
   /^export\s+[A-Za-z_]/i,
   /^echo\b/i,
   /^set\s+[-+]/i,
@@ -135,17 +137,6 @@ const SCAFFOLD_SEGMENT = [
   /^(?:then|else|fi|do|done|;;)\b/,
 ];
 
-/**
- * The most informative command in a shell invocation.
- *
- * shortCommand() takes the FIRST segment, which is right for a one-liner and wrong for
- * the multi-line scripts agents actually run: those open with a `cd`, an assignment or a
- * heredoc, so the first segment names the scaffolding rather than the work. Prefer the
- * first segment that is neither, and fall back to shortCommand when a script is nothing
- * but scaffolding.
- *
- * Still a guess for a long script — the gist alongside it carries the actual failure.
- */
 /**
  * Drop heredoc BODIES from a shell command.
  *
@@ -162,7 +153,10 @@ export function stripHeredocs(command: string): string {
       continue;
     }
     // <<EOF, <<-EOF, <<"EOF", <<'EOF' — the quotes only affect expansion, not framing.
-    const open = line.match(/<<-?\s*[\'"]?([A-Za-z_][A-Za-z0-9_]*)[\'"]?/);
+    // Anchored to END of line. A real heredoc opener ends its line; an unanchored match
+    // treats a `<<` inside a quoted string (a C++ stream, a bit shift in a grep pattern)
+    // as an opener and swallows the whole rest of the command after it.
+    const open = line.match(/<<-?\s*[\'"]?([A-Za-z_][A-Za-z0-9_]*)[\'"]?(?:\s*[>|][^\n]*)?\s*$/);
     out.push(line);
     if (open) delim = open[1];
   }
@@ -189,7 +183,9 @@ export function significantCommand(command: string): string {
   const meaty = segments.find(
     (s) => !SCAFFOLD_SEGMENT.some((re) => re.test(s)),
   );
-  return shortCommand(meaty ?? command);
+  // Fall back to the FIRST LINE, not the whole script: shortCommand only splits on
+  // &&/||/;, so handing it a multi-line command returns a multi-line label.
+  return shortCommand(meaty ?? command.split(/\r?\n/)[0] ?? command);
 }
 
 /** First meaningful token of a shell command — `npm`, `git`, `cargo`. */
@@ -275,6 +271,15 @@ const ERROR_SIGNATURES: RegExp[] = [
   /\bPermission denied\b/i,
   EXIT_CODE_SIGNATURE,
   /^\s*error TS\d+:/im,
+  // Build tools that announce failure in their own dialect and match nothing above:
+  // npm lifecycle, rustc/go error codes, a compiler file:line:col diagnostic, and the
+  // harness timeout. Without these, every npm/cargo/go failure fell to a bare exit code
+  // and was dropped as "says nothing".
+  /^\s*npm ERR!/im,
+  /\berror\[[A-Z]?\d+\]/,
+  // file.ext:LINE:COL: — a column is required, so `grep -n` hits (file:line:text) miss.
+  /^[^\s:]+\.[A-Za-z]\w*:\d+:\d+: /im,
+  /\bCommand timed out\b/i,
   /<tool_use_error>/,
   // The classic unix "prog: what went wrong" line. Most real shell failures never print the
   // errno CODE, only its message — `rm: cannot remove 'x': Device or resource busy` contains
@@ -295,6 +300,12 @@ const EXPLICIT_ERROR = /<tool_use_error>/;
 // "errors" in the output of `sleep` and of a question containing the word EMFILE. A false
 // error record is worse than a missed one: it teaches the next agent something untrue.
 const ERROR_HEAD_CHARS = 600;
+
+// Wider window for finding the REASON, once something else has already established that
+// the call failed. The 600-char cap above guards a DECISION and has to stay tight; by
+// the time we are looking for a message the decision is made, and a test runner prints
+// a screen of passing lines before the assertion that matters.
+const MESSAGE_HEAD_CHARS = 4000;
 
 export interface ErrorScanOpts {
   /**
@@ -359,13 +370,13 @@ const MESSAGE_SIGNATURES = ERROR_SIGNATURES.filter(
  * records that do carry a lesson.
  */
 export function hasErrorMessage(output: string): boolean {
-  const head = output.slice(0, ERROR_HEAD_CHARS);
+  const head = output.slice(0, MESSAGE_HEAD_CHARS);
   return MESSAGE_SIGNATURES.some((re) => re.test(head));
 }
 
 /** The single most informative line of an error output. */
 export function errorGist(output: string): string {
-  const head = output.slice(0, ERROR_HEAD_CHARS);
+  const head = output.slice(0, MESSAGE_HEAD_CHARS);
   for (const re of ERROR_SIGNATURES) {
     const line = head.split("\n").find((l) => re.test(l));
     if (line && line.trim()) return line.trim().slice(0, ERROR_MAX);

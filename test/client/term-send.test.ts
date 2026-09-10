@@ -21,7 +21,7 @@ function track(off: () => void): () => void {
 describe('registerTermSend', () => {
   it('publishes a writer that can be resolved by ptyId', () => {
     const sent: string[] = [];
-    track(registerTermSend('pty-1', (d) => sent.push(d)));
+    track(registerTermSend('pty-1', (d) => { sent.push(d); return true; }));
 
     getTermSend('pty-1')!('hello');
     expect(sent).toEqual(['hello']);
@@ -38,8 +38,8 @@ describe('registerTermSend', () => {
   it('keeps writers for different PTYs apart', () => {
     const a: string[] = [];
     const b: string[] = [];
-    track(registerTermSend('pty-1', (d) => a.push(d)));
-    track(registerTermSend('pty-2', (d) => b.push(d)));
+    track(registerTermSend('pty-1', (d) => { a.push(d); return true; }));
+    track(registerTermSend('pty-2', (d) => { b.push(d); return true; }));
 
     getTermSend('pty-1')!('to-a');
     getTermSend('pty-2')!('to-b');
@@ -47,28 +47,41 @@ describe('registerTermSend', () => {
     expect(b).toEqual(['to-b']);
   });
 
+  // Being registered is not the same as being writable. A PTY can exit, or the socket can
+  // be mid-reconnect after a server update, while the entry still stands — so the writer
+  // reports delivery and a one-shot caller (the memory panel's Load) must check it rather
+  // than assume the paste landed.
+  it('reports a write that did not go out', () => {
+    let open = true;
+    track(registerTermSend("pty-1", () => open));
+
+    expect(getTermSend("pty-1")!("hi")).toBe(true);
+    open = false; // socket dropped, entry not yet withdrawn
+    expect(getTermSend("pty-1")!("hi")).toBe(false);
+  });
+
   it('unregisters on cleanup, so a closed socket stops looking writable', () => {
-    const off = registerTermSend('pty-1', () => {});
+    const off = registerTermSend('pty-1', () => true);
     expect(getTermSend('pty-1')).toBeDefined();
     off();
     expect(getTermSend('pty-1')).toBeUndefined();
   });
 
   it('is idempotent — unregistering twice is not an error', () => {
-    const off = registerTermSend('pty-1', () => {});
+    const off = registerTermSend('pty-1', () => true);
     off();
     expect(() => off()).not.toThrow();
     expect(getTermSend('pty-1')).toBeUndefined();
   });
 
-  // React can mount the replacement BEFORE the outgoing effect's cleanup runs, which is
-  // exactly what StrictMode does in dev. A blind delete on cleanup would then drop the
-  // live writer and leave the panel unable to load into a perfectly healthy terminal.
+  // Registration happens after the pane's dynamic import()s resolve, so a replaced
+  // instance's cleanup can land AFTER the fresh one registered. A blind delete would then
+  // drop the live writer and leave the panel unable to load into a healthy terminal.
   it('a late cleanup from a replaced registration does not evict the live one', () => {
     const stale: string[] = [];
     const fresh: string[] = [];
-    const offStale = registerTermSend('pty-1', (d) => stale.push(d));
-    track(registerTermSend('pty-1', (d) => fresh.push(d))); // remount, same ptyId
+    const offStale = registerTermSend('pty-1', (d) => { stale.push(d); return true; });
+    track(registerTermSend('pty-1', (d) => { fresh.push(d); return true; })); // remount, same ptyId
 
     offStale(); // the OLD effect's cleanup, arriving after the new registration
 
@@ -82,8 +95,8 @@ describe('registerTermSend', () => {
   it('a re-registration replaces the previous writer for that pty', () => {
     const first: string[] = [];
     const second: string[] = [];
-    track(registerTermSend('pty-1', (d) => first.push(d)));
-    track(registerTermSend('pty-1', (d) => second.push(d)));
+    track(registerTermSend('pty-1', (d) => { first.push(d); return true; }));
+    track(registerTermSend('pty-1', (d) => { second.push(d); return true; }));
 
     getTermSend('pty-1')!('x');
     expect(first).toEqual([]);

@@ -422,6 +422,12 @@ export default function TerminalPane({
           scheduleBackfill();
         },
         onExit: () => {
+          // Withdraw the writer HERE, not at unmount. The tab lives on after the PTY
+          // dies (tab.status never becomes done for a term tab — the events hub maps
+          // idle to live), so leaving the entry registered let the memory panel report
+          // a successful load into a terminal that had already exited.
+          unregisterSend?.();
+          unregisterSend = null;
           if (!disposed) {
             setStatus('done');
             setConnecting(false);
@@ -450,7 +456,7 @@ export default function TerminalPane({
       sendRef.current = (data: string) => socket?.send(data);
       // Publish the writer so the right pane can load memory into this session. Scoped
       // to the socket lifetime, so "a sender exists" means "this terminal is writable".
-      unregisterSend = registerTermSend(ptyId, (data: string) => socket?.send(data));
+      unregisterSend = registerTermSend(ptyId, (data: string) => socket?.send(data) ?? false);
 
       // Resize xterm to its container and tell the PTY.
       // RO fires per animation frame during a seam drag (grid workspace) — debounce

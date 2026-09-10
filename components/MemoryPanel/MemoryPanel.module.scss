@@ -47,15 +47,17 @@
   color: var(--text-dim);
 }
 
-// Loading bar: appears only once records are picked. It sits directly above .compose so
-// the two bottom bars stack as one footer rather than fighting for the same edge.
+// Loading bar: appears only once records are picked. It sits directly above .compose and
+// the two stack as ONE footer, so it takes no fill of its own — the panel root is
+// deliberately --bg to match its ChangesPanel/PortsPanel siblings (see the head of this
+// file), and a --bg-panel bar here was the only pure-white element in a beige light
+// theme. The border-top carries the separation, exactly as .compose does.
 .loadBar {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
   border-top: 1px solid var(--border);
-  background: var(--bg-panel);
   flex: 0 0 auto;
 }
 
@@ -72,19 +74,11 @@
   color: var(--waiting);
 }
 
+// Layout only — the button visual is ui/Button’s `link` variant.
 .clear {
-  @include t-meta;
   margin-left: auto;
-  padding: 0;
-  background: transparent;
-  border: none;
-  color: var(--text-dim);
-  cursor: pointer;
 }
 
-.clear:hover {
-  color: var(--accent);
-}
 .compose {
   display: flex;
   flex-direction: column;

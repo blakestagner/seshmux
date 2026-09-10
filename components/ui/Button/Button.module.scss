@@ -37,6 +37,22 @@
   color: var(--text);
 }
 
+// Text-link button: no border, no padding, no fill — just a label that reacts to hover.
+// For an action sitting beside a real button, where matching its weight would make the
+// two read as equals ("clear" next to "Load into session"). Re-includes a type mixin
+// because it must beat .btn’s t-row; that is the same shape .primary and .chip use.
+.link {
+  @include t-mono-micro;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-dim);
+}
+
+.link:hover:not(:disabled) {
+  color: var(--accent);
+}
+
 .btn:disabled {
   opacity: 0.5;
   cursor: default;

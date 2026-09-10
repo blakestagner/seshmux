@@ -162,6 +162,50 @@ async function pollFor(pred: () => Promise<boolean>, ms = 10_000): Promise<boole
   return pred();
 }
 
+/**
+ * Attach as a subscriber and collect the event frames the daemon pushes.
+ *
+ * The containment assertions below need a client's-eye view: surviving the frame is not
+ * enough if the daemon then relays the garbage onward. routes/term.ts appends `e.data`
+ * straight onto its output buffer, so an undefined chunk reaches the user's terminal as
+ * the literal text "undefined".
+ */
+function collectEvents(sockPath: string, ptyId: string, ms: number): Promise<any[]> {
+  return new Promise((resolve) => {
+    const events: any[] = [];
+    let buf = '';
+    const sock = net.connect(ipcPath(sockPath));
+    sock.setEncoding('utf8');
+    sock.on('connect', () =>
+      sock.write(JSON.stringify({ id: 1, method: 'attach', params: { ptyId } }) + '\n'),
+    );
+    sock.on('data', (chunk: string) => {
+      buf += chunk;
+      let i: number;
+      while ((i = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (!line) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (msg.event) events.push(msg);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+    sock.on('error', () => {});
+    setTimeout(() => {
+      try {
+        sock.destroy();
+      } catch {
+        /* ignore */
+      }
+      resolve(events);
+    }, ms);
+  });
+}
+
 describe('a malformed holder frame cannot kill the daemon', () => {
   let holder: net.Server | null = null;
   let daemon: ChildProcess | null = null;
@@ -235,6 +279,10 @@ describe('a malformed holder frame cannot kill the daemon', () => {
     expect(await pollFor(async () => (await hello(sockPath))?.ptyCount === 1)).toBe(true);
     expect(attached.length).toBeGreaterThan(0);
 
+    // Watch as a subscriber while the bad frames go through.
+    const collecting = collectEvents(sockPath, "pty-1", 1400);
+    await new Promise((r) => setTimeout(r, 200));
+
     // Frames a correct holder would never send. Each one used to be fatal.
     for (const frame of [
       { event: 'data' }, // data absent — the exact crash
@@ -250,6 +298,15 @@ describe('a malformed holder frame cannot kill the daemon', () => {
     const after = await hello(sockPath);
     expect(after).not.toBeNull();
     expect(after.ptyCount).toBe(1);
+
+    // Nothing garbled was relayed onward. The daemon surviving is only half of it:
+    // routes/term.ts appends `e.data` to its output buffer, so forwarding an undefined
+    // chunk would print the literal text "undefined" into the terminal.
+    const relayed = await collecting;
+    const bad = relayed.filter(
+      (e) => e.event === "data" && typeof e.data !== "string",
+    );
+    expect(bad).toEqual([]);
 
     // And the frame was CONTAINED, not caught on the way out the door.
     // uncaughtException keeps the process alive but leaves whatever it

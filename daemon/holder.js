@@ -51,8 +51,9 @@ const EXIT_GRACE_KNOWN_MS = 5 * 1000;
 // its shutdown handler, short enough that a closed tab frees its port promptly.
 const KILL_ESCALATION_MS = 2000;
 
-// The daemon's death must not be ours. (detached+stdio:'ignore' covers the fd
-// side; this covers the signal side.)
+// The daemon's death must not be ours. Being detached with no pipe back to it covers
+// the fd side (stdout/stderr go to a log FILE — see _spawnHolder); this covers the
+// signal side.
 process.on('SIGHUP', () => {});
 
 const spec = JSON.parse(process.argv[2] || '{}');
