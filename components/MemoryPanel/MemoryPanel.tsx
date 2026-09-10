@@ -235,19 +235,27 @@ export default function MemoryPanel({
         ))}
       </div>
 
-      {/* Loading bar: only present once something is picked, so the panel stays a
-          browser until you actually mean to spend context on it. */}
-      {selected.length > 0 ? (
+      {/* Loading bar. Always present once there is anything to load, because the common
+          intent is "take what this session worked out into the next one" — and having to
+          hunt for a checkbox to tick before the Load button even appears is a poor way to
+          ask for that. Empty-handed it offers to take the lot. */}
+      {search.rows.length > 0 ? (
         <div className={styles.loadBar}>
           <span className={over ? styles.budgetOver : styles.budget}>
-            {selected.length} selected · {budgetLabel(used, budgetTokens)}
+            {selected.length > 0
+              ? `${selected.length} selected · ${budgetLabel(used, budgetTokens)}`
+              : `${search.rows.length} shown`}
           </span>
-          <Button variant="link" className={styles.clear} onClick={() => setSelected([])}>
-            clear
+          <Button
+            variant="link"
+            className={styles.clear}
+            onClick={() => setSelected(selected.length > 0 ? [] : [...search.rows])}
+          >
+            {selected.length > 0 ? 'clear' : 'select all'}
           </Button>
           <Button
             variant="primary"
-            disabled={busy === 'load' || !canLoad}
+            disabled={busy === 'load' || !canLoad || selected.length === 0}
             title={
               !canLoad
                 ? 'this session is not live'
