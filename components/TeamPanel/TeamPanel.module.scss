@@ -32,13 +32,9 @@
   color: var(--text-faint);
 }
 
+// Tone only — the button reset is ui/Button’s `link` variant.
 .back {
-  @include t-meta;
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--accent);
-  cursor: pointer;
+  --btn-link-color: var(--accent);
 }
 
 .empty {

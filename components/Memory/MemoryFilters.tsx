@@ -1,7 +1,7 @@
 'use client';
 
-// The search + scope + kind cluster. Built once and composed by BOTH the statusbar dropdown
-// and the right-pane panel, so "this repo" cannot come to mean two different things.
+// The search + scope + kind cluster. Built once and composed by the memory panel, so
+// "this repo" cannot come to mean two different things across surfaces.
 
 import Segmented from '../ui/Segmented/Segmented';
 import TextInput from '../ui/TextInput/TextInput';

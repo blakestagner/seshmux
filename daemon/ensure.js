@@ -168,19 +168,60 @@ const sleep = (ms) =>
     setTimeout(r, ms);
   });
 
+// Cap for seshmuxd.log. Checked only at spawn time (rare), so this is a cheap
+// truncate rather than real rotation — the interesting lines are always the
+// most recent ones.
+const LOG_MAX_BYTES = 1_000_000;
+
+/**
+ * Open the daemon's log for append, returning an fd (or 'ignore' if the log
+ * can't be opened — logging must never block the daemon from starting).
+ *
+ * The daemon used to be spawned with stdio:'ignore', which meant that when it
+ * died there was NOTHING to look at: no stack, no exit reason, not even a
+ * "listening" line to prove it ever came up. A process that owns every live
+ * agent session has to be able to explain its own death.
+ */
+function openDaemonLog(dir) {
+  const logPath = path.join(dir, 'seshmuxd.log');
+  try {
+    if (fs.statSync(logPath).size > LOG_MAX_BYTES) fs.truncateSync(logPath, 0);
+  } catch {
+    /* no log yet — nothing to trim */
+  }
+  try {
+    return fs.openSync(logPath, 'a');
+  } catch {
+    return 'ignore';
+  }
+}
+
 /**
  * Spawn seshmuxd detached so it OUTLIVES this process (Ctrl-C / server update).
- * detached + stdio:'ignore' + unref() is the literal mechanism behind
- * update-safety — the child is not in our process group and we don't wait on it.
+ * detached + unref() + a stdio set that holds NO pipe to us is the literal
+ * mechanism behind update-safety — the child is not in our process group and we
+ * don't wait on it. stdout/stderr go to a log FILE (never a pipe back to this
+ * process, which would tie the child's lifetime to ours and defeat the point).
  */
 function spawnDaemon(dir) {
   const daemonEntry = path.join(__dirname, 'index.js');
+  const log = openDaemonLog(dir);
   const child = spawn(process.execPath, [daemonEntry], {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', log, log],
     windowsHide: true, // win32: detached would otherwise open a console window
     env: { ...process.env, SESHMUX_CONFIG_DIR: dir },
   });
+  // spawn() has already dup'd the fd into the child, so this process must drop
+  // its own handle — otherwise the launcher pins the log file open for its whole
+  // life (and on win32 that blocks anything trying to remove the config dir).
+  if (typeof log === 'number') {
+    try {
+      fs.closeSync(log);
+    } catch {
+      /* already closed */
+    }
+  }
   child.unref();
   return child;
 }

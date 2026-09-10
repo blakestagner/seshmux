@@ -1,7 +1,7 @@
 'use client';
 
-// One memory record, as a row. Shared by the dropdown and the panel; the panel passes
-// `expanded` for the full body and the curate actions.
+// One memory record, as a row. `expanded` gives the full body and the curate actions;
+// `onToggle` makes it selectable for loading into a session.
 //
 // The citation is not decoration. Recalled text was written by an earlier agent run, and
 // seeing which agent, which repo and when is what makes a claim checkable rather than
@@ -38,10 +38,10 @@ export type MemoryRowItemProps = {
   selected?: boolean;
   onToggle?: (id: string) => void;
   expanded?: boolean;
-  /** Shown only in the panel — the dropdown is for loading, not curating. */
+  /** Curate actions. Present in the panel, which is the only surface that has them. */
   onPin?: (row: MemoryRow) => void;
   onDelete?: (row: MemoryRow) => void;
-  /** Show the repo in the citation. On by default; the dropdown hides it when repo-scoped. */
+  /** Show the repo in the citation. On by default; hidden when the search is repo-scoped. */
   showRepo?: boolean;
 };
 
@@ -89,8 +89,8 @@ export default function MemoryRowItem({
         </span>
       ) : null}
 
-      {/* A control only where it does something. In the panel there is nothing to select,
-          so a button here would be a focusable no-op in every row. */}
+      {/* A control only where it does something: without onToggle a button here would be
+          a focusable no-op in every row. */}
       {onToggle ? (
         <button type="button" className={styles.rowBody} onClick={() => onToggle(row.id)} title={expanded ? undefined : row.text}>
           {body}

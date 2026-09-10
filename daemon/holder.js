@@ -51,13 +51,27 @@ const EXIT_GRACE_KNOWN_MS = 5 * 1000;
 // its shutdown handler, short enough that a closed tab frees its port promptly.
 const KILL_ESCALATION_MS = 2000;
 
-// The daemon's death must not be ours. (detached+stdio:'ignore' covers the fd
-// side; this covers the signal side.)
+// The daemon's death must not be ours. Being detached with no pipe back to it covers
+// the fd side (stdout/stderr go to a log FILE — see _spawnHolder); this covers the
+// signal side.
 process.on('SIGHUP', () => {});
 
 const spec = JSON.parse(process.argv[2] || '{}');
 const { holderDir, ptyId, sock: sockPath, cwd, args, cols, rows, env } = spec;
 const jsonPath = path.join(holderDir, ptyId + '.json');
+
+// This process owns exactly ONE agent PTY, and node-pty throws from inside its
+// own socket 'error' callbacks (windowsTerminal.js / unixTerminal.js), outside
+// every try/catch here. The daemon grew both crash nets; the holder had
+// NEITHER — and on a machine without tmux the holder, not the daemon, is what
+// owns every node-pty, so the real PTY-crash path was the one left unprotected.
+// Staying up keeps the session usable and the exit code deliverable.
+process.on('uncaughtException', (err) => {
+  process.stderr.write('[holder ' + ptyId + '] uncaught exception: ' + ((err && err.stack) || err) + '\n');
+});
+process.on('unhandledRejection', (reason) => {
+  process.stderr.write('[holder ' + ptyId + '] unhandled rejection: ' + reason + '\n');
+});
 
 // win32: CreateProcess can't run .cmd/.bat shims (npm installs agent CLIs as
 // exactly those) — route them through the command interpreter, with args quoted

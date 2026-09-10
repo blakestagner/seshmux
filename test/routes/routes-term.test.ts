@@ -128,6 +128,22 @@ describe('GET /api/sessions/live', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().live).toEqual([]);
   });
+
+  // An empty list means "nothing running" ONLY when the daemon actually
+  // answered. Clients that PRUNE persisted state against this list (tab layout,
+  // tab dismissals) need to tell that apart from "I could not ask", or a boot
+  // that races the daemon deletes state for sessions that are alive.
+  it('flags an unreachable daemon as NOT authoritative', async () => {
+    const f = makeApp({ dialFn: (async () => { throw new Error('ECONNREFUSED'); }) as never });
+    const res = await f.inject({ method: 'GET', url: '/api/sessions/live' });
+    expect(res.json().authoritative).toBe(false);
+  });
+
+  it('flags a real daemon answer as authoritative, even when it is empty', async () => {
+    const f = makeApp({ dialFn: (async () => fakeDaemon([])) as never });
+    const res = await f.inject({ method: 'GET', url: '/api/sessions/live' });
+    expect(res.json()).toEqual({ live: [], authoritative: true });
+  });
 });
 
 // Scratch annotation (scratch-terminal Spec, Stage 3): getLive marks scratch PTYs

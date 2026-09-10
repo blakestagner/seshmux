@@ -37,7 +37,7 @@ export function memoryPaste(text: string, opts: MemoryPasteOpts = {}): string {
   return PASTE_START + body + PASTE_END + (opts.submit ? CR : '');
 }
 
-/** Human-readable summary for the dropdown footer: "~420 tok of 1500". */
+/** Human-readable summary for the panel footer: "~420 tok of 1500". */
 export function budgetLabel(used: number, budget: number): string {
   return `~${used} tok of ${budget}`;
 }

@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { getTeamMembers } from '../../lib/client/api';
 import type { TeamInfo, TeamMemberInfo } from '../../lib/client/api';
+import Button from '../ui/Button/Button';
 import Transcript from '../Transcript/Transcript';
 import StatusDot from '../ui/StatusDot/StatusDot';
 import styles from './TeamPanel.module.scss';
@@ -159,9 +160,9 @@ export default function TeamPanel({
     return (
       <div className={styles.panel}>
         <div className={styles.head}>
-          <button type="button" className={styles.back} onClick={() => setOpenMember(null)}>
+          <Button variant="link" className={styles.back} onClick={() => setOpenMember(null)}>
             ← Roster
-          </button>
+          </Button>
         </div>
         {openMember.sessionId ? (
           <div className={styles.transcriptWrap}>

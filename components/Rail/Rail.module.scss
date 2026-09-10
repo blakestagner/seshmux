@@ -354,20 +354,16 @@
   font-style: italic;
 }
 
+// Layout + tone only — the button reset is ui/Button’s `link` variant. The left pad
+// indents it under the session rows it extends.
 .loadMore {
-  @include t-mono-micro;
+  --btn-link-color: var(--text-faint);
+  --btn-link-pad: 8px 10px 2px 27px;
   display: block;
   margin: 0;
-  padding: 8px 10px 2px 27px;
-  color: var(--text-faint);
   text-align: left;
-  background: transparent;
-  border: none;
 }
 
-.loadMore:hover {
-  color: var(--accent);
-}
 
 // Open-sessions panel (VS Code Outline-style) pinned under the project list.
 // Height is inline (drag-resized); the project list above keeps flex:1 +

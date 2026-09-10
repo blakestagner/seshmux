@@ -11,6 +11,7 @@ import type {
   PrRef,
 } from './types';
 import { dismissalKey } from './store';
+import { addDismissed, removeDismissed } from './dismissed';
 
 // Per-process auth token embedded in the served HTML (Task 6.5). Sent on every /api/*
 // call; the server 401s without it. WS clients read the same global for their query param.
@@ -234,8 +235,18 @@ export type LiveSession = {
   ownerTmuxName?: string | null;
 };
 
-export function getLive(): Promise<{ live: LiveSession[] }> {
+// `authoritative` is false when the server could not actually ask the daemon
+// (not up yet / mid-relaunch), in which case `live` is an empty list that means
+// "unknown", NOT "nothing is running". Callers that PRUNE state against this
+// list must check it. Absent on a server predating the field → treat as true,
+// which is exactly the old behaviour.
+export function getLive(): Promise<{ live: LiveSession[]; authoritative?: boolean }> {
   return req('/api/sessions/live');
+}
+
+/** The live list is safe to prune persisted client state against. */
+export function liveIsAuthoritative(r: { authoritative?: boolean }): boolean {
+  return r.authoritative !== false;
 }
 
 // ── Scratch terminal (a plain shell bound to a session's cwd) ────────────────
@@ -265,17 +276,26 @@ export function killTerminal(ptyId: string): Promise<void> {
 // Both call sites route through here so they can't drift apart: record the
 // dismissal first (if the kill fails, boot rehydrate must not reopen the tab),
 // then kill. Never throws — the tab closes regardless.
+//
+// RELEASE THE DISMISSAL ONCE THE KILL LANDS. The entry only has to cover the
+// window where the PTY is closed-but-not-yet-dead; past that it is pure
+// liability, because daemon ptyIds are recycled (a fresh daemon numbers from
+// pty-1 again, and with no tmux the dismissal key IS the ptyId). A permanent
+// entry therefore blacklisted that slot forever: the next session handed
+// `pty-1` was skipped by boot rehydrate and a terminal the user never closed
+// disappeared on every refresh. A FAILED kill keeps its entry — that PTY is
+// still alive and must still not be reopened; the boot-time pruneDismissed()
+// clears it once it really dies.
 export function endTermSession(tab: { kind: string; ptyId?: string; tmuxName?: string | null }): void {
   if (tab.kind !== 'term' || !tab.ptyId) return;
-  try {
-    const key = 'seshmux-dismissed-ptys';
-    const id = dismissalKey(tab); // tmuxName ?? ptyId — survives daemon restart
-    const cur: string[] = JSON.parse(localStorage.getItem(key) || '[]');
-    if (!cur.includes(id)) localStorage.setItem(key, JSON.stringify([...cur, id]));
-  } catch {
-    /* localStorage unavailable — dismissal just won't persist */
-  }
-  void killTerminal(tab.ptyId).catch(() => {});
+  const id = dismissalKey(tab); // tmuxName ?? ptyId — survives daemon restart
+  addDismissed(id);
+  void killTerminal(tab.ptyId).then(
+    () => removeDismissed(id),
+    () => {
+      /* kill failed — PTY still live, keep suppressing it */
+    },
+  );
 }
 
 // ── Agent bridge (Task 16.5 handoff/review, 16.8 plan-off) ──────────────────

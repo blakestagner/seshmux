@@ -6,7 +6,9 @@ import styles from './Button.module.scss';
 export type ButtonProps = {
   // 'chip' = compact bordered mono pill (terminal statusbar actions) — distinct
   // from default/primary/ghost's body-text button visual.
-  variant?: 'default' | 'primary' | 'ghost' | 'chip';
+  // 'link' = a label with no chrome, for an action that must not compete with a real
+  // button beside it. TeamPanel/Rail/PrLinks each hand-rolled this; they should move here.
+  variant?: 'default' | 'primary' | 'ghost' | 'chip' | 'link';
   disabled?: boolean;
   title?: string;
   className?: string;

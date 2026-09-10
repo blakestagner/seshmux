@@ -73,10 +73,29 @@ async function startDaemon(opts = {}) {
   const subscribers = new Set();
 
   // Fan PTY events out to every subscribed client.
+  //
+  // Every line here runs inside a PTY data|exit callback, outside
+  // handleMessage's try/catch, so an escape from this function reaches
+  // uncaughtException and would end EVERY live session. Nothing in it may
+  // throw: an encode failure drops that one event, and a write failure drops
+  // that one subscriber rather than aborting the fan-out to the rest.
   ptyManager.onEvent((event) => {
-    const frame = encode(event);
+    let frame;
+    try {
+      frame = encode(event);
+    } catch (err) {
+      process.stderr.write(
+        '[seshmuxd] un-encodable event for ' + (event && event.ptyId) + ': ' +
+          ((err && err.message) || err) + '\n'
+      );
+      return;
+    }
     for (const sock of subscribers) {
-      if (!sock.destroyed) sock.write(frame);
+      try {
+        if (!sock.destroyed) sock.write(frame);
+      } catch {
+        subscribers.delete(sock);
+      }
     }
   });
 
@@ -246,6 +265,18 @@ async function startDaemon(opts = {}) {
     });
   });
 
+  // That removeListener left the RPC server with NO 'error' listener for the
+  // rest of its life. Node emits server-level errors on the ACCEPT path
+  // (EMFILE/ENFILE once file handles run out — documented on this project on
+  // Windows, where live PTYs and chokidar watchers compete for handles) while
+  // keeping the server up, and an EventEmitter that emits 'error' with no
+  // listener THROWS synchronously from inside Node internals. No per-request
+  // guard can catch that, and it would end every live session. Log and stay up:
+  // refusing one connection is survivable, losing every agent session is not.
+  server.on('error', (err) => {
+    process.stderr.write('[seshmuxd] server error: ' + ((err && err.stack) || err) + '\n');
+  });
+
   // 0o600: the socket is created world-reachable-by-mode by default; lock it to
   // the owner so only this user's processes can drive the daemon.
   try {
@@ -276,6 +307,21 @@ if (require.main === module) {
   // Log-and-continue; the JSON-RPC layer already catches per-request errors.
   process.on('unhandledRejection', (reason) => {
     process.stderr.write('[seshmuxd] unhandled rejection: ' + reason + '\n');
+  });
+  // Same net, same reason, for the SYNCHRONOUS half. A throw from any callback
+  // this process owns — a node-pty event handler, an fs callback, a socket
+  // handler outside the per-request try — defaults to killing the process, and
+  // this process holds every live PTY: one throw would end every agent session
+  // at once. That is precisely the failure seshmuxd exists to prevent, so the
+  // rejection guard above was only ever half the job.
+  //
+  // Staying up after an uncaught exception can leave state inconsistent. That is
+  // the deliberate trade: a possibly-degraded daemon still owning live sessions
+  // beats a dead one that certainly took them all with it, and every RPC is
+  // already individually try/caught (see onMessage) so the damage is contained
+  // to whatever was in flight.
+  process.on('uncaughtException', (err) => {
+    process.stderr.write('[seshmuxd] uncaught exception: ' + ((err && err.stack) || err) + '\n');
   });
   startDaemon().then(
     ({ sockPath }) => {

@@ -11,8 +11,11 @@ import {
   extract,
   extractPaths,
   extractSymbols,
+  hasErrorMessage,
   isMemoryEcho,
   looksLikeError,
+  significantCommand,
+  stripHeredocs,
   toolTarget,
   type ExtractCtx,
 } from '../../server/lib/memory/extract';
@@ -383,5 +386,211 @@ describe('extract — cross-provider, against real fixtures', () => {
     const rs = extract(msgs, ctx({ provider: 'codex' }));
     expect(texts(rs).some((t) => t.includes('environment_context'))).toBe(false);
     expect(texts(rs).some((t) => t.includes('permissions'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error-record QUALITY. Harvesting a real store surfaced 70 error records of which
+// most taught nothing: `cd /c/Users/...` failed, `echo "=== node/npm ==="` failed,
+// `grep -n foo bar.ts` failed: Exit code 1, and a build log line reading
+// "fatal errors: 0" recorded as a fatal. Each case below is one of those.
+
+describe('stripHeredocs', () => {
+  it('drops the body a heredoc inlines into the command', () => {
+    const cmd = ['cat > patch.js <<EOF', 'const x = 1;', 'rm -rf /oops', 'EOF', 'node patch.js'].join('\n');
+    expect(stripHeredocs(cmd)).toBe(['cat > patch.js <<EOF', 'node patch.js'].join('\n'));
+  });
+
+  it('handles the quoted delimiter form', () => {
+    const cmd = ["cat > a.js <<'MARK'", 'body', 'MARK', 'node a.js'].join('\n');
+    expect(stripHeredocs(cmd)).toBe(["cat > a.js <<'MARK'", 'node a.js'].join('\n'));
+  });
+
+  it('does not mistake a << inside a quoted string for a heredoc', () => {
+    // Unanchored, this swallowed everything after the grep and lost the npm test.
+    const cmd = "grep -n \"a << b\" src.cc\nnpm test";
+    expect(stripHeredocs(cmd)).toBe(cmd);
+  });
+
+  it('is decided by quoting, not by what follows the delimiter', () => {
+    // Anchoring to end-of-line was wrong both ways: it still ate this...
+    const quoted = "grep -rn \"x << y\"\nnpm test";
+    expect(stripHeredocs(quoted)).toBe(quoted);
+    // ...while rejecting real openers that carry a suffix.
+    const redirected = ["cat <<'EOF' 2>&1", "body", "EOF", "npm test"].join("\n");
+    expect(stripHeredocs(redirected)).toBe(["cat <<'EOF' 2>&1", "npm test"].join("\n"));
+    const chained = ["cat <<'EOF' && npm test", "body", "EOF"].join("\n");
+    expect(stripHeredocs(chained)).toBe("cat <<'EOF' && npm test");
+  });
+
+  it('accepts a dash in the delimiter', () => {
+    const cmd = ["cat <<'END-OF'", "body", "END-OF", "npm test"].join("\n");
+    expect(stripHeredocs(cmd)).toBe(["cat <<'END-OF'", "npm test"].join("\n"));
+  });
+
+  it('recognises a heredoc whose line ends in a redirect', () => {
+    const cmd = ["cat <<'EOF' > out.txt", "body line", "EOF", "node out.txt"].join("\n");
+    expect(stripHeredocs(cmd)).toBe(["cat <<'EOF' > out.txt", "node out.txt"].join("\n"));
+  });
+
+  it('leaves a command with no heredoc alone', () => {
+    expect(stripHeredocs('npm test && npm run build')).toBe('npm test && npm run build');
+  });
+
+  it('tolerates an unterminated heredoc rather than losing the whole command', () => {
+    const cmd = ['echo hi', 'cat > a <<EOF', 'never closed'].join('\n');
+    expect(stripHeredocs(cmd)).toBe(['echo hi', 'cat > a <<EOF'].join('\n'));
+  });
+});
+
+describe('significantCommand', () => {
+  it('skips a leading cd — the script did not fail because of it', () => {
+    expect(significantCommand('cd /repo && npm test')).toBe('npm test');
+  });
+
+  it('skips a variable assignment', () => {
+    expect(significantCommand('SP="/tmp/x"\nnode "$SP/run.js"')).toBe('node "$SP/run.js"');
+  });
+
+  it('skips an echo banner', () => {
+    expect(significantCommand('echo "=== node/npm ==="\nnpm run tokens:check')).toBe('npm run tokens:check');
+  });
+
+  it('names what RAN, not the cat that wrote it', () => {
+    const cmd = ['SP=/tmp', 'mkdir -p "$SP"', "cat > \"$SP/p.js\" <<'EOF'", 'console.log(1)', 'EOF', 'node "$SP/p.js"'].join('\n');
+    expect(significantCommand(cmd)).toBe('node "$SP/p.js"');
+  });
+
+  it('keeps an env-prefixed command — VAR=x cmd is a command, not an assignment', () => {
+    expect(significantCommand("PORT=4900 npm test && tail -5 out.log")).toBe("PORT=4900 npm test");
+  });
+
+  it('skips an assignment whose value has spaces inside $( ) or ( )', () => {
+    // `\S*` stopped at the first space, so these read as commands and the record
+    // was labelled with the assignment instead of what actually ran.
+    expect(significantCommand("ROOT=$(git rev-parse --show-toplevel)\nnpm test")).toBe("npm test");
+    expect(significantCommand("FILES=(a b c)\nnpm run build")).toBe("npm run build");
+    expect(significantCommand("X=1 # why\nnpm test")).toBe("npm test");
+  });
+
+  it('still skips a bare assignment, quoted value and all', () => {
+    expect(significantCommand("SP=\"/tmp/a b\"\nnode \"$SP/x.js\"")).toBe("node \"$SP/x.js\"");
+  });
+
+  it('falls back to ONE line when a script is nothing but scaffolding', () => {
+    // shortCommand only splits on &&/||/; so the whole script would come back otherwise.
+    expect(significantCommand("cd /c/repo\nexport X=1\necho hi")).toBe("cd /c/repo");
+  });
+
+  it('falls back to the first segment when a script is nothing but scaffolding', () => {
+    expect(significantCommand('cd /repo && cd /other')).toBe('cd /repo');
+  });
+
+  it('skips a sleep used to wait for a server to come up', () => {
+    expect(significantCommand("sleep 14; netstat -ano | grep 4700")).toBe("netstat -ano | grep 4700");
+  });
+
+  it('is unchanged for an ordinary one-liner', () => {
+    expect(significantCommand('npm run build')).toBe('npm run build');
+  });
+});
+
+describe('looksLikeError — the harness verdict wins', () => {
+  it('trusts an explicit failure even when the output reads clean', () => {
+    expect(looksLikeError('done.', { executed: true, isError: true })).toBe(true);
+  });
+
+  // The two false positives that actually shipped: a grep HIT containing "can't", and a
+  // build log reporting zero fatals. Both are successful commands printing error-shaped text.
+  it('trusts an explicit success over error-shaped output', () => {
+    expect(looksLikeError("248: // can't resize here", { executed: true, isError: false })).toBe(false);
+    expect(looksLikeError('fatal errors: 0', { executed: true, isError: false })).toBe(false);
+  });
+
+  it('falls back to the signatures when the provider says nothing', () => {
+    expect(looksLikeError('Error: cannot find module', { executed: true })).toBe(true);
+    expect(looksLikeError('all good', { executed: true })).toBe(false);
+  });
+});
+
+describe('hasErrorMessage', () => {
+  // The harness prefixes EVERY failed shell result with "Exit code N", so treating that as
+  // a message meant every failure qualified — including grep reporting "no match" that way.
+  it('does not count a bare exit code as a message', () => {
+    expect(hasErrorMessage('Exit code 1')).toBe(false);
+    expect(hasErrorMessage('Exit code 1\n5:import type { Msg } from "./x";')).toBe(false);
+  });
+
+  it('counts a build tool announcing failure in its own dialect', () => {
+    // Each of these fell to a bare exit code and was dropped as "says nothing".
+    expect(hasErrorMessage("Exit code 1\nnpm ERR! code ELIFECYCLE")).toBe(true);
+    expect(hasErrorMessage("Exit code 101\nerror[E0308]: mismatched types")).toBe(true);
+    expect(hasErrorMessage("Exit code 1\n./main.go:10:2: undefined: foo")).toBe(true);
+    expect(hasErrorMessage("Exit code 124\nCommand timed out after 2m 0.0s")).toBe(true);
+  });
+
+  it('does not read a grep -n hit as a compiler diagnostic', () => {
+    // grep prints file:line:text; a real diagnostic prints file:line:COL: text.
+    expect(hasErrorMessage("Exit code 1\ntypes.ts:126:  ): Promise<void>;")).toBe(false);
+  });
+
+  // Deliberately NOT scanned to the end. A command leads with its error; error-shaped
+  // text deep in the output is usually CONTENT — a `git diff --exit-code` whose diff
+  // body happens to contain `throw new TypeError(...)` exits non-zero and would
+  // otherwise be recorded as having thrown one. A missed record beats a false one.
+  it('does not go hunting past the first screen for something error-shaped', () => {
+    const diff =
+      "Exit code 1\n" +
+      "+  const x = 1;\n".repeat(40) +
+      "+  throw new TypeError(\"bad\");";
+    expect(diff.length).toBeGreaterThan(600);
+    expect(hasErrorMessage(diff)).toBe(false);
+  });
+
+  it('takes the FIRST failing line, not the first matching signature', () => {
+    // Output is chronological: the earliest diagnostic is the cause, the rest is fallout.
+    const out = [
+      "Exit code 1",
+      "rm: cannot remove 'x': Device or resource busy",
+      "Error: later and less useful"
+    ].join("\n");
+    expect(errorGist(out)).toBe("rm: cannot remove 'x': Device or resource busy");
+  });
+
+  it('counts a real diagnostic', () => {
+    expect(hasErrorMessage('Exit code 1\nError: Cannot find module "x"')).toBe(true);
+    expect(hasErrorMessage('Exit code 1\nERR connect ENOENT //./pipe/x.sock')).toBe(true);
+  });
+});
+
+describe('extract — error records', () => {
+  const bash = (command: string, output: string, isError?: boolean): Msg['tools'][number] => ({
+    name: 'Bash',
+    input: JSON.stringify({ command }),
+    output,
+    ...(isError === undefined ? {} : { isError }),
+  });
+
+  it('records a failure that says why, naming the command that ran', () => {
+    const rs = extract(
+      [asst('', [bash('cd /repo && node run.js', 'Exit code 1\nError: Cannot find module "x"', true)])],
+      ctx(),
+    );
+    const err = rs.find((r) => r.kind === 'error');
+    expect(err).toBeDefined();
+    expect(err!.text).toBe('`node run.js` failed: Error: Cannot find module "x"');
+  });
+
+  it('does not record a non-zero exit that carries no reason', () => {
+    const rs = extract([asst('', [bash('grep -n foo bar.ts', 'Exit code 1', true)])], ctx());
+    expect(kinds(rs)).not.toContain('error');
+  });
+
+  it('does not record a command the harness says SUCCEEDED, whatever it printed', () => {
+    const rs = extract(
+      [asst('', [bash('grep -rn "can\'t" src', "src/a.ts:12: // can't do that", false)])],
+      ctx(),
+    );
+    expect(kinds(rs)).not.toContain('error');
   });
 });

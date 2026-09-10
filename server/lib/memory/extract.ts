@@ -117,6 +117,105 @@ export function shortCommand(command: string): string {
     : line;
 }
 
+// Shell lines that are never the point of a script: moving around, setting up, or
+// announcing. A multi-line command that failed almost always failed in spite of these,
+// not because of them — real records this produced were `cd /c/Users/...` failed,
+// `SP="C:/..."` failed, and `echo "=== node/npm ==="` failed, none of which name the
+// thing that broke.
+const SCAFFOLD_SEGMENT = [
+  /^cd\s/i,
+  // An assignment ONLY. `PORT=4900 npm test` is an env-prefixed command and naming the
+  // next segment instead would be the very misattribution this exists to prevent.
+  // The VALUE may hold spaces inside quotes, $( ), or ( ) — `ROOT=$(git rev-parse
+  // --show-toplevel)` is still just an assignment. A trailing comment is allowed too.
+  // Anything AFTER the value makes it an env-prefixed command instead (`PORT=1 npm test`).
+  /^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\$\([^)]*\)|\([^)]*\)|\S)*\s*(?:#.*)?$/,
+  /^export\s+[A-Za-z_]/i,
+  /^echo\b/i,
+  /^set\s+[-+]/i,
+  /^mkdir\b/i,
+  /^sleep\b/i, // waiting for something is never what broke
+  /^cat\s*>>?/i, // `cat > file <<EOF` writes the script; it is not the script
+  /^#/,
+  /^(?:then|else|fi|do|done|;;)\b/,
+];
+
+/**
+ * The heredoc delimiter a line opens, or null.
+ *
+ * The hard part is telling a real `<<` from one inside a string: `grep -rn "a << b"` and
+ * `echo "use <<EOF"` are not heredocs, and treating them as one swallows the whole rest
+ * of the script. Anchoring to end-of-line was the first attempt and it was wrong in both
+ * directions — it still matched `grep -rn "x << y"` (the delimiter can end the line
+ * inside the quotes) while rejecting real openers with a suffix (`<<EOF 2>&1`, `<<EOF &&
+ * npm test`).
+ *
+ * So decide on QUOTING instead: count unescaped quotes before the `<<`. An odd count
+ * means it sits inside a string and is not an opener. That admits the suffix forms and
+ * rejects the quoted ones, which is the split that actually matters.
+ */
+export function openerDelimiter(line: string): string | null {
+  const re = /<<-?\s*(?:"([A-Za-z_][\w-]*)"|'([A-Za-z_][\w-]*)'|([A-Za-z_][\w-]*))/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line))) {
+    const before = line.slice(0, m.index);
+    const quotes = (before.match(/(?<!\\)["']/g) || []).length;
+    if (quotes % 2 === 1) continue; // inside a string
+    return m[1] ?? m[2] ?? m[3] ?? null;
+  }
+  return null;
+}
+
+/**
+ * Drop heredoc BODIES from a shell command.
+ *
+ * `cat > patch.js <<EOF ... EOF` inlines a whole program into the command, and every
+ * line of it looks like a segment. Without this the "most informative command" was
+ * routinely a line of JavaScript that never ran as a shell command at all.
+ */
+export function stripHeredocs(command: string): string {
+  const out: string[] = [];
+  let delim: string | null = null;
+  for (const line of command.split(/\r?\n/)) {
+    if (delim !== null) {
+      if (line.trim() === delim) delim = null; // closing marker; body discarded
+      continue;
+    }
+    // <<EOF, <<-EOF, <<"EOF", <<'EOF' — the quotes only affect expansion, not framing.
+    // openerDelimiter carries the quoting rule; see it for why an end-of-line anchor
+    // was not enough on its own.
+    const open = openerDelimiter(line);
+    out.push(line);
+    if (open) delim = open;
+  }
+  return out.join(String.fromCharCode(10));
+}
+
+/**
+ * The most informative command in a shell invocation.
+ *
+ * shortCommand() takes the FIRST segment, which is right for a one-liner and wrong for
+ * the multi-line scripts agents actually run: those open with a `cd`, an assignment or a
+ * heredoc, so the first segment names the scaffolding rather than the work. Strip heredoc
+ * bodies, then prefer the first segment that is not scaffolding; fall back to
+ * shortCommand when a script is nothing but scaffolding.
+ *
+ * Still a guess for a long script — the gist alongside it carries the actual failure.
+ */
+export function significantCommand(command: string): string {
+  const segments = stripHeredocs(command)
+    .split(/\r?\n/)
+    .flatMap((line) => line.split(/\s*(?:&&|\|\||;)\s*/))
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const meaty = segments.find(
+    (s) => !SCAFFOLD_SEGMENT.some((re) => re.test(s)),
+  );
+  // Fall back to the FIRST LINE, not the whole script: shortCommand only splits on
+  // &&/||/;, so handing it a multi-line command returns a multi-line label.
+  return shortCommand(meaty ?? command.split(/\r?\n/)[0] ?? command);
+}
+
 /** First meaningful token of a shell command — `npm`, `git`, `cargo`. */
 export function commandHead(command: string): string | null {
   const trimmed = command.trim();
@@ -183,6 +282,11 @@ function isWriteTool(name: string): boolean {
 // Anchored signatures rather than a bare /failed/ scan: tool output routinely contains the
 // word "failed" inside prose or inside a passing test name, and a false error record is
 // worse than a missed one — it teaches the next agent something untrue.
+// "Exit code 1" states THAT a command failed. It is still an error signature — the
+// harness prefixes every failed shell result with it — but it is never the REASON, and
+// the reason is the only part worth remembering.
+const EXIT_CODE_SIGNATURE = /\bexit(?:ed with)? code [1-9]/i;
+
 const ERROR_SIGNATURES: RegExp[] = [
   /^\s*(?:error|fatal|panic)\b[:\s]/im,
   // An EXPLICIT errno list rather than /E[A-Z]{3,}/, which matched any shouted word and
@@ -193,8 +297,17 @@ const ERROR_SIGNATURES: RegExp[] = [
   /\bcommand not found\b/i,
   /\bis not recognized as an internal or external command\b/i,
   /\bPermission denied\b/i,
-  /\bexit(?:ed with)? code [1-9]/i,
+  EXIT_CODE_SIGNATURE,
   /^\s*error TS\d+:/im,
+  // Build tools that announce failure in their own dialect and match nothing above:
+  // npm lifecycle, rustc/go error codes, a compiler file:line:col diagnostic, and the
+  // harness timeout. Without these, every npm/cargo/go failure fell to a bare exit code
+  // and was dropped as "says nothing".
+  /^\s*npm ERR!/im,
+  /\berror\[[A-Z]?\d+\]/,
+  // file.ext:LINE:COL: — a column is required, so `grep -n` hits (file:line:text) miss.
+  /^[^\s:]+\.[A-Za-z]\w*:\d+:\d+: /im,
+  /\bCommand timed out\b/i,
   /<tool_use_error>/,
   // The classic unix "prog: what went wrong" line. Most real shell failures never print the
   // errno CODE, only its message — `rm: cannot remove 'x': Device or resource busy` contains
@@ -216,6 +329,7 @@ const EXPLICIT_ERROR = /<tool_use_error>/;
 // error record is worse than a missed one: it teaches the next agent something untrue.
 const ERROR_HEAD_CHARS = 600;
 
+
 export interface ErrorScanOpts {
   /**
    * Did a command actually run? Heuristic signatures only apply when one did.
@@ -225,6 +339,27 @@ export interface ErrorScanOpts {
    * things that went wrong.
    */
   executed?: boolean;
+  /**
+   * The harness’s own verdict on the call, when it recorded one.
+   *
+   * This BEATS reading the output, in both directions, because no amount of scanning text
+   * can separate a command that failed from one that succeeded while printing something
+   * error-shaped. Real records this fixed: `grep -n "can’t" file` (a HIT, recorded as a
+   * failure) and a build log line reading `fatal errors: 0` (a report of zero fatals,
+   * recorded as a fatal). Undefined means the provider said nothing — fall back to the
+   * signatures rather than assuming success.
+   *
+   * ASYMMETRY, deliberate and worth knowing: the Claude parser sets this on every tool
+   * result (true on failure, false otherwise), so for Claude the heuristics below now run
+   * only when a call never returned. Codex builds its ToolCalls without the field, so it
+   * still goes through them. The visible consequence is a command that exits 0 while
+   * PRINTING a diagnostic — a wrapper swallowing a non-zero child, say: no error record on
+   * Claude, one on codex, from identical output. That is the intended trade (an exit code
+   * is a statement, prose is a guess), not an oversight. Converging them means teaching
+   * createCodexLineParser to populate isError from its own rollout format — which per hard
+   * rule 6 needs schema discovery against real ~/.codex/sessions first, never a guess.
+   */
+  isError?: boolean;
 }
 
 export function looksLikeError(
@@ -232,6 +367,9 @@ export function looksLikeError(
   opts: ErrorScanOpts = { executed: true },
 ): boolean {
   if (!output) return false;
+  // The harness said so, either way. Only guess when it did not.
+  if (opts.isError === true) return true;
+  if (opts.isError === false) return false;
   if (EXPLICIT_ERROR.test(output.slice(0, 4000))) return true;
   if (!opts.executed) return false;
   return ERROR_SIGNATURES.some((re) =>
@@ -239,12 +377,35 @@ export function looksLikeError(
   );
 }
 
+// Every signature that carries a MESSAGE, i.e. all of them but the bare exit code.
+const MESSAGE_SIGNATURES = ERROR_SIGNATURES.filter(
+  (re) => re !== EXIT_CODE_SIGNATURE,
+);
+
+/**
+ * Does the output actually SAY what went wrong?
+ *
+ * Knowing a call failed is not the same as having something to tell the next agent.
+ * `grep` finding no match, `test`, `diff --quiet` and `git diff --exit-code` all report
+ * their answer AS a non-zero exit, and the harness dutifully marks them failed — but
+ * ``grep -n foo bar.ts` failed: Exit code 1` teaches nobody anything. Require a real
+ * message before writing a record; the exit code alone is noise that crowds out the
+ * records that do carry a lesson.
+ */
+export function hasErrorMessage(output: string): boolean {
+  const head = output.slice(0, ERROR_HEAD_CHARS);
+  return MESSAGE_SIGNATURES.some((re) => re.test(head));
+}
+
 /** The single most informative line of an error output. */
 export function errorGist(output: string): string {
   const head = output.slice(0, ERROR_HEAD_CHARS);
-  for (const re of ERROR_SIGNATURES) {
-    const line = head.split("\n").find((l) => re.test(l));
-    if (line && line.trim()) return line.trim().slice(0, ERROR_MAX);
+  // First matching LINE, not first matching signature: output is chronological, so the
+  // earliest diagnostic is the cause and everything after it is fallout.
+  for (const line of head.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (MESSAGE_SIGNATURES.some((re) => re.test(line))) return trimmed.slice(0, ERROR_MAX);
   }
   return (
     head
@@ -423,7 +584,7 @@ function pushToolRecords(
         ? args._raw
         : null;
   const command =
-    isShell && rawCommand ? shortCommand(rawCommand.split("\n")[0]) : null;
+    isShell && rawCommand ? significantCommand(rawCommand) : null;
   const targetFiles =
     target?.kind === "file" ? [target.value.replace(/\\/g, "/")] : [];
   const targetCommands = target?.kind === "command" ? [target.value] : [];
@@ -432,14 +593,14 @@ function pushToolRecords(
   // agent most wants to have been told before it repeats the attempt.
   // A command genuinely ran only for shell-ish tools. Everything else is trusted for an
   // explicit <tool_use_error> marker and nothing more.
-  if (looksLikeError(tool.output, { executed: isShell })) {
+  if (looksLikeError(tool.output, { executed: isShell, isError: tool.isError })) {
     const gist = errorGist(tool.output);
     // A command that merely PRINTED an old memory record did not itself fail. Suppress the
     // ERROR record only — the command still ran, and is still worth remembering as one.
     const echo =
       isMemoryEcho(gist) ||
       isMemoryEcho(tool.output.slice(0, ERROR_HEAD_CHARS));
-    if (!echo) {
+    if (!echo && hasErrorMessage(tool.output)) {
       const what = command ?? (target ? `${name} ${target.value}` : name);
       push(
         makeRecord(

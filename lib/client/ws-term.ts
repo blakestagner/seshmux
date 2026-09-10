@@ -10,7 +10,9 @@
 import { authToken } from './api';
 
 export interface TermSocket {
-  send(data: string): void;
+  /** True if the frame actually went out. False means the socket is not OPEN — mid
+   *  reconnect, or closed. Keystrokes may ignore this; a one-shot paste must not. */
+  send(data: string): boolean;
   resize(cols: number, rows: number): void;
   close(): void;
 }
@@ -91,8 +93,10 @@ export function openTermSocket(ptyId: string, handlers: TermHandlers): TermSocke
 
   connect();
 
-  const sendJSON = (obj: unknown) => {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  const sendJSON = (obj: unknown): boolean => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(obj));
+    return true;
   };
 
   return {

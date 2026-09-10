@@ -110,9 +110,9 @@ export function PrList({ projectId, sessionId }: { projectId: string; sessionId:
         </a>
       ))}
       {collapsible ? (
-        <button type="button" className={styles.toggle} onClick={() => setExpanded((v) => !v)}>
+        <Button variant="link" className={styles.toggle} onClick={() => setExpanded((v) => !v)}>
           {expanded ? 'Show less' : `Show ${prs.length - PR_LIST_COLLAPSED} more`}
-        </button>
+        </Button>
       ) : null}
     </div>
   );

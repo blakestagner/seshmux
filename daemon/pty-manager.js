@@ -42,6 +42,35 @@ const HOLDER_ENTRY = path.join(__dirname, 'holder.js');
 const HOLDER_CONNECT_TRIES = 100;
 const HOLDER_CONNECT_DELAY_MS = 100;
 
+// Shared with daemon/ensure.js, which opens the same file for seshmuxd itself
+// and keeps its own copy of this cap (the two modules never import each other).
+const LOG_BASENAME = 'seshmuxd.log';
+const LOG_MAX_BYTES = 1_000_000;
+
+/**
+ * Open a log for append, returning an fd — or the string 'ignore' if it cannot
+ * be opened, because logging must never stop a PTY from starting.
+ *
+ * ensure.js trims this same file, but only when it spawns a daemon — and the
+ * daemon is built to run for days, so that alone left an unbounded sink behind
+ * the new log-and-continue crash nets: a holder whose node-pty throws
+ * repeatedly writes a full stack per occurrence with nothing to stop it. Trim
+ * here too. The interesting lines are always the most recent ones, so a
+ * truncate is the right shape rather than real rotation.
+ */
+function openAppendLog(logPath) {
+  try {
+    if (fs.statSync(logPath).size > LOG_MAX_BYTES) fs.truncateSync(logPath, 0);
+  } catch {
+    /* no log yet — nothing to trim */
+  }
+  try {
+    return fs.openSync(logPath, 'a');
+  } catch {
+    return 'ignore';
+  }
+}
+
 /**
  * Path of a holder's unix socket. macOS caps sun_path at ~104 bytes, and a
  * config dir can be arbitrarily deep (tests use mkdtemp under /var/folders/...),
@@ -132,7 +161,22 @@ class HolderClient {
     // a UTF-8 sequence otherwise corrupts the character to U+FFFD forever.
     s.setEncoding('utf8');
     s.on('data', (chunk) => {
-      for (const m of decoder.push(chunk)) this._handle(m);
+      // Contain a bad frame to itself. This handler runs the WHOLE holder ->
+      // ring -> subscriber spine synchronously, outside every per-request
+      // try/catch, so a throw here escapes to uncaughtException and ends every
+      // live session at once. Proved reachable: a frame whose `data` key is
+      // absent (JSON.stringify DROPS an undefined value) reaches
+      // countNewlines(undefined) and killed the daemon outright.
+      for (const m of decoder.push(chunk)) {
+        try {
+          this._handle(m);
+        } catch (err) {
+          process.stderr.write(
+            '[seshmuxd] holder frame threw (' + this._sockPath + '): ' +
+              ((err && err.stack) || err) + '\n'
+          );
+        }
+      }
     });
     s.on('error', () => {});
     s.on('close', () => {
@@ -423,6 +467,10 @@ class PtyManager {
    * exactly, so we never parse or reconstruct lines.
    */
   _appendRing(entry, chunk) {
+    // Fed from a socket frame on the holder tier, so a short or malformed
+    // frame can deliver a non-string here. Dropping the chunk costs one
+    // scrollback fragment; throwing would cost every live session.
+    if (typeof chunk !== 'string') return;
     entry.ring.push(chunk);
     entry.ringLines += countNewlines(chunk);
     entry.ringBytes += chunk.length;
@@ -447,6 +495,10 @@ class PtyManager {
   _wireProc(entry) {
     const { proc, ptyId } = entry;
     proc.onData((data) => {
+      // Drop a non-string chunk WHOLE. The ring guard alone was not enough: the event
+      // still went out, and routes/term.ts relays data by concatenation, so an undefined
+      // chunk printed the literal text "undefined" into the user's terminal.
+      if (typeof data !== 'string') return;
       this._appendRing(entry, data);
       this._emit({ event: 'data', ptyId, data });
     });
@@ -526,8 +578,15 @@ class PtyManager {
 
   /**
    * Launch a detached holder for this PTY and return a node-pty-shaped client
-   * for it. detached + stdio:'ignore' + unref() + the holder's SIGHUP handler
-   * are what make `kill -9 <daemon>` a non-event for the agent.
+   * for it. detached + a stdio set holding NO pipe to us + unref() + the
+   * holder's SIGHUP handler are what make `kill -9 <daemon>` a non-event for
+   * the agent.
+   *
+   * stdout/stderr were 'ignore', so a holder that died took the reason with it
+   * — the same blindness seshmuxd itself had. They now append to the shared
+   * seshmuxd.log. It must be a FILE and never a pipe: a pipe back to this
+   * process would tie the holder's lifetime to the daemon's and defeat the
+   * whole point of the tier.
    */
   _spawnHolder({ ptyId, cwd, args, cols, rows }) {
     fs.mkdirSync(this._holderDir, { recursive: true, mode: 0o700 });
@@ -542,13 +601,23 @@ class PtyManager {
       rows,
       env: { SESHMUX_PTY_ID: ptyId },
     };
+    const log = openAppendLog(path.join(this._configDir, LOG_BASENAME));
     const child = spawnProcess(process.execPath, [HOLDER_ENTRY, JSON.stringify(spec)], {
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', log, log],
       windowsHide: true, // win32: detached would otherwise open a console window
       cwd,
       env: process.env,
     });
+    // spawnProcess() already dup'd the fd into the child, so drop ours or the
+    // daemon pins the log file open for its whole life.
+    if (typeof log === 'number') {
+      try {
+        fs.closeSync(log);
+      } catch {
+        /* already closed */
+      }
+    }
     child.unref();
     return new HolderClient(sock);
   }

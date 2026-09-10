@@ -40,7 +40,7 @@ import MeterBar from '../ui/MeterBar/MeterBar';
 import CtxBadge from '../ui/CtxBadge/CtxBadge';
 import Button from '../ui/Button/Button';
 import BridgeMenu from '../BridgeMenu/BridgeMenu';
-import MemoryMenu from '../MemoryMenu/MemoryMenu';
+import { registerTermSend } from '../../lib/client/term-send';
 import { PrChip, useSessionPrs } from '../PrLinks/PrLinks';
 import WorkspaceFinishPrompt from '../WorkspaceFinishPrompt/WorkspaceFinishPrompt';
 import styles from './TerminalPane.module.scss';
@@ -78,12 +78,9 @@ export type TerminalPaneProps = {
   onOpenChanges?: () => void;
   // Clicking the ports chip opens the listening-ports panel for this repo.
   onOpenPorts?: () => void;
-  // Agent memory (statusbar dropdown). refreshKey is bumped by {event:'memory'} so a
-  // `remember` written by an agent in another process appears without reopening.
+  // Opens the agent-memory panel in the right pane. The panel owns the search, the
+  // budget and the load — this pane only knows how to ask for it to be shown.
   onOpenMemory?: () => void;
-  memoryRefreshKey?: number;
-  memoryBudgetTokens?: number;
-  memorySubmitOnLoad?: boolean;
   // Clicking the `>_` chip opens (idempotently spawns) a scratch shell in this
   // session's cwd, in the right-pane tab strip. Absent → no chip (grid tiles,
   // and the scratch pane's own TerminalPane, which passes no owner context).
@@ -121,9 +118,6 @@ export default function TerminalPane({
   onOpenChanges,
   onOpenPorts,
   onOpenMemory,
-  memoryRefreshKey,
-  memoryBudgetTokens,
-  memorySubmitOnLoad,
   onOpenTerminal,
   visible = true,
 }: TerminalPaneProps) {
@@ -222,6 +216,7 @@ export default function TerminalPane({
     let roTimer: ReturnType<typeof setTimeout> | null = null;
     let onFocus: (() => void) | null = null;
     let themeObserver: MutationObserver | null = null;
+    let unregisterSend: (() => void) | null = null;
 
     (async () => {
       const [{ Terminal }, { FitAddon }, { WebLinksAddon }] = await Promise.all([
@@ -427,6 +422,12 @@ export default function TerminalPane({
           scheduleBackfill();
         },
         onExit: () => {
+          // Withdraw the writer HERE, not at unmount. The tab lives on after the PTY
+          // dies (tab.status never becomes done for a term tab — the events hub maps
+          // idle to live), so leaving the entry registered let the memory panel report
+          // a successful load into a terminal that had already exited.
+          unregisterSend?.();
+          unregisterSend = null;
           if (!disposed) {
             setStatus('done');
             setConnecting(false);
@@ -453,6 +454,9 @@ export default function TerminalPane({
 
       term.onData((data) => socket?.send(data));
       sendRef.current = (data: string) => socket?.send(data);
+      // Publish the writer so the right pane can load memory into this session. Scoped
+      // to the socket lifetime, so "a sender exists" means "this terminal is writable".
+      unregisterSend = registerTermSend(ptyId, (data: string) => socket?.send(data) ?? false);
 
       // Resize xterm to its container and tell the PTY.
       // RO fires per animation frame during a seam drag (grid workspace) — debounce
@@ -497,6 +501,8 @@ export default function TerminalPane({
       disposed = true;
       pushSizeRef.current = null;
       sendRef.current = null;
+      unregisterSend?.();
+      unregisterSend = null;
       focusRef.current = null;
       if (roTimer) clearTimeout(roTimer);
       ro?.disconnect();
@@ -892,23 +898,19 @@ export default function TerminalPane({
             <PrChip prs={prs} />
           </>
         ) : null}
-        {/* Memory dropdown: load what earlier sessions (either agent) learned into this
-            one. Single-pane only — a grid tile has no room for a picker, and the panel
-            covers that case. */}
-        {variant !== 'grid' && projectId ? (
+        {/* Opens the memory panel in the right pane — browsing, curating and loading
+            all live there, so this is a plain toggle rather than a second surface.
+            Single-pane only: a grid tile has no room for the right pane. */}
+        {variant !== 'grid' && projectId && onOpenMemory ? (
           <>
             <span className={styles.divider} aria-hidden="true" />
-            <MemoryMenu
-              projectId={projectId}
-              // Undefined once the PTY is gone, which disables the load button rather
-              // than writing into a dead terminal.
-              onSend={status === 'live' ? (data) => sendRef.current?.(data) : undefined}
-              refreshKey={memoryRefreshKey}
-              budgetTokens={memoryBudgetTokens}
-              submitOnLoad={memorySubmitOnLoad}
-              onOpenPanel={onOpenMemory}
-              up
-            />
+            <Button
+              variant="chip"
+              title="Browse what earlier sessions learned, and load it into this one"
+              onClick={onOpenMemory}
+            >
+              ◆ memory
+            </Button>
           </>
         ) : null}
         {/* Bridge actions cluster on the right, before the tail. In grid the
