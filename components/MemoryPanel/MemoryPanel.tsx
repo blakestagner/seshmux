@@ -1,12 +1,17 @@
 'use client';
 
-// The full-size memory surface: browsing and curating, where the dropdown is for loading.
+// The memory surface: browse, curate, and load into the live session.
 //
-// Same filters, same rows, same scope semantics — everything visual is composed from
-// components/Memory, so the two surfaces cannot drift. What the panel adds is the full
-// record body, pin/forget, authoring a fact by hand, and distillation.
+// This used to be half the story — a statusbar dropdown did the loading and this panel
+// did everything else, which meant two places to look and a 560px popup that had to be
+// squeezed in beside the rail. The picker moved here: same filters, same rows (composed
+// from components/Memory), plus the full record body, pin/forget, hand-authoring,
+// distillation, and the selection + token budget that loading needs.
+//
+// The budget is shown BEFORE the load, not after, because context spent on recalled
+// memory is context the session cannot spend on anything else.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Button from '../ui/Button/Button';
 import IconButton from '../ui/IconButton/IconButton';
 import TextInput from '../ui/TextInput/TextInput';
@@ -18,10 +23,13 @@ import {
   deleteMemory,
   distillMemory,
   memoryStats,
+  packMemory,
   updateMemory,
   type MemoryRow,
   type MemoryStats,
 } from '../../lib/client/api';
+import { budgetLabel, estimateRowTokens, memoryPaste } from '../../lib/client/memory-paste';
+import { getTermSend } from '../../lib/client/term-send';
 import type { ProviderId } from '../../lib/client/types';
 import styles from './MemoryPanel.module.scss';
 
@@ -33,6 +41,15 @@ export type MemoryPanelProps = {
   branch?: string | null;
   /** Bumped by the {event:'memory'} ping. */
   refreshKey?: number;
+  /** The PTY to load into. Its writer is looked up at click time from the registry
+   *  TerminalPane publishes to (lib/client/term-send). */
+  ptyId?: string;
+  /** False once the session has exited — Load disables rather than pretending to
+   *  paste into a terminal nobody is listening to. */
+  canLoad?: boolean;
+  budgetTokens?: number;
+  /** Setting: press Enter after loading. Default false — the block is staged, not sent. */
+  submitOnLoad?: boolean;
   onClose?: () => void;
 };
 
@@ -42,6 +59,10 @@ export default function MemoryPanel({
   provider,
   branch,
   refreshKey = 0,
+  ptyId,
+  canLoad = false,
+  budgetTokens = 1500,
+  submitOnLoad = false,
   onClose,
 }: MemoryPanelProps) {
   const search = useMemorySearch(projectId, refreshKey, 200);
@@ -49,6 +70,68 @@ export default function MemoryPanel({
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<{ text: string; error: boolean } | null>(null);
+  // The selected ROWS, not just their ids. Holding ids alone made the token count a
+  // function of what happened to be on screen, so narrowing the query after picking
+  // silently under-counted while Load still sent everything.
+  const [selected, setSelected] = useState<MemoryRow[]>([]);
+
+  const selectedIds = useMemo(() => new Set(selected.map((r) => r.id)), [selected]);
+  const used = estimateRowTokens(selected);
+  const over = used > budgetTokens;
+
+  const toggle = (id: string) => {
+    setNote(null);
+    const row = search.rows.find((r) => r.id === id);
+    setSelected((cur) => {
+      if (cur.some((r) => r.id === id)) return cur.filter((r) => r.id !== id);
+      return row ? [...cur, row] : cur;
+    });
+  };
+
+  // A record that has been forgotten (or filtered out of existence) must not keep
+  // costing budget in the footer, so reconcile the selection against what still exists.
+  useEffect(() => {
+    setSelected((cur) => {
+      const live = cur.filter((r) => search.rows.some((row) => row.id === r.id));
+      return live.length === cur.length ? cur : live;
+    });
+  }, [search.rows]);
+
+  async function load() {
+    if (!canLoad || selected.length === 0) return;
+    // Resolved HERE, not at render: the writer comes and goes with the terminal socket,
+    // and a stale capture would paste into a closed one. If it is missing, SAY so — a
+    // no-op that still reported success is worse than an error, because the context
+    // never arrived and nothing said otherwise.
+    const send = getTermSend(ptyId);
+    if (!send) {
+      setNote({ text: 'this terminal is not connected', error: true });
+      return;
+    }
+    setBusy('load');
+    setNote(null);
+    try {
+      // The server composes the block, so what lands in the terminal is byte-identical
+      // to what an agent gets from recall_memory — one composer, not two.
+      const packed = await packMemory(
+        selected.map((r) => r.id),
+        { budgetTokens, scope: search.scope },
+      );
+      const payload = memoryPaste(packed.text, { submit: submitOnLoad });
+      if (!payload) {
+        setNote({ text: 'nothing to load', error: false });
+        return;
+      }
+      const n = selected.length;
+      send(payload);
+      setSelected([]);
+      setNote({ text: `loaded ${n} record${n === 1 ? '' : 's'} into the session`, error: false });
+    } catch (err) {
+      setNote({ text: err instanceof Error ? err.message : 'load failed', error: true });
+    } finally {
+      setBusy(null);
+    }
+  }
 
   useEffect(() => {
     let alive = true;
@@ -139,12 +222,41 @@ export default function MemoryPanel({
             key={row.id}
             row={row}
             expanded
+            selected={selectedIds.has(row.id)}
+            onToggle={toggle}
             onPin={onPin}
             onDelete={onDelete}
             showRepo={search.scope === 'all'}
           />
         ))}
       </div>
+
+      {/* Loading bar: only present once something is picked, so the panel stays a
+          browser until you actually mean to spend context on it. */}
+      {selected.length > 0 ? (
+        <div className={styles.loadBar}>
+          <span className={over ? styles.budgetOver : styles.budget}>
+            {selected.length} selected · {budgetLabel(used, budgetTokens)}
+          </span>
+          <button type="button" className={styles.clear} onClick={() => setSelected([])}>
+            clear
+          </button>
+          <Button
+            variant="primary"
+            disabled={busy === 'load' || !canLoad}
+            title={
+              !canLoad
+                ? 'this session is not live'
+                : over
+                  ? 'over budget — the pack will be trimmed to the highest-ranked records'
+                  : 'paste into this session (does not press Enter)'
+            }
+            onClick={load}
+          >
+            {busy === 'load' ? 'loading…' : 'Load into session'}
+          </Button>
+        </div>
+      ) : null}
 
       <div className={styles.compose}>
         <TextInput

@@ -861,9 +861,6 @@ function AppShell() {
           onOpenChanges={tab.projectId ? () => handleTogglePanel(tab.id, 'changes') : undefined}
           onOpenPorts={tab.projectId ? () => handleTogglePanel(tab.id, 'ports') : undefined}
           onOpenMemory={tab.projectId ? () => handleTogglePanel(tab.id, 'memory') : undefined}
-          memoryRefreshKey={memoryPings}
-          memoryBudgetTokens={memoryBudgetTokens}
-          memorySubmitOnLoad={memorySubmitOnLoad}
           onOpenTerminal={tab.ptyId ? () => handleOpenTerminal(tab) : undefined}
         />
       );
@@ -1135,6 +1132,13 @@ function AppShell() {
                         provider={activeTab.provider}
                         branch={activeTab.branch}
                         refreshKey={memoryPings}
+                        // The right pane is a sibling of the terminal, not its parent, so
+                        // the panel resolves the writer itself from the registry
+                        // TerminalPane publishes to while its socket is up.
+                        ptyId={activeTab.ptyId}
+                        canLoad={activeTab.status !== 'done'}
+                        budgetTokens={memoryBudgetTokens}
+                        submitOnLoad={memorySubmitOnLoad}
                         onClose={() => handleClosePanel(activeTab.id, 'memory')}
                       />
                     );

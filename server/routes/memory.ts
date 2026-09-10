@@ -1,5 +1,5 @@
-// Agent-memory REST surface. Backs both UI surfaces: the statusbar dropdown (MemoryMenu)
-// and the right-pane browser (MemoryPanel).
+// Agent-memory REST surface. Backs the right-pane memory panel (MemoryPanel), which is
+// where memory is browsed, curated and loaded into a live session.
 //
 // Every read goes through the SAME server/lib/memory/recall.ts the MCP tools use, so what an
 // agent pulls and what you push are byte-identical packs. Two query paths would have drifted

@@ -47,6 +47,44 @@
   color: var(--text-dim);
 }
 
+// Loading bar: appears only once records are picked. It sits directly above .compose so
+// the two bottom bars stack as one footer rather than fighting for the same edge.
+.loadBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+  flex: 0 0 auto;
+}
+
+// The running cost of the selection, visible BEFORE it is spent — the reason loading is
+// a picker rather than a "load everything" button.
+.budget {
+  @include t-mono-micro;
+  color: var(--text-dim);
+}
+
+// Amber here is right: over budget is a warning about what is about to happen.
+.budgetOver {
+  @include t-mono-micro-strong;
+  color: var(--waiting);
+}
+
+.clear {
+  @include t-meta;
+  margin-left: auto;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.clear:hover {
+  color: var(--accent);
+}
 .compose {
   display: flex;
   flex-direction: column;
@@ -62,8 +100,8 @@
   flex-wrap: wrap;
 }
 
-// A status note and a failure must not look the same — the same split as MemoryMenu, so
-// "distilled 4 facts" and "distill failed" read differently on both surfaces.
+// A status note and a failure must not look the same: "distilled 4 facts" and
+// "distill failed" must not read as the same kind of event.
 .note {
   @include t-meta;
   color: var(--text-dim);
