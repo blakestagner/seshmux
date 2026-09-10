@@ -11,8 +11,11 @@ import {
   extract,
   extractPaths,
   extractSymbols,
+  hasErrorMessage,
   isMemoryEcho,
   looksLikeError,
+  significantCommand,
+  stripHeredocs,
   toolTarget,
   type ExtractCtx,
 } from '../../server/lib/memory/extract';
@@ -383,5 +386,127 @@ describe('extract — cross-provider, against real fixtures', () => {
     const rs = extract(msgs, ctx({ provider: 'codex' }));
     expect(texts(rs).some((t) => t.includes('environment_context'))).toBe(false);
     expect(texts(rs).some((t) => t.includes('permissions'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error-record QUALITY. Harvesting a real store surfaced 70 error records of which
+// most taught nothing: `cd /c/Users/...` failed, `echo "=== node/npm ==="` failed,
+// `grep -n foo bar.ts` failed: Exit code 1, and a build log line reading
+// "fatal errors: 0" recorded as a fatal. Each case below is one of those.
+
+describe('stripHeredocs', () => {
+  it('drops the body a heredoc inlines into the command', () => {
+    const cmd = ['cat > patch.js <<EOF', 'const x = 1;', 'rm -rf /oops', 'EOF', 'node patch.js'].join('\n');
+    expect(stripHeredocs(cmd)).toBe(['cat > patch.js <<EOF', 'node patch.js'].join('\n'));
+  });
+
+  it('handles the quoted delimiter form', () => {
+    const cmd = ["cat > a.js <<'MARK'", 'body', 'MARK', 'node a.js'].join('\n');
+    expect(stripHeredocs(cmd)).toBe(["cat > a.js <<'MARK'", 'node a.js'].join('\n'));
+  });
+
+  it('leaves a command with no heredoc alone', () => {
+    expect(stripHeredocs('npm test && npm run build')).toBe('npm test && npm run build');
+  });
+
+  it('tolerates an unterminated heredoc rather than losing the whole command', () => {
+    const cmd = ['echo hi', 'cat > a <<EOF', 'never closed'].join('\n');
+    expect(stripHeredocs(cmd)).toBe(['echo hi', 'cat > a <<EOF'].join('\n'));
+  });
+});
+
+describe('significantCommand', () => {
+  it('skips a leading cd — the script did not fail because of it', () => {
+    expect(significantCommand('cd /repo && npm test')).toBe('npm test');
+  });
+
+  it('skips a variable assignment', () => {
+    expect(significantCommand('SP="/tmp/x"\nnode "$SP/run.js"')).toBe('node "$SP/run.js"');
+  });
+
+  it('skips an echo banner', () => {
+    expect(significantCommand('echo "=== node/npm ==="\nnpm run tokens:check')).toBe('npm run tokens:check');
+  });
+
+  it('names what RAN, not the cat that wrote it', () => {
+    const cmd = ['SP=/tmp', 'mkdir -p "$SP"', "cat > \"$SP/p.js\" <<'EOF'", 'console.log(1)', 'EOF', 'node "$SP/p.js"'].join('\n');
+    expect(significantCommand(cmd)).toBe('node "$SP/p.js"');
+  });
+
+  it('falls back to the first segment when a script is nothing but scaffolding', () => {
+    expect(significantCommand('cd /repo && cd /other')).toBe('cd /repo');
+  });
+
+  it('skips a sleep used to wait for a server to come up', () => {
+    expect(significantCommand("sleep 14; netstat -ano | grep 4700")).toBe("netstat -ano | grep 4700");
+  });
+
+  it('is unchanged for an ordinary one-liner', () => {
+    expect(significantCommand('npm run build')).toBe('npm run build');
+  });
+});
+
+describe('looksLikeError — the harness verdict wins', () => {
+  it('trusts an explicit failure even when the output reads clean', () => {
+    expect(looksLikeError('done.', { executed: true, isError: true })).toBe(true);
+  });
+
+  // The two false positives that actually shipped: a grep HIT containing "can't", and a
+  // build log reporting zero fatals. Both are successful commands printing error-shaped text.
+  it('trusts an explicit success over error-shaped output', () => {
+    expect(looksLikeError("248: // can't resize here", { executed: true, isError: false })).toBe(false);
+    expect(looksLikeError('fatal errors: 0', { executed: true, isError: false })).toBe(false);
+  });
+
+  it('falls back to the signatures when the provider says nothing', () => {
+    expect(looksLikeError('Error: cannot find module', { executed: true })).toBe(true);
+    expect(looksLikeError('all good', { executed: true })).toBe(false);
+  });
+});
+
+describe('hasErrorMessage', () => {
+  // The harness prefixes EVERY failed shell result with "Exit code N", so treating that as
+  // a message meant every failure qualified — including grep reporting "no match" that way.
+  it('does not count a bare exit code as a message', () => {
+    expect(hasErrorMessage('Exit code 1')).toBe(false);
+    expect(hasErrorMessage('Exit code 1\n5:import type { Msg } from "./x";')).toBe(false);
+  });
+
+  it('counts a real diagnostic', () => {
+    expect(hasErrorMessage('Exit code 1\nError: Cannot find module "x"')).toBe(true);
+    expect(hasErrorMessage('Exit code 1\nERR connect ENOENT //./pipe/x.sock')).toBe(true);
+  });
+});
+
+describe('extract — error records', () => {
+  const bash = (command: string, output: string, isError?: boolean): Msg['tools'][number] => ({
+    name: 'Bash',
+    input: JSON.stringify({ command }),
+    output,
+    ...(isError === undefined ? {} : { isError }),
+  });
+
+  it('records a failure that says why, naming the command that ran', () => {
+    const rs = extract(
+      [asst('', [bash('cd /repo && node run.js', 'Exit code 1\nError: Cannot find module "x"', true)])],
+      ctx(),
+    );
+    const err = rs.find((r) => r.kind === 'error');
+    expect(err).toBeDefined();
+    expect(err!.text).toBe('`node run.js` failed: Error: Cannot find module "x"');
+  });
+
+  it('does not record a non-zero exit that carries no reason', () => {
+    const rs = extract([asst('', [bash('grep -n foo bar.ts', 'Exit code 1', true)])], ctx());
+    expect(kinds(rs)).not.toContain('error');
+  });
+
+  it('does not record a command the harness says SUCCEEDED, whatever it printed', () => {
+    const rs = extract(
+      [asst('', [bash('grep -rn "can\'t" src', "src/a.ts:12: // can't do that", false)])],
+      ctx(),
+    );
+    expect(kinds(rs)).not.toContain('error');
   });
 });

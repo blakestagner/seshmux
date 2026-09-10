@@ -1,8 +1,13 @@
-// Transcript parser + context-window calculator. PROVIDER-AGNOSTIC: no `~/.claude` path
+// Transcript parser + context-window calculator. No `~/.claude` path
 // and no provider id live here — callers pass an absolute file path (readCtx) or a
 // projectId+sessionId+root triple (parseTranscript). The `window` param is either a plain
 // number or a model→number resolver function supplied by the provider (Claude's window
 // varies by model family; codex supplies a fixed number derived from its rollout files).
+//
+// The TYPES here are shared; the SCHEMA this file reads is Claude’s jsonl. Codex
+// deliberately parses its own (createCodexLineParser in providers/codex.ts) and only
+// borrows Msg/ToolCall. Do not assume codex flows through here — the ToolCall.isError
+// contract below depends on exactly that distinction.
 
 import { open, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -12,6 +17,16 @@ export interface ToolCall {
   name: string;
   input: string;
   output: string;
+  /**
+   * Did the harness itself say this call failed?
+   *
+   * Tri-state on purpose. true/false is the provider stating an outcome; UNDEFINED means
+   * no result was recorded (a session cut mid-turn) or the provider does not report one,
+   * and callers must not read that as success. The memory harvester leans on the
+   * distinction: reading an outcome out of the output text cannot tell a command that
+   * FAILED from one that succeeded while printing something error-shaped.
+   */
+  isError?: boolean;
 }
 
 export interface Msg {
@@ -123,7 +138,14 @@ export function createClaudeLineParser(): TranscriptLineParser {
         for (const block of content) {
           if (block?.type === 'tool_result') {
             const tool = toolById.get(block.tool_use_id);
-            if (tool) tool.output = stringifyContent(block.content);
+            if (tool) {
+              tool.output = stringifyContent(block.content);
+              // Absent means SUCCESS here, not "unknown": this schema stamps is_error only
+              // on failure, and a tool_result exists at all only once the call returned. The
+              // distinction matters — `undefined` would send the harvester back to guessing
+              // from the output text, which is what recorded a `grep` HIT as a failure.
+              tool.isError = block.is_error === true;
+            }
           }
         }
         return;
