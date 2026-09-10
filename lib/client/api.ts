@@ -851,6 +851,68 @@ export function getPorts(
   return req(`/api/git/ports?${params}`);
 }
 
+// ── preview browser (embedded browser panel) ────────────────────────────────
+// Mirrors server/lib/preview.ts + dev-script.ts. `origin: 'output'` means the
+// port came from scraping this session's PTY scrollback (the only source that
+// works on Windows) rather than from lsof, so it has no pid/command/dir.
+export interface PreviewPort {
+  port: number;
+  url: string;
+  origin: 'process' | 'output';
+  pid?: number;
+  command?: string;
+  dir?: string;
+}
+export interface DevScript {
+  name: string;
+  command: string;
+}
+export interface ScriptGroup {
+  subdir: string;
+  manager: 'npm' | 'pnpm' | 'yarn' | 'bun';
+  scripts: DevScript[];
+}
+
+function previewQuery(projectId: string | null | undefined, ptyId: string | null | undefined): string {
+  const params = new URLSearchParams();
+  if (projectId) params.set('project', projectId);
+  // The PTY is the better key of the two: it resolves to the terminal's REAL
+  // cwd (worktree-correct) and it is what the scrollback scrape reads.
+  if (ptyId) params.set('pty', ptyId);
+  return params.toString();
+}
+
+export function getPreviewPorts(
+  projectId: string | null | undefined,
+  ptyId: string | null | undefined,
+): Promise<{ ports: PreviewPort[]; dir: string }> {
+  return req(`/api/preview/ports?${previewQuery(projectId, ptyId)}`);
+}
+
+export function getDevScripts(
+  projectId: string | null | undefined,
+  ptyId: string | null | undefined,
+): Promise<{ groups: ScriptGroup[]; dir: string }> {
+  return req(`/api/preview/scripts?${previewQuery(projectId, ptyId)}`);
+}
+
+/** Spawn a scratch shell for `ownerPtyId` and type the dev command into it. */
+export function runDevScript(
+  ownerPtyId: string,
+  script: string,
+  subdir: string,
+): Promise<{ ptyId: string; command: string; existing: boolean }> {
+  return req('/api/preview/run', {
+    method: 'POST',
+    body: JSON.stringify({ ownerPtyId, script, subdir }),
+  });
+}
+
+/** Reachability + iframe-embeddability of a loopback URL. */
+export function checkFrame(url: string): Promise<{ reachable: boolean; status: number; blocked: 'xfo' | 'csp' | null }> {
+  return req(`/api/preview/frame?url=${encodeURIComponent(url)}`);
+}
+
 // ── repo search / replace (changes panel search mode) ───────────────────────
 export type SearchFlags = {
   caseSensitive: boolean;

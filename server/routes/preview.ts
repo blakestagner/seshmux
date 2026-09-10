@@ -1,0 +1,188 @@
+// Embedded-browser (preview panel) routes.
+//
+//   GET  /api/preview/ports?project&pty   -> { ports, supported }
+//   GET  /api/preview/scripts?project&pty -> { groups, dir }
+//   POST /api/preview/run                 -> { ptyId, command, existing }
+//   GET  /api/preview/frame?url           -> { reachable, blocked, status }
+//
+// Kept out of routes/git.ts even though /api/git/ports is its neighbour: that
+// file's ports endpoint answers "which process owns a port in this repo" (lsof,
+// posix-only, has a kill button behind it), while these answer "what can the
+// browser panel show for THIS SESSION" — a different source of truth (PTY
+// scrollback, see lib/preview.ts) with a different platform story.
+//
+// Guarded by the onRequest auth hook in server/index.ts (under /api/).
+
+import type { FastifyInstance } from 'fastify';
+import { dial } from '../daemon-client';
+import { readEntries } from '../lib/live-ledger';
+import { readScratchMap, type ScratchMap } from '../lib/scratch-store';
+import { startScratchTerminal } from '../lib/scratch';
+import { listeningPorts } from '../lib/ports';
+import { discoverPorts, frameBlock, isLoopbackUrl, type PreviewPort } from '../lib/preview';
+import { findScriptGroups, resolveRunLine } from '../lib/dev-script';
+import { defaultResolveRepo } from './bridge';
+
+// How much scrollback to scan per PTY. A dev server's banner is near the top of
+// its own output but can be a long way up an agent PTY's, and history is
+// text — 4k lines is cheap to scan and covers a busy session.
+const HISTORY_LINES = 4000;
+
+// The frame check must not become a way to hang a request: a loopback host that
+// accepts the connection and then says nothing would otherwise stall until the
+// platform's default socket timeout.
+const FRAME_TIMEOUT_MS = 3000;
+
+export interface PreviewRouteDeps {
+  resolveRepo?: (projectId: string) => string | null | Promise<string | null>;
+  dialFn?: typeof dial;
+  listPortsFn?: typeof listeningPorts;
+  // Injected so a test can assert the panel's states without a live listener.
+  probeFn?: (port: number) => Promise<boolean>;
+  fetchFn?: typeof fetch;
+}
+
+export default async function previewRoutes(f: FastifyInstance, deps: PreviewRouteDeps = {}) {
+  const resolveRepo = deps.resolveRepo ?? defaultResolveRepo;
+  const listPorts = deps.listPortsFn ?? listeningPorts;
+  const dialFn = deps.dialFn ?? dial;
+
+  // Same preference order as routes/git.ts portsDir: the live ledger knows the
+  // PTY's REAL spawn cwd, which is the only thing that's right for a worktree
+  // session. resolveRepo is the fallback for a tab with no live PTY.
+  async function targetDir(project: string | undefined, pty: string | undefined): Promise<string | null> {
+    if (pty) {
+      const entry = (await readEntries().catch(() => [])).find((e) => e.ptyId === pty);
+      if (entry?.cwd) return entry.cwd;
+    }
+    return project ? await resolveRepo(project) : null;
+  }
+
+  // Scrollback for the session's own PTYs: the agent plus every scratch shell
+  // it owns. The scratch shells matter MORE than the agent here — `npm run dev`
+  // started from the browser panel runs in one of them — and events-hub
+  // deliberately never attaches to a scratch, so this is a pull, not a tap.
+  async function sessionHistories(ptyId: string | undefined): Promise<string[]> {
+    if (!ptyId) return [];
+    const map: ScratchMap = await readScratchMap().catch(() => ({}));
+    const ids = [ptyId, ...Object.keys(map).filter((id) => map[id]?.ownerPtyId === ptyId)];
+    let conn = null;
+    try {
+      conn = await dialFn();
+      const out = await Promise.all(
+        // An older daemon has no `history` method and errors; a dead PTY errors
+        // too. Neither is a reason to fail the whole request — degrade to the
+        // process-derived ports (or, on win32, to the empty state).
+        ids.map((id) =>
+          conn!
+            .history(id, HISTORY_LINES)
+            .then((r: { data: string }) => r.data ?? '')
+            .catch(() => ''),
+        ),
+      );
+      return out.filter(Boolean);
+    } catch {
+      return []; // daemon down — the panel still renders, just with nothing found
+    } finally {
+      conn?.close();
+    }
+  }
+
+  f.get<{ Querystring: { project?: string; pty?: string } }>('/api/preview/ports', async (req, reply) => {
+    const { project, pty } = req.query;
+    const dir = await targetDir(project, pty);
+    if (!dir) {
+      reply.code(404);
+      return { error: 'project not found' };
+    }
+    const [processPorts, histories] = await Promise.all([
+      listPorts(dir).catch(() => []),
+      sessionHistories(pty),
+    ]);
+    const ports: PreviewPort[] = await discoverPorts({ processPorts, histories, probe: deps.probeFn });
+    return { ports, dir };
+  });
+
+  f.get<{ Querystring: { project?: string; pty?: string } }>('/api/preview/scripts', async (req, reply) => {
+    const { project, pty } = req.query;
+    const dir = await targetDir(project, pty);
+    if (!dir) {
+      reply.code(404);
+      return { error: 'project not found' };
+    }
+    return { groups: await findScriptGroups(dir).catch(() => []), dir };
+  });
+
+  /**
+   * Start a dev server: spawn a scratch shell in the session's cwd and type the
+   * command into it.
+   *
+   * Deliberately a REAL terminal rather than a detached child. The shell shows
+   * up in the same right-pane strip as the browser panel, so its output, its
+   * errors and its ^C are all where the user can reach them — a dev server the
+   * user cannot see or stop is a worse outcome than one that failed to start.
+   * `fresh: true` for the same reason: this must never hijack the shell someone
+   * already has a command running in.
+   *
+   * The command is built server-side from the repo's own package.json
+   * (resolveRunLine, fail-closed) — the request names a script, never a
+   * command line. See lib/dev-script.ts.
+   */
+  f.post('/api/preview/run', async (req, reply) => {
+    const b = (req.body ?? {}) as { ownerPtyId?: unknown; subdir?: unknown; script?: unknown };
+    const ownerPtyId = typeof b.ownerPtyId === 'string' ? b.ownerPtyId : '';
+    const script = typeof b.script === 'string' ? b.script : '';
+    const subdir = typeof b.subdir === 'string' ? b.subdir : '';
+    if (!ownerPtyId || !script) return reply.code(400).send({ error: 'ownerPtyId and script are required' });
+
+    const dir = await targetDir(undefined, ownerPtyId);
+    if (!dir) return reply.code(400).send({ error: 'no live session for ' + ownerPtyId });
+
+    const resolved = await resolveRunLine(dir, subdir, script);
+    if (!resolved) {
+      // Not "forbidden": from the client's side the pick simply is not a script
+      // this repo declares (stale panel, edited package.json, bad subdir).
+      return reply.code(400).send({ error: `no such dev script: ${subdir ? subdir + '/' : ''}${script}` });
+    }
+
+    let conn = null;
+    try {
+      const { ptyId, existing } = await startScratchTerminal(ownerPtyId, { dialFn, fresh: true });
+      conn = await dialFn();
+      await conn.write(ptyId, resolved.command + '\r');
+      return { ptyId, command: resolved.command, existing };
+    } catch (e) {
+      const msg = (e as Error).message;
+      const client = msg.includes('owner session not found') || msg.includes('cwd no longer exists');
+      return reply.code(client ? 400 : 500).send({ error: msg });
+    } finally {
+      conn?.close();
+    }
+  });
+
+  /**
+   * Does this URL answer, and will it render in an iframe?
+   *
+   * Loopback-only (isLoopbackUrl): this endpoint makes the server fetch a
+   * client-supplied URL, so without that guard it is an SSRF hole pointed at
+   * whatever the user's machine can reach.
+   */
+  f.get<{ Querystring: { url?: string } }>('/api/preview/frame', async (req, reply) => {
+    const url = req.query.url ?? '';
+    if (!isLoopbackUrl(url)) return reply.code(400).send({ error: 'loopback http(s) urls only' });
+    const doFetch = deps.fetchFn ?? fetch;
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), FRAME_TIMEOUT_MS);
+    try {
+      // GET, not HEAD: plenty of dev servers 405 a HEAD and would read as dead.
+      // The body is never consumed — abort() in `finally` drops it.
+      const res = await doFetch(url, { signal: ac.signal, redirect: 'manual' });
+      return { reachable: true, status: res.status, blocked: frameBlock(res.headers) };
+    } catch {
+      return { reachable: false, status: 0, blocked: null };
+    } finally {
+      clearTimeout(timer);
+      ac.abort();
+    }
+  });
+}

@@ -12,7 +12,14 @@
 
 // Terminal panels are INSTANCED: one per scratch shell, id carries its ptyId
 // so several can coexist in one tab's strip. Everything else is a singleton.
-export type PanelId = 'agents' | 'team' | 'changes' | 'ports' | 'memory' | `terminal:${string}`;
+export type PanelId =
+  | 'agents'
+  | 'team'
+  | 'changes'
+  | 'ports'
+  | 'memory'
+  | 'browser'
+  | `terminal:${string}`;
 
 export const terminalPanel = (ptyId: string): PanelId => `terminal:${ptyId}`;
 export const isTerminalPanel = (id: PanelId): boolean => id.startsWith('terminal:');

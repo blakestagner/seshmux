@@ -266,6 +266,11 @@ export async function startServer({ port = 4700, host, dev = false }: { port?: n
   // Read-only branch line stats (+N/-N chip + changes panel).
   await f.register((await import('./routes/git')).default);
 
+  // Embedded browser panel: what's listening for this session, what would start
+  // it, and whether a URL will render in an iframe. Separate from /api/git/ports
+  // on purpose — different source of truth, different platform story.
+  await f.register((await import('./routes/preview')).default);
+
   // Teams v1 (Task 3): template CRUD + team start via the SHARED startSession.
   // onTeamWatch (Task 4): first /api/teams/members request for a team arms the
   // hub's lazy config.json watch → live {event:'team'} pushes for the roster panel.
