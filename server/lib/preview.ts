@@ -148,6 +148,10 @@ export async function discoverPorts(opts: {
   for (const text of opts.histories ?? []) {
     for (const s of scrapePorts(text)) if (!known.has(s.port)) candidates.set(s.port, s);
   }
+  // Reverse of first-seen order across the concatenated histories. That is not
+  // strictly "most recent" — Map.set keeps a repeated port at its FIRST
+  // position — but it is the right tiebreak for the case that matters: a server
+  // that moved from :3000 to :3001 announced :3001 later, so :3001 leads.
   const ordered = [...candidates.values()].reverse();
   const alive = await Promise.all(ordered.map((s) => probe(s.port).catch(() => false)));
   return mergePorts(
@@ -172,7 +176,11 @@ export async function discoverPorts(opts: {
  */
 export function frameBlock(headers: { get(name: string): string | null }): 'xfo' | 'csp' | null {
   const xfo = (headers.get('x-frame-options') ?? '').trim().toLowerCase();
-  if (xfo === 'deny' || xfo.startsWith('sameorigin') || xfo.startsWith('allow-from')) return 'xfo';
+  // Deliberately NOT allow-from: Chrome never implemented it and Firefox removed
+  // it, so every current browser ignores that value and renders the frame.
+  // Treating it as a block would refuse a page that loads fine — the exact
+  // over-reporting this function's contract rules out.
+  if (xfo === 'deny' || xfo.startsWith('sameorigin')) return 'xfo';
   const csp = headers.get('content-security-policy') ?? '';
   const m = /frame-ancestors([^;]*)/i.exec(csp);
   if (m && /(^|\s)'none'(\s|$)/i.test(m[1])) return 'csp';

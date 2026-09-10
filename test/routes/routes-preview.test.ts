@@ -148,7 +148,7 @@ describe('POST /api/preview/run', () => {
       payload: { ownerPtyId: 'owner-1', script: 'dev', subdir: '' },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ ptyId: 'scratch-1', command: 'npm run dev' });
+    expect(res.json()).toEqual({ ptyId: 'scratch-1', command: 'npm run dev' });
     expect(fd.written).toEqual([{ ptyId: 'scratch-1', data: 'npm run dev\r' }]);
   });
 
@@ -183,6 +183,49 @@ describe('GET /api/preview/frame', () => {
     const f = makeApp({ fetchFn, listPortsFn: noPorts });
     const res = await f.inject({ url: '/api/preview/frame?url=' + encodeURIComponent('http://localhost:3000') });
     expect(res.json()).toEqual({ reachable: true, status: 200, blocked: 'xfo' });
+  });
+
+  // The headers that matter belong to the page the iframe ends up rendering.
+  // A local app that bounces / -> /login is the common shape, and the 302 almost
+  // never carries XFO — reading it would report "fine" for a page that blanks.
+  it('follows a loopback redirect and judges the FINAL response', async () => {
+    const seen: string[] = [];
+    const fetchFn = (async (u: string) => {
+      seen.push(u);
+      return u.endsWith('/login')
+        ? new Response('', { status: 200, headers: { 'content-security-policy': "frame-ancestors 'none'" } })
+        : new Response('', { status: 302, headers: { location: '/login' } });
+    }) as unknown as typeof fetch;
+    const f = makeApp({ fetchFn, listPortsFn: noPorts });
+    const res = await f.inject({ url: '/api/preview/frame?url=' + encodeURIComponent('http://localhost:3000/') });
+    expect(seen).toEqual(['http://localhost:3000/', 'http://localhost:3000/login']);
+    expect(res.json()).toEqual({ reachable: true, status: 200, blocked: 'csp' });
+  });
+
+  // Manual redirect handling exists so every hop stays loopback-checked;
+  // redirect:'follow' would let the first response steer the server anywhere.
+  it('stops at a redirect that leaves loopback instead of chasing it', async () => {
+    const seen: string[] = [];
+    const fetchFn = (async (u: string) => {
+      seen.push(u);
+      return new Response('', { status: 302, headers: { location: 'http://169.254.169.254/' } });
+    }) as unknown as typeof fetch;
+    const f = makeApp({ fetchFn, listPortsFn: noPorts });
+    const res = await f.inject({ url: '/api/preview/frame?url=' + encodeURIComponent('http://localhost:3000/') });
+    expect(seen).toEqual(['http://localhost:3000/']);
+    expect(res.json()).toMatchObject({ reachable: true, status: 302 });
+  });
+
+  it('gives up on a redirect loop instead of spinning', async () => {
+    let calls = 0;
+    const fetchFn = (async () => {
+      calls++;
+      return new Response('', { status: 302, headers: { location: '/loop' } });
+    }) as unknown as typeof fetch;
+    const f = makeApp({ fetchFn, listPortsFn: noPorts });
+    const res = await f.inject({ url: '/api/preview/frame?url=' + encodeURIComponent('http://localhost:3000/') });
+    expect(calls).toBeLessThanOrEqual(4); // MAX_FRAME_REDIRECTS + the first request
+    expect(res.json().reachable).toBe(true);
   });
 
   it('reports an unreachable url rather than throwing', async () => {

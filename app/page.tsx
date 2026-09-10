@@ -1148,9 +1148,20 @@ function AppShell() {
                     );
                   case 'browser':
                     return (
+                      // key: RightPane keys panels by PANEL id ('browser'), which is
+                      // the same string for every session tab, and nothing above it
+                      // is keyed by tab. Switching between two tabs that both have
+                      // this panel open would otherwise reconcile ONE instance with
+                      // new props while its nav/groups state — none of it derived
+                      // from props — kept pointing at the other project's app.
                       <BrowserPanel
+                        key={activeTab.id}
                         projectId={activeTab.projectId!}
                         ptyId={activeTab.ptyId}
+                        // keepMounted keeps this alive behind other strip tabs, so
+                        // it must be told when it is off-screen or it polls a
+                        // daemon-history scan forever for a panel nobody sees.
+                        visible={shown === 'browser'}
                         onShellStarted={(scratchPtyId) => handleShellStarted(activeTab, scratchPtyId)}
                         onClose={() => handleClosePanel(activeTab.id, 'browser')}
                       />

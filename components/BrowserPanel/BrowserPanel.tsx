@@ -66,18 +66,36 @@ const SANDBOX =
 const POLL_SEARCHING_MS = 2500;
 const POLL_IDLE_MS = 10_000;
 
+// How long a started dev server gets to bind a port before the panel admits it
+// may not be coming. Generous: a cold Next/webpack build genuinely takes this long.
+const START_GRACE_MS = 30_000;
+
 export interface BrowserPanelProps {
   projectId: string;
   /** The session's agent PTY — the scrollback that gets scraped, and the owner of any shell we start. */
   ptyId?: string | null;
   /** Called with the new scratch shell's ptyId after Run, so the strip can show it. */
   onShellStarted?: (scratchPtyId: string) => void;
+  /**
+   * False while another right-pane tab is showing. The panel is keepMounted (an
+   * iframe must survive a strip switch with its scroll and form state), so
+   * without this it would keep polling — and each poll pulls PTY scrollback
+   * through the daemon, which on the holder tier means the whole ring buffer per
+   * PTY. Mirrors ScratchTerminal's `visible`.
+   */
+  visible?: boolean;
   onClose: () => void;
 }
 
 type FrameCheck = { reachable: boolean; status: number; blocked: 'xfo' | 'csp' | null };
 
-export default function BrowserPanel({ projectId, ptyId, onShellStarted, onClose }: BrowserPanelProps) {
+export default function BrowserPanel({
+  projectId,
+  ptyId,
+  visible = true,
+  onShellStarted,
+  onClose,
+}: BrowserPanelProps) {
   const [ports, setPorts] = useState<PreviewPort[] | null>(null);
   const [groups, setGroups] = useState<ScriptGroup[] | null>(null);
   const [nav, setNav] = useState<NavState>(emptyNav);
@@ -85,7 +103,10 @@ export default function BrowserPanel({ projectId, ptyId, onShellStarted, onClose
   const [device, setDevice] = useState('full');
   const [reloadKey, setReloadKey] = useState(0);
   const [frame, setFrame] = useState<FrameCheck | null>(null);
-  const [running, setRunning] = useState<{ command: string } | null>(null);
+  const [running, setRunning] = useState<{ command: string; at: number } | null>(null);
+  // Ticks only while we are waiting on a Run, to re-render the starting notice
+  // once it has been too long to still claim things are fine.
+  const [waitedLong, setWaitedLong] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
 
@@ -98,6 +119,7 @@ export default function BrowserPanel({ projectId, ptyId, onShellStarted, onClose
 
   // ── discovery ────────────────────────────────────────────────────────────
   useEffect(() => {
+    if (!visible) return; // off-screen: poll nothing, see the `visible` prop doc
     let alive = true;
     const load = async () => {
       try {
@@ -113,7 +135,7 @@ export default function BrowserPanel({ projectId, ptyId, onShellStarted, onClose
       alive = false;
       clearInterval(timer);
     };
-  }, [projectId, ptyId, url]);
+  }, [projectId, ptyId, url, visible]);
 
   // One port and nowhere to be: that's the answer, don't make them click it.
   // Guarded on `url` so this never yanks the view out from under a manual
@@ -124,6 +146,16 @@ export default function BrowserPanel({ projectId, ptyId, onShellStarted, onClose
       setRunning(null); // the thing we were waiting for came up
     }
   }, [ports, url]);
+
+  // A dev script that dies on startup (EADDRINUSE, missing node_modules, wrong
+  // workspace) binds no port, so nothing would ever clear the "starting…"
+  // notice. After this the notice stops promising and offers the way back.
+  useEffect(() => {
+    setWaitedLong(false);
+    if (!running) return;
+    const timer = setTimeout(() => setWaitedLong(true), START_GRACE_MS);
+    return () => clearTimeout(timer);
+  }, [running]);
 
   // Scripts are only interesting in the empty state — fetched once we know
   // there is nothing listening, not on every mount.
@@ -176,10 +208,10 @@ export default function BrowserPanel({ projectId, ptyId, onShellStarted, onClose
   async function run(group: ScriptGroup, script: DevScript) {
     if (!ptyId) return;
     setRunError(null);
-    setRunning({ command: '' });
+    setRunning({ command: '', at: Date.now() });
     try {
       const res = await runDevScript(ptyId, script.name, group.subdir);
-      setRunning({ command: res.command });
+      setRunning({ command: res.command, at: Date.now() });
       // The shell is a real terminal in this tab's strip — surface it so its
       // output and its ^C are reachable. page.tsx keeps THIS panel active.
       onShellStarted?.(res.ptyId);
@@ -321,15 +353,19 @@ export default function BrowserPanel({ projectId, ptyId, onShellStarted, onClose
     if (running) {
       return (
         <div className={styles.notice}>
-          <div className={styles.noticeTitle}>starting…</div>
+          <div className={styles.noticeTitle}>{waitedLong ? 'still nothing on a port' : 'starting…'}</div>
           <p className={styles.noticeText}>
-            {running.command ? (
-              <code className={styles.code}>{running.command}</code>
-            ) : (
-              'spawning a terminal'
-            )}{' '}
-            is running in a terminal in this pane. The page loads here as soon as it binds a port.
+            {running.command ? <code className={styles.code}>{running.command}</code> : 'spawning a terminal'}{' '}
+            {waitedLong
+              ? 'has not bound a port yet. Check its terminal in this pane — it may have failed to start.'
+              : 'is running in a terminal in this pane. The page loads here as soon as it binds a port.'}
           </p>
+          {/* Without this the panel is a dead end: the script list is unmounted,
+              so a command that started and died leaves no way back but closing
+              and reopening the panel, which nobody would guess. */}
+          <Button variant="chip" onClick={() => setRunning(null)}>
+            back to scripts
+          </Button>
         </div>
       );
     }

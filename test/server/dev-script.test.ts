@@ -122,6 +122,42 @@ describe('findScriptGroups + resolveRunLine', () => {
     expect(await resolveRunLine(root, '', 'dev; rm -rf /')).toBe(null);
   });
 
+  it('does not let a workspace pattern escape the repo root', async () => {
+    // package.json is data, not trust. A no-star pattern reaches groupFor()
+    // verbatim, so without a guard this would offer `cd ../outside && npm run dev`.
+    const outsideRoot = mkdtempSync(path.join(tmpdir(), 'smx-outside-'));
+    const inner = mkdtempSync(path.join(tmpdir(), 'smx-escape-'));
+    try {
+      writeFileSync(path.join(outsideRoot, 'package.json'), JSON.stringify({ scripts: { dev: 'evil' } }));
+      writeFileSync(
+        path.join(inner, 'package.json'),
+        JSON.stringify({ workspaces: [path.relative(inner, outsideRoot).split(path.sep).join('/')] }),
+      );
+      const groups = await findScriptGroups(inner);
+      expect(groups).toEqual([]);
+      expect(await resolveRunLine(inner, '../whatever', 'dev')).toBe(null);
+    } finally {
+      rmSync(outsideRoot, { recursive: true, force: true });
+      rmSync(inner, { recursive: true, force: true });
+    }
+  });
+
+  it('a bare * pattern skips junk dirs and caps RESOLVED groups, not candidates', async () => {
+    const wide = mkdtempSync(path.join(tmpdir(), 'smx-wide-'));
+    try {
+      writeFileSync(path.join(wide, 'package.json'), JSON.stringify({ workspaces: ['*'] }));
+      // node_modules sorts before 'zzz-app', so a candidate-side cap plus junk
+      // dirs is exactly how the real workspace gets dropped.
+      for (const junk of ['node_modules', '.git', 'dist']) mkdirSync(path.join(wide, junk), { recursive: true });
+      mkdirSync(path.join(wide, 'zzz-app'), { recursive: true });
+      writeFileSync(path.join(wide, 'zzz-app', 'package.json'), JSON.stringify({ scripts: { dev: 'vite' } }));
+      const groups = await findScriptGroups(wide);
+      expect(groups.map((g) => g.subdir)).toEqual(['zzz-app']);
+    } finally {
+      rmSync(wide, { recursive: true, force: true });
+    }
+  });
+
   it('returns nothing for a repo with no package.json', async () => {
     const bare = mkdtempSync(path.join(tmpdir(), 'smx-bare-'));
     try {

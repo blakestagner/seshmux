@@ -117,8 +117,15 @@ function workspacePatterns(pkg: Record<string, unknown>): string[] {
 }
 
 // Bounded: a monorepo can have hundreds of packages and this list is a dropdown,
-// not a search. The root package is always included regardless of the cap.
+// not a search. The cap applies to RESOLVED groups, not to candidate dirs — a
+// `workspaces: ["*"]` repo enumerates every top-level directory, and capping the
+// candidates would spend the whole budget on dirs with no package.json and drop
+// the real workspaces sitting later in the alphabet.
 const MAX_GROUPS = 24;
+
+// Never worth walking into, and in a bare `*` pattern they are most of what
+// readdir returns.
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'out', 'coverage', 'target', 'vendor']);
 
 /**
  * Expand `apps/*` style patterns one level. Anything fancier (`packages/**`,
@@ -131,10 +138,28 @@ async function expandPattern(root: string, pattern: string): Promise<string[]> {
   const prefix = pattern.slice(0, star).replace(/\/$/, '');
   try {
     const entries = await readdir(path.join(root, prefix), { withFileTypes: true });
-    return entries.filter((e) => e.isDirectory()).map((e) => (prefix ? `${prefix}/${e.name}` : e.name));
+    return entries
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !SKIP_DIRS.has(e.name))
+      .map((e) => (prefix ? `${prefix}/${e.name}` : e.name));
   } catch {
     return [];
   }
+}
+
+/**
+ * Is `subdir` really inside the repo?
+ *
+ * package.json is data, not trust: `workspaces: ["../../elsewhere"]` has no star
+ * to expand, so it would otherwise reach groupFor() verbatim, escape the repo
+ * via path.join, and — if that directory has a dev script — get offered with a
+ * `cd ../../elsewhere` in front of it. The module header claims running is
+ * confined to what the repo declares; this is what makes that true of the
+ * repo's own tree rather than of anywhere its package.json can point.
+ */
+function withinRoot(root: string, subdir: string): boolean {
+  if (!subdir) return true;
+  const rel = path.relative(root, path.resolve(root, subdir));
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
 async function readPkg(dir: string): Promise<Record<string, unknown> | null> {
@@ -178,10 +203,11 @@ export async function findScriptGroups(root: string): Promise<ScriptGroup[]> {
   const subdirs: string[] = [];
   for (const pattern of workspacePatterns(rootPkg)) {
     for (const d of await expandPattern(root, pattern)) {
-      if (!subdirs.includes(d)) subdirs.push(d);
+      if (!subdirs.includes(d) && withinRoot(root, d)) subdirs.push(d);
     }
   }
-  for (const subdir of subdirs.slice(0, MAX_GROUPS)) {
+  for (const subdir of subdirs) {
+    if (groups.length >= MAX_GROUPS) break; // cap the ANSWER, not the search
     const g = await groupFor(root, subdir);
     if (g) groups.push(g);
   }

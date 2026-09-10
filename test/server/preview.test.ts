@@ -141,7 +141,12 @@ describe('frameBlock', () => {
   it('catches X-Frame-Options in its usual spellings', () => {
     expect(frameBlock(headers({ 'x-frame-options': 'DENY' }))).toBe('xfo');
     expect(frameBlock(headers({ 'x-frame-options': 'SameOrigin' }))).toBe('xfo');
-    expect(frameBlock(headers({ 'x-frame-options': 'ALLOW-FROM https://example.com' }))).toBe('xfo');
+  });
+
+  it('does NOT block on ALLOW-FROM, which no current browser honours', () => {
+    // Chrome never implemented it, Firefox removed it: the frame renders. Calling
+    // it blocked would refuse a working page — the over-reporting the contract bans.
+    expect(frameBlock(headers({ 'x-frame-options': 'ALLOW-FROM https://example.com' }))).toBe(null);
   });
 
   it("catches frame-ancestors 'none' but not a permissive one", () => {

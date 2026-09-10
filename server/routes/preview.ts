@@ -1,8 +1,8 @@
 // Embedded-browser (preview panel) routes.
 //
-//   GET  /api/preview/ports?project&pty   -> { ports, supported }
+//   GET  /api/preview/ports?project&pty   -> { ports, dir }
 //   GET  /api/preview/scripts?project&pty -> { groups, dir }
-//   POST /api/preview/run                 -> { ptyId, command, existing }
+//   POST /api/preview/run                 -> { ptyId, command }
 //   GET  /api/preview/frame?url           -> { reachable, blocked, status }
 //
 // Kept out of routes/git.ts even though /api/git/ports is its neighbour: that
@@ -32,6 +32,10 @@ const HISTORY_LINES = 4000;
 // accepts the connection and then says nothing would otherwise stall until the
 // platform's default socket timeout.
 const FRAME_TIMEOUT_MS = 3000;
+
+// Enough for the usual one-or-two-hop local auth bounce, small enough that a
+// redirect loop costs a couple of requests rather than the whole timeout.
+const MAX_FRAME_REDIRECTS = 3;
 
 export interface PreviewRouteDeps {
   resolveRepo?: (projectId: string) => string | null | Promise<string | null>;
@@ -147,10 +151,12 @@ export default async function previewRoutes(f: FastifyInstance, deps: PreviewRou
 
     let conn = null;
     try {
-      const { ptyId, existing } = await startScratchTerminal(ownerPtyId, { dialFn, fresh: true });
+      // fresh:true never re-adopts, so `existing` from startScratchTerminal is
+      // always false here — not worth returning a field that cannot vary.
+      const { ptyId } = await startScratchTerminal(ownerPtyId, { dialFn, fresh: true });
       conn = await dialFn();
       await conn.write(ptyId, resolved.command + '\r');
-      return { ptyId, command: resolved.command, existing };
+      return { ptyId, command: resolved.command };
     } catch (e) {
       const msg = (e as Error).message;
       const client = msg.includes('owner session not found') || msg.includes('cwd no longer exists');
@@ -174,10 +180,28 @@ export default async function previewRoutes(f: FastifyInstance, deps: PreviewRou
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), FRAME_TIMEOUT_MS);
     try {
-      // GET, not HEAD: plenty of dev servers 405 a HEAD and would read as dead.
-      // The body is never consumed — abort() in `finally` drops it.
-      const res = await doFetch(url, { signal: ac.signal, redirect: 'manual' });
-      return { reachable: true, status: res.status, blocked: frameBlock(res.headers) };
+      // Follow redirects BY HAND rather than with redirect:'follow'. The headers
+      // that matter belong to the document the iframe ends up rendering, and a
+      // local app that bounces / -> /login (Next middleware, Rails, Django)
+      // almost never puts XFO on the 302 itself — reading the redirect's headers
+      // would report "not blocked" for a page that blanks. Manual so every hop
+      // stays loopback-checked: redirect:'follow' would let the first response
+      // send the server anywhere, reopening the SSRF hole isLoopbackUrl closes.
+      let target = url;
+      let res: Response | null = null;
+      for (let hop = 0; hop <= MAX_FRAME_REDIRECTS; hop++) {
+        // GET, not HEAD: plenty of dev servers 405 a HEAD and would read as dead.
+        // The body is never consumed — abort() in `finally` drops it.
+        res = await doFetch(target, { signal: ac.signal, redirect: 'manual' });
+        const location = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null;
+        if (!location) break;
+        const next = new URL(location, target).toString();
+        // A redirect off loopback is not something we chase, and not something
+        // the panel can show. Report the redirect itself and let the iframe try.
+        if (!isLoopbackUrl(next)) break;
+        target = next;
+      }
+      return { reachable: true, status: res!.status, blocked: frameBlock(res!.headers) };
     } catch {
       return { reachable: false, status: 0, blocked: null };
     } finally {

@@ -901,7 +901,7 @@ export function runDevScript(
   ownerPtyId: string,
   script: string,
   subdir: string,
-): Promise<{ ptyId: string; command: string; existing: boolean }> {
+): Promise<{ ptyId: string; command: string }> {
   return req('/api/preview/run', {
     method: 'POST',
     body: JSON.stringify({ ownerPtyId, script, subdir }),
