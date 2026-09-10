@@ -412,6 +412,22 @@ describe('stripHeredocs', () => {
     expect(stripHeredocs(cmd)).toBe(cmd);
   });
 
+  it('is decided by quoting, not by what follows the delimiter', () => {
+    // Anchoring to end-of-line was wrong both ways: it still ate this...
+    const quoted = "grep -rn \"x << y\"\nnpm test";
+    expect(stripHeredocs(quoted)).toBe(quoted);
+    // ...while rejecting real openers that carry a suffix.
+    const redirected = ["cat <<'EOF' 2>&1", "body", "EOF", "npm test"].join("\n");
+    expect(stripHeredocs(redirected)).toBe(["cat <<'EOF' 2>&1", "npm test"].join("\n"));
+    const chained = ["cat <<'EOF' && npm test", "body", "EOF"].join("\n");
+    expect(stripHeredocs(chained)).toBe("cat <<'EOF' && npm test");
+  });
+
+  it('accepts a dash in the delimiter', () => {
+    const cmd = ["cat <<'END-OF'", "body", "END-OF", "npm test"].join("\n");
+    expect(stripHeredocs(cmd)).toBe(["cat <<'END-OF'", "npm test"].join("\n"));
+  });
+
   it('recognises a heredoc whose line ends in a redirect', () => {
     const cmd = ["cat <<'EOF' > out.txt", "body line", "EOF", "node out.txt"].join("\n");
     expect(stripHeredocs(cmd)).toBe(["cat <<'EOF' > out.txt", "node out.txt"].join("\n"));
@@ -447,6 +463,14 @@ describe('significantCommand', () => {
 
   it('keeps an env-prefixed command — VAR=x cmd is a command, not an assignment', () => {
     expect(significantCommand("PORT=4900 npm test && tail -5 out.log")).toBe("PORT=4900 npm test");
+  });
+
+  it('skips an assignment whose value has spaces inside $( ) or ( )', () => {
+    // `\S*` stopped at the first space, so these read as commands and the record
+    // was labelled with the assignment instead of what actually ran.
+    expect(significantCommand("ROOT=$(git rev-parse --show-toplevel)\nnpm test")).toBe("npm test");
+    expect(significantCommand("FILES=(a b c)\nnpm run build")).toBe("npm run build");
+    expect(significantCommand("X=1 # why\nnpm test")).toBe("npm test");
   });
 
   it('still skips a bare assignment, quoted value and all', () => {
@@ -510,9 +534,27 @@ describe('hasErrorMessage', () => {
     expect(hasErrorMessage("Exit code 1\ntypes.ts:126:  ): Promise<void>;")).toBe(false);
   });
 
-  it('finds a reason past the first screen of output', () => {
-    const noise = Array.from({ length: 60 }, (_, i) => "  ok test case " + i).join("\n");
-    expect(hasErrorMessage("Exit code 1\n" + noise + "\nAssertionError: expected 1 to be 2")).toBe(true);
+  // Deliberately NOT scanned to the end. A command leads with its error; error-shaped
+  // text deep in the output is usually CONTENT — a `git diff --exit-code` whose diff
+  // body happens to contain `throw new TypeError(...)` exits non-zero and would
+  // otherwise be recorded as having thrown one. A missed record beats a false one.
+  it('does not go hunting past the first screen for something error-shaped', () => {
+    const diff =
+      "Exit code 1\n" +
+      "+  const x = 1;\n".repeat(40) +
+      "+  throw new TypeError(\"bad\");";
+    expect(diff.length).toBeGreaterThan(600);
+    expect(hasErrorMessage(diff)).toBe(false);
+  });
+
+  it('takes the FIRST failing line, not the first matching signature', () => {
+    // Output is chronological: the earliest diagnostic is the cause, the rest is fallout.
+    const out = [
+      "Exit code 1",
+      "rm: cannot remove 'x': Device or resource busy",
+      "Error: later and less useful"
+    ].join("\n");
+    expect(errorGist(out)).toBe("rm: cannot remove 'x': Device or resource busy");
   });
 
   it('counts a real diagnostic', () => {

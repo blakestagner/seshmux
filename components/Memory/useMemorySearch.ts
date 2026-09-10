@@ -51,8 +51,6 @@ export interface MemorySearchState {
 export function useMemorySearch(projectId: string | undefined, refreshKey = 0, limit = 60): MemorySearchState {
   const [query, setQuery] = useState('');
   const [scope, setScope] = useState<MemoryScopeMode>('project'); // repo-first
-  // Defaults to the substance rather than everything — see SUBSTANCE_KINDS. Clearing every
-  // chip still means "no kind filter", i.e. genuinely all of it.
   const [kinds, setKinds] = useState<MemoryKind[]>(SUBSTANCE_KINDS);
   const [rows, setRows] = useState<MemoryRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -70,7 +68,12 @@ export function useMemorySearch(projectId: string | undefined, refreshKey = 0, l
       const ctrl = new AbortController();
       inflight.current = ctrl;
       setLoading(true);
-      searchMemory({ q: query || undefined, project: projectId, scope, kind: kinds, limit }, ctrl.signal)
+      // An EMPTY chip set means the default view, not "everything". The store reads an
+      // empty kind list as no filter at all, so with a non-empty default the last untick
+      // would have jumped from five kinds to all seven — narrowing the filter showing
+      // MORE. Everything is still reachable: tick commands and files as well.
+      const kindFilter = kinds.length ? kinds : SUBSTANCE_KINDS;
+      searchMemory({ q: query || undefined, project: projectId, scope, kind: kindFilter, limit }, ctrl.signal)
         .then((res) => {
           if (ctrl.signal.aborted) return;
           setRows(res.rows);

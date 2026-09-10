@@ -113,7 +113,10 @@ export default function MemoryPanel({
         setNote({ text: 'nothing to load', error: false });
         return;
       }
-      const n = selected.length;
+      // packMemory TRIMS to the budget, so the count that matters is the one that came
+      // back. Reporting the tick count made "select all" over budget claim it loaded 70
+      // records when the server had packed the top ~20.
+      const n = packed.count;
       if (!send(payload)) {
         // Registered but not writable: the socket is closed or mid-reconnect after a
         // server update. Keep the selection so the user can simply try again.
@@ -121,7 +124,13 @@ export default function MemoryPanel({
         return;
       }
       setSelected([]);
-      setNote({ text: `loaded ${n} record${n === 1 ? '' : 's'} into the session`, error: false });
+      setNote({
+        text:
+          n < selected.length
+            ? `loaded the top ${n} of ${selected.length} — the rest did not fit the budget`
+            : `loaded ${n} record${n === 1 ? '' : 's'} into the session`,
+        error: false,
+      });
     } catch (err) {
       setNote({ text: err instanceof Error ? err.message : 'load failed', error: true });
     } finally {
