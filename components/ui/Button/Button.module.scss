@@ -37,20 +37,31 @@
   color: var(--text);
 }
 
-// Text-link button: no border, no padding, no fill — just a label that reacts to hover.
-// For an action sitting beside a real button, where matching its weight would make the
-// two read as equals ("clear" next to "Load into session"). Re-includes a type mixin
-// because it must beat .btn’s t-row; that is the same shape .primary and .chip use.
+// Text-link button: no border, no fill, no padding — just a label that reacts to hover.
+// For an action beside a real button, where matching its weight would make the two read
+// as equals ("clear" next to "Load into session"), or standing alone as an affordance
+// that is not the point of its row ("← back", "load more", "show 3 more").
+//
+// Tone and padding come through CUSTOM PROPERTIES rather than being overridden in the
+// consumer module. A consumer-side `color:` would be competing with this rule from a
+// different stylesheet and could only win on bundle import order — the same trap that
+// put `.flush` in ui/Menu. Setting a variable this rule merely READS has no such fight.
 .link {
   @include t-mono-micro;
-  padding: 0;
-  border-color: transparent;
+  // The three components this replaced each set this themselves; .btn does not, and a
+  // bare <button> is cursor:default. Scoped to this variant so the other variants keep
+  // whatever they have today.
+  cursor: pointer;
+  padding: var(--btn-link-pad, 0);
+  // border:none, not a transparent border — .btn carries a 1px one, and keeping it
+  // would make every link 2px wider and taller than the plain <button>s it replaced.
+  border: none;
   background: transparent;
-  color: var(--text-dim);
+  color: var(--btn-link-color, var(--text-dim));
 }
 
 .link:hover:not(:disabled) {
-  color: var(--accent);
+  color: var(--btn-link-hover, var(--accent));
 }
 
 .btn:disabled {

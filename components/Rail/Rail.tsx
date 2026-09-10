@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
+import Button from '../ui/Button/Button';
 import { useDragResize } from '../../lib/client/use-drag-resize';
 import { clampSize, readPersistedSize } from '../../lib/client/drag-resize';
 import { persistDebounced } from '../../lib/client/persist';
@@ -846,9 +847,9 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                   ))}
                   {filtered && !shown.length ? <div className={styles.noMatch}>no matching sessions</div> : null}
                   {!filtered && hasMore ? (
-                    <button type="button" className={styles.loadMore} onClick={() => loadMore(p.id)}>
+                    <Button variant="link" className={styles.loadMore} onClick={() => loadMore(p.id)}>
                       load more…
-                    </button>
+                    </Button>
                   ) : null}
                 </div>
               </div>

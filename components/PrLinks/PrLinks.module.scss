@@ -51,14 +51,10 @@
 }
 
 // Show more / less toggle — a plain text button matching the link rows.
+// Layout + tone only — the button reset is ui/Button’s `link` variant.
 .toggle {
-  @include t-mono-micro;
+  --btn-link-color: var(--text-faint);
   align-self: flex-start;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--text-faint);
-  cursor: pointer;
 }
 
 .toggle:hover {
