@@ -369,11 +369,16 @@ if (isMain) {
   // Direct `tsx server/index.ts` runs: a user Ctrl-C (SIGINT) / SIGTERM syncs the
   // ledger before exiting, without changing the conventional exit codes. The
   // supervised path (bin/seshmux.js) is covered by SIGUSR2/onApplied above.
+  // Preview proxies are plain http listeners owned by this process; left open
+  // they would hold the event loop and keep a "stopped" server alive.
+  const closeProxies = async () => {
+    (await import('./lib/preview-proxy')).stopAllProxies();
+  };
   process.once('SIGINT', () => {
-    void syncLedgerAtShutdown().finally(() => process.exit(130));
+    void closeProxies().finally(() => syncLedgerAtShutdown().finally(() => process.exit(130)));
   });
   process.once('SIGTERM', () => {
-    void syncLedgerAtShutdown().finally(() => process.exit(143));
+    void closeProxies().finally(() => syncLedgerAtShutdown().finally(() => process.exit(143)));
   });
   const dev = process.env.NODE_ENV !== 'production';
   const port = Number(process.env.PORT) || 4700;

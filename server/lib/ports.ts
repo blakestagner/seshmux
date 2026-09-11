@@ -6,18 +6,32 @@
 // apps/web has cwd apps/web, so the panel can label the port with the subdir
 // that owns it without knowing anything about workspaces.
 //
-// ponytail: lsof-only (macOS/Linux). win32 returns [] — netstat gives no cwd,
-// so there'd be nothing to attribute a port to. Add a win32 path (netstat -ano
-// + a cwd probe) if anyone asks.
+// WIN32 IS A DIFFERENT QUESTION. netstat reports no cwd, so a port cannot be
+// attributed to a repo there — not now and not with more effort, short of
+// reading another process's PEB. Rather than return [] and tell the user their
+// OS is unsupported (which is what this did, and which reads as "broken"), the
+// win32 path answers the weaker question it CAN answer: what is listening on
+// this machine. That is a different scope, so it is reported as one — see
+// `scope` on PortsResult, which the panel labels rather than quietly conflating.
 
 import { execFile } from 'node:child_process';
 import path from 'node:path';
+import { winListeners } from './preview';
 
 export interface PortEntry {
   port: number;
   pid: number;
   command: string;
-  dir: string; // project-relative cwd ('' = project root)
+  dir: string; // project-relative cwd ('' = project root); always '' when scope is 'machine'
+}
+
+export interface PortsResult {
+  ports: PortEntry[];
+  /**
+   * 'repo'    — every port is owned by a process whose cwd is inside this dir (lsof).
+   * 'machine' — everything listening on the box, unattributable to a repo (win32).
+   */
+  scope: 'repo' | 'machine';
 }
 
 function lsof(args: string[]): Promise<string> {
@@ -64,7 +78,12 @@ function portOf(name: string): number | null {
  * nothing here escalates to SIGKILL.
  */
 export async function killPort(dir: string, port: number, pid: number): Promise<'ok' | 'not-found' | 'failed'> {
-  const match = (await listeningPorts(dir)).some((p) => p.pid === pid && p.port === port);
+  // Same rule on both platforms: the pid is only signalled if the CURRENT
+  // listener list still pairs it with that port. On win32 that list is the
+  // machine-wide one, which is a wider net than the repo — but it is a real
+  // observation of a live listener, never the client's say-so.
+  const { ports } = await listPortsScoped(dir);
+  const match = ports.some((p) => p.pid === pid && p.port === port);
   if (!match) return 'not-found';
   try {
     process.kill(pid, 'SIGTERM');
@@ -72,6 +91,24 @@ export async function killPort(dir: string, port: number, pid: number): Promise<
   } catch {
     return 'failed';
   }
+}
+
+/**
+ * Ports for a project dir, plus the SCOPE of that answer.
+ *
+ * Callers that render this must show the scope: on win32 the rows are every
+ * listener on the machine, and presenting those as "ports in this repo" would
+ * be a lie the user cannot detect.
+ */
+export async function listPortsScoped(dir: string): Promise<PortsResult> {
+  if (process.platform === 'win32') {
+    const machine = await winListeners().catch(() => []);
+    return {
+      scope: 'machine',
+      ports: machine.map((m) => ({ port: m.port, pid: m.pid, command: m.command, dir: '' })),
+    };
+  }
+  return { scope: 'repo', ports: await listeningPorts(dir) };
 }
 
 export async function listeningPorts(dir: string): Promise<PortEntry[]> {

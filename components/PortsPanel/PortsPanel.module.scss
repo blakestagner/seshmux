@@ -31,6 +31,17 @@
   @include t-glyph-panel;
 }
 
+// Scope badge — sits beside the title, muted: it is a qualifier on what the
+// list means, not a status.
+.scope {
+  @include t-mono-micro;
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-faint);
+}
+
 .body {
   @include t-mono-micro;
   overflow-y: auto;

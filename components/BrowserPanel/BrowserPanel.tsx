@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   checkFrame,
+  ensurePreviewProxy,
   getDevScripts,
   getPreviewPorts,
   runDevScript,
@@ -110,6 +111,10 @@ export default function BrowserPanel({
   const [waitedLong, setWaitedLong] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  // targetPort -> proxied origin, for apps that refuse to be framed. Keyed by
+  // port so switching back and forth reuses one proxy.
+  const [proxied, setProxied] = useState<Record<number, string>>({});
+  const [proxyError, setProxyError] = useState<string | null>(null);
 
   const url = current(nav);
 
@@ -198,6 +203,24 @@ export default function BrowserPanel({
     };
   }, [url, reloadKey]);
 
+  // An app that blocks framing cannot be shown as-is — the header is enforced
+  // by the browser against bytes we did not serve. Standing up a proxy is the
+  // only fix, so do it rather than making the user read an explanation and go
+  // edit their next.config. Automatic because the alternative is a dead end.
+  useEffect(() => {
+    if (!url || !frame?.blocked) return;
+    const port = Number(portOf(url));
+    if (!port || proxied[port]) return;
+    let alive = true;
+    setProxyError(null);
+    ensurePreviewProxy(port)
+      .then((r) => alive && setProxied((m) => ({ ...m, [port]: `http://localhost:${r.proxyPort}` })))
+      .catch((e) => alive && setProxyError(e instanceof Error ? e.message : 'could not start proxy'));
+    return () => {
+      alive = false;
+    };
+  }, [url, frame, proxied]);
+
   // ── actions ──────────────────────────────────────────────────────────────
   const submitUrl = () => {
     const next = normalizeUrl(draft, url || null);
@@ -227,6 +250,22 @@ export default function BrowserPanel({
 
   // ── derived ──────────────────────────────────────────────────────────────
   const deviceWidth = DEVICES.find((d) => d.id === device)?.width ?? 0;
+
+  // What the iframe actually loads. For a blocked app that is the proxy origin,
+  // with the original path preserved — the URL BAR keeps showing the real
+  // address, because the proxy is an implementation detail and a user who reads
+  // `localhost:53412` learns nothing true about their app.
+  const framedUrl = (() => {
+    if (!url || !frame?.blocked) return url;
+    const origin = proxied[Number(portOf(url))];
+    if (!origin) return '';
+    try {
+      const u = new URL(url);
+      return origin + u.pathname + u.search + u.hash;
+    } catch {
+      return origin;
+    }
+  })();
 
   // The switcher always contains where we are, even if that port has since
   // dropped off the list — otherwise Select would silently show a wrong value.
@@ -286,6 +325,14 @@ export default function BrowserPanel({
           ) : (
             <span className={styles.metaNote}>{portOptions[0]?.label ?? ''}</span>
           )}
+          {/* Never substitute silently: what is on screen is being served
+              through seshmux, which can matter when debugging headers, cookies
+              or anything else the proxy sits in the middle of. */}
+          {frame?.blocked && framedUrl ? (
+            <span className={styles.metaNote} title="This app sends X-Frame-Options, so seshmux is serving it through a local proxy to make it embeddable">
+              proxied
+            </span>
+          ) : null}
           <Segmented options={DEVICES.map((d) => ({ id: d.id, label: d.label }))} value={device} onChange={setDevice} />
         </div>
       ) : null}
@@ -307,18 +354,25 @@ export default function BrowserPanel({
       );
     }
 
-    if (url && frame?.blocked) {
+    // Blocked, and the proxy has not answered yet (or could not start).
+    if (url && frame?.blocked && !framedUrl) {
+      if (!proxyError) {
+        return (
+          <div className={styles.empty}>
+            <Spinner /> {displayUrl(url)} blocks embedding — routing it through seshmux…
+          </div>
+        );
+      }
       return (
         <div className={styles.notice}>
-          <div className={styles.noticeTitle}>this app blocks embedding</div>
+          <div className={styles.noticeTitle}>could not preview this app</div>
           <p className={styles.noticeText}>
             {displayUrl(url)} sends{' '}
             <code className={styles.code}>
               {frame.blocked === 'xfo' ? 'X-Frame-Options' : "frame-ancestors 'none'"}
             </code>
-            , so the browser refuses to render it in a frame — nothing seshmux can override from
-            outside the page. Next.js apps often set this in <code className={styles.code}>next.config</code>{' '}
-            or middleware; relaxing it for dev would let it preview here.
+            , so it can only be framed through seshmux&apos;s proxy — and the proxy did not start:{' '}
+            {proxyError}
           </p>
           <Button variant="chip" onClick={openExternal}>
             ↗ open {displayUrl(url)}
@@ -337,9 +391,9 @@ export default function BrowserPanel({
             {/* key on url+reloadKey: an iframe's own history is unreachable
                 cross-origin, so remounting IS reload and IS navigation. */}
             <iframe
-              key={`${url}#${reloadKey}`}
+              key={`${framedUrl}#${reloadKey}`}
               className={styles.frame}
-              src={url}
+              src={framedUrl}
               title="Preview"
               sandbox={SANDBOX}
             />

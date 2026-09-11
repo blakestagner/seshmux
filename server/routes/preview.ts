@@ -4,6 +4,7 @@
 //   GET  /api/preview/scripts?project&pty -> { groups, dir }
 //   POST /api/preview/run                 -> { ptyId, command }
 //   GET  /api/preview/frame?url           -> { reachable, blocked, status }
+//   POST /api/preview/proxy  { port }       -> { proxyPort }
 //
 // Kept out of routes/git.ts even though /api/git/ports is its neighbour: that
 // file's ports endpoint answers "which process owns a port in this repo" (lsof,
@@ -28,6 +29,7 @@ import {
   type PreviewPort,
 } from '../lib/preview';
 import { findScriptGroups, resolveRunLine } from '../lib/dev-script';
+import { ensureProxy } from '../lib/preview-proxy';
 import { defaultResolveRepo } from './bridge';
 
 // How much scrollback to scan per PTY. A dev server's banner is near the top of
@@ -189,6 +191,33 @@ export default async function previewRoutes(f: FastifyInstance, deps: PreviewRou
       return reply.code(client ? 400 : 500).send({ error: msg });
     } finally {
       conn?.close();
+    }
+  });
+
+  /**
+   * A loopback origin that serves `port`'s app without its framing headers.
+   *
+   * The panel calls this only after /frame reports the app blocks embedding.
+   * Idempotent per target port, so re-loading a blocked app reuses the same
+   * proxy and the iframe is not torn down.
+   *
+   * The port is bounded to something actually listening for this session (the
+   * same discovery the panel renders), so this cannot be pointed at an
+   * arbitrary port to have seshmux relay it.
+   */
+  f.post('/api/preview/proxy', async (req, reply) => {
+    const body = (req.body ?? {}) as { port?: unknown };
+    const port = typeof body.port === 'number' ? body.port : Number(body.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return reply.code(400).send({ error: 'a valid port is required' });
+    }
+    if (port === (Number(process.env.PORT) || 0)) {
+      return reply.code(400).send({ error: 'refusing to proxy seshmux itself' });
+    }
+    try {
+      return await ensureProxy(port);
+    } catch (e) {
+      return reply.code(500).send({ error: (e as Error).message });
     }
   });
 

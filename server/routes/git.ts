@@ -19,7 +19,7 @@ import {
   saveUpload,
   writeWorkingFile,
 } from '../lib/git-stats';
-import { killPort, listeningPorts } from '../lib/ports';
+import { killPort, listeningPorts, listPortsScoped } from '../lib/ports';
 import { readEntries } from '../lib/live-ledger';
 import { reveal } from '../lib/reveal';
 import { syntaxCheck } from '../lib/syntax-check';
@@ -215,7 +215,11 @@ export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps =
       reply.code(404);
       return { error: 'project not found' };
     }
-    return { ports: await listPorts(target.dir), supported: process.platform !== 'win32' };
+    // `supported` is kept for older clients but is now always true: win32 no
+    // longer returns "unsupported", it returns a machine-scoped answer. `scope`
+    // is what the panel must render.
+    const res = deps.listPortsFn ? { scope: 'repo' as const, ports: await listPorts(target.dir) } : await listPortsScoped(target.dir);
+    return { ...res, supported: true };
   });
 
   // Drag-and-drop upload: raw body (one file per request, the browser hands us

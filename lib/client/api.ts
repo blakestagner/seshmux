@@ -842,7 +842,7 @@ export function getPorts(
   projectId: string,
   branch: string | null | undefined,
   ptyId?: string | null,
-): Promise<{ ports: PortEntry[]; supported: boolean }> {
+): Promise<{ ports: PortEntry[]; supported: boolean; scope: 'repo' | 'machine' }> {
   const params = new URLSearchParams({ project: projectId });
   if (branch) params.set('branch', branch);
   // ptyId lets the server scan the terminal's REAL cwd (worktree-aware) instead
@@ -911,6 +911,16 @@ export function runDevScript(
 /** Reachability + iframe-embeddability of a loopback URL. */
 export function checkFrame(url: string): Promise<{ reachable: boolean; status: number; blocked: 'xfo' | 'csp' | null }> {
   return req(`/api/preview/frame?url=${encodeURIComponent(url)}`);
+}
+
+/**
+ * A loopback origin serving `port`'s app with its framing headers removed.
+ * Only needed when checkFrame() reports the app blocks embedding — see
+ * server/lib/preview-proxy.ts for why this is a separate listener and not a
+ * path on the main server.
+ */
+export function ensurePreviewProxy(port: number): Promise<{ proxyPort: number; targetPort: number }> {
+  return req('/api/preview/proxy', { method: 'POST', body: JSON.stringify({ port }) });
 }
 
 // ── repo search / replace (changes panel search mode) ───────────────────────
