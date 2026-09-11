@@ -25,6 +25,7 @@ import {
   filterHttp,
   frameBlock,
   isLoopbackUrl,
+  probePort,
   winListeners,
   type PreviewPort,
 } from '../lib/preview';
@@ -201,9 +202,15 @@ export default async function previewRoutes(f: FastifyInstance, deps: PreviewRou
    * Idempotent per target port, so re-loading a blocked app reuses the same
    * proxy and the iframe is not torn down.
    *
-   * The port is bounded to something actually listening for this session (the
-   * same discovery the panel renders), so this cannot be pointed at an
-   * arbitrary port to have seshmux relay it.
+   * BOUNDS, stated precisely because stripping framing headers off an arbitrary
+   * local service (a Jupyter, a K8s dashboard) would remove exactly the
+   * clickjacking protection it set. Enforced here: a valid port, not seshmux's
+   * own, and something must actually be listening on it right now. NOT enforced:
+   * that the port belongs to this project — Windows cannot attribute a port to a
+   * repo at all (see lib/ports.ts), so no such check could exist on the platform
+   * this feature was built for. The real boundary is the one on every mutating
+   * route: the auth token plus the Origin check, i.e. only the seshmux UI on
+   * this machine can ask for a proxy at all.
    */
   f.post('/api/preview/proxy', async (req, reply) => {
     const body = (req.body ?? {}) as { port?: unknown };
@@ -213,6 +220,10 @@ export default async function previewRoutes(f: FastifyInstance, deps: PreviewRou
     }
     if (port === (Number(process.env.PORT) || 0)) {
       return reply.code(400).send({ error: 'refusing to proxy seshmux itself' });
+    }
+    // Liveness, so a typo cannot leave a listener standing in front of nothing.
+    if (!(await (deps.probeFn ?? probePort)(port))) {
+      return reply.code(400).send({ error: `nothing is listening on port ${port}` });
     }
     try {
       return await ensureProxy(port);

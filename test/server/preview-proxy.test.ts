@@ -4,6 +4,7 @@
 // the header rewriting and the socket plumbing are actually exercised.
 import { describe, it, expect, afterEach } from 'vitest';
 import http from 'node:http';
+import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import {
   _activeProxyCount,
@@ -23,7 +24,16 @@ async function origin(
   await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
   return {
     port: (srv.address() as AddressInfo).port,
-    close: () => new Promise<void>((r) => srv.close(() => r())),
+    // stopAllProxies FIRST: the proxy keeps a live socket to this fixture, and
+    // server.close() waits for every connection to end — so closing in the
+    // other order hangs until the test times out, which is not a failure of the
+    // code under test but looks exactly like one.
+    close: () =>
+      new Promise<void>((r) => {
+        stopAllProxies();
+        srv.closeAllConnections?.();
+        srv.close(() => r());
+      }),
   };
 }
 
@@ -120,6 +130,82 @@ describe('ensureProxy', () => {
     const { proxyPort } = await ensureProxy(59999);
     const res = await fetch(`http://127.0.0.1:${proxyPort}/`);
     expect(res.status).toBe(502);
+  });
+
+  // The upgrade path had no coverage, and the bug it hid was a swapped pair of
+  // unshift() calls that echoed each side's first bytes back at its own sender.
+  // It only bites when a server ships data in the SAME packet as the 101 —
+  // which Next's HMR does — so the fixture must do that too or it proves nothing.
+  it('carries a websocket upgrade, including data sent with the 101', async () => {
+    const srv = http.createServer();
+    // Held so teardown can destroy it explicitly: once a socket is upgraded the
+    // http server hands ownership away, so neither close() nor
+    // closeAllConnections() reliably reaps it and close() waits forever.
+    // A list, not a `let`: TS narrows a callback-assigned variable back to its
+    // initializer at the use site, so `originSocket?.destroy()` typed as never.
+    const originSockets: net.Socket[] = [];
+    srv.on('upgrade', (_req, socket, _head) => {
+      originSockets.push(socket as net.Socket);
+      // 101 and the first frame in one write: the case that broke.
+      socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\nHELLO');
+      socket.on('data', (d) => socket.write(`echo:${d.toString()}`));
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+    const targetPort = (srv.address() as AddressInfo).port;
+
+    try {
+      const { proxyPort } = await ensureProxy(targetPort);
+      const received = await new Promise<string>((resolve, reject) => {
+        const sock = new net.Socket();
+        let buf = '';
+        sock.setTimeout(3000, () => reject(new Error('timed out')));
+        sock.on('error', reject);
+        sock.connect(proxyPort, '127.0.0.1', () => {
+          sock.write(
+            `GET /_next/webpack-hmr HTTP/1.1\r\nHost:127.0.0.1:${proxyPort}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n`,
+          );
+        });
+        sock.on('data', (d: Buffer) => {
+          buf += d.toString();
+          // The 101 plus the frame that rode along with it, then a round trip.
+          if (buf.includes('HELLO')) sock.write('PING');
+          if (buf.includes('echo:PING')) {
+            sock.destroy();
+            resolve(buf);
+          }
+        });
+      });
+      expect(received).toContain('101 Switching Protocols');
+      expect(received).toContain('HELLO'); // would be echoed to the SERVER if unshift were swapped
+      expect(received).toContain('echo:PING'); // and the tunnel still works both ways
+    } finally {
+      stopAllProxies(); // see the note in origin(): close() waits on the proxy's socket
+      for (const s of originSockets) s.destroy();
+      srv.closeAllConnections?.();
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  });
+
+  it('aborts the upstream request when the client hangs up', async () => {
+    let aborted = false;
+    const app = await origin((req, res) => {
+      // A long-lived response, like an HMR stream: it never ends on its own, so
+      // only an abort can clean it up.
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(': open\n\n');
+      req.on('aborted', () => (aborted = true));
+      res.on('close', () => (aborted = true));
+    });
+    try {
+      const { proxyPort } = await ensureProxy(app.port);
+      const ac = new AbortController();
+      await fetch(`http://127.0.0.1:${proxyPort}/stream`, { signal: ac.signal }).catch(() => {});
+      ac.abort();
+      await new Promise((r) => setTimeout(r, 150));
+      expect(aborted).toBe(true);
+    } finally {
+      await app.close();
+    }
   });
 
   it('refuses a port that is not a port', async () => {

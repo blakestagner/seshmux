@@ -209,7 +209,7 @@ export default function BrowserPanel({
   // edit their next.config. Automatic because the alternative is a dead end.
   useEffect(() => {
     if (!url || !frame?.blocked) return;
-    const port = Number(portOf(url));
+    const port = portOf(url);
     if (!port || proxied[port]) return;
     let alive = true;
     setProxyError(null);
@@ -257,7 +257,7 @@ export default function BrowserPanel({
   // `localhost:53412` learns nothing true about their app.
   const framedUrl = (() => {
     if (!url || !frame?.blocked) return url;
-    const origin = proxied[Number(portOf(url))];
+    const origin = proxied[portOf(url)];
     if (!origin) return '';
     try {
       const u = new URL(url);
@@ -275,6 +275,7 @@ export default function BrowserPanel({
       const port = portOf(url);
       opts.unshift({ value: originOf(url), label: port ? `:${port}` : displayUrl(url) });
     }
+
     return opts;
   }, [ports, url]);
 
@@ -526,10 +527,21 @@ function originOf(url: string): string {
   }
 }
 
-function portOf(url: string): string {
+/**
+ * The port a URL actually addresses, defaulting by scheme.
+ *
+ * `new URL('http://localhost:80').port` is '' — the URL parser drops a port
+ * that is the scheme default, and `http://localhost/` never had one. Treating
+ * that as "no port" made the proxy effect bail without starting a proxy AND
+ * without recording an error, so a blocked app on a default port sat on
+ * "routing it through seshmux…" forever with no way out but retyping the URL.
+ */
+function portOf(url: string): number {
   try {
-    return new URL(url).port;
+    const u = new URL(url);
+    if (u.port) return Number(u.port);
+    return u.protocol === 'https:' ? 443 : 80;
   } catch {
-    return '';
+    return 0;
   }
 }

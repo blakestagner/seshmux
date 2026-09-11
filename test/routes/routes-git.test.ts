@@ -379,4 +379,27 @@ describe('GET /api/git/ports — worktree cwd resolution', () => {
     expect(res.statusCode).toBe(200);
     expect(scanned).toEqual([repo]);
   });
+
+  // The panel renders rows differently per scope and hides the kill button on
+  // 'machine', so the scope has to survive the route rather than be assumed.
+  it('reports repo scope by default', async () => {
+    const f = makeApp({ listPortsFn: spyPorts });
+    const res = await f.inject({ method: 'GET', url: '/api/git/ports?project=x' });
+    expect(res.json()).toMatchObject({ scope: 'repo', supported: true });
+  });
+
+  it('passes machine scope through — the win32 answer, which has no cwd per port', async () => {
+    const f = makeApp({
+      listPortsScopedFn: async () => ({
+        scope: 'machine' as const,
+        ports: [{ port: 3000, pid: 42, command: 'node.exe', dir: '' }],
+      }),
+    });
+    const res = await f.inject({ method: 'GET', url: '/api/git/ports?project=x' });
+    expect(res.json()).toEqual({
+      scope: 'machine',
+      supported: true,
+      ports: [{ port: 3000, pid: 42, command: 'node.exe', dir: '' }],
+    });
+  });
 });

@@ -104,15 +104,23 @@ export default function PortsPanel({ projectId, branch, ptyId, onClose }: PortsP
                 <span className={styles.dir}>{scope === 'machine' ? p.command : p.dir || './'}</span>
                 <span className={styles.cmd}>{scope === 'machine' ? `pid ${p.pid}` : p.command}</span>
               </a>
-              <Button
-                variant="chip"
-                className={styles.kill}
-                title={`SIGTERM pid ${p.pid}`}
-                disabled={killing === p.pid}
-                onClick={() => void kill(p)}
-              >
-                {killing === p.pid ? '…' : 'kill'}
-              </Button>
+              {/* Machine scope has no kill button. These rows are every
+                  listener on the box — sshd, Postgres, the editor — and we
+                  cannot tell which belong to this project, so offering to
+                  terminate them would be a foot-gun dressed as a feature.
+                  server/lib/ports.ts refuses regardless; this just stops
+                  showing a control that could only ever fail. */}
+              {scope === 'repo' ? (
+                <Button
+                  variant="chip"
+                  className={styles.kill}
+                  title={`SIGTERM pid ${p.pid}`}
+                  disabled={killing === p.pid}
+                  onClick={() => void kill(p)}
+                >
+                  {killing === p.pid ? '…' : 'kill'}
+                </Button>
+              ) : null}
             </div>
           ))
         )}

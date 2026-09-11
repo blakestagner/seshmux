@@ -101,6 +101,13 @@ function createProxy(targetPort: number): Promise<Entry> {
         if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain' });
         res.end('preview target not reachable');
       });
+      // The iframe is remounted on every URL change, reload and port switch, so
+      // responses are abandoned routinely. Without this the upstream request
+      // lives on: for an asset that wastes a socket, but for a long-lived
+      // response — Next's HMR stream, which is the thing this proxy exists to
+      // carry — it never ends, leaking one connection to the dev server per
+      // reload for the life of the proxy.
+      res.on('close', () => upstream.destroy());
       req.pipe(upstream);
     });
 
@@ -121,12 +128,30 @@ function createProxy(targetPort: number): Promise<Entry> {
           Array.isArray(v) ? v.map((x) => `${k}: ${x}`) : [`${k}: ${String(v)}`],
         );
         socket.write(`HTTP/1.1 101 Switching Protocols\r\n${lines.join('\r\n')}\r\n\r\n`);
-        if (upHead?.length) socket.unshift(upHead);
-        if (head?.length) upSocket.unshift(head);
+        // unshift() pushes a chunk back onto a stream's OWN READABLE side, from
+        // where it flows out through that stream's pipe. So each leftover goes
+        // back on the socket it was READ from, not the one it is headed for:
+        //   upHead was read from upstream -> upSocket -> (pipe) -> client
+        //   head   was read from the client -> socket -> (pipe) -> upstream
+        // Swapping these echoes each side's first bytes back at its sender. It
+        // bites exactly when a server ships the first frame in the same packet
+        // as the 101 — which Next's HMR does — so the socket corrupts and the
+        // client reconnect-loops: the failure this handler exists to prevent.
+        if (upHead?.length) upSocket.unshift(upHead);
+        if (head?.length) socket.unshift(head);
         upSocket.pipe(socket).pipe(upSocket);
-        // A failed pipe on either side must not take the server down.
-        upSocket.on('error', () => socket.destroy());
-        socket.on('error', () => upSocket.destroy());
+        // Tear the PAIR down whenever either half ends, for any reason. Binding
+        // only 'error' leaked the upstream socket on every clean close — and a
+        // websocket closing cleanly is the normal case, not the exception, so
+        // each HMR reconnect abandoned one live connection to the dev server.
+        const closePair = () => {
+          socket.destroy();
+          upSocket.destroy();
+        };
+        upSocket.on('error', closePair);
+        socket.on('error', closePair);
+        upSocket.on('close', closePair);
+        socket.on('close', closePair);
       });
       upstream.on('error', () => socket.destroy());
       upstream.end();

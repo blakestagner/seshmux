@@ -42,6 +42,10 @@ export interface GitRouteDeps {
   revealFn?: (target: string, select?: boolean) => Promise<boolean>;
   // Injected so tests can assert WHICH dir gets scanned without a real listener.
   listPortsFn?: typeof listeningPorts;
+  // Injected separately from listPortsFn so a test can exercise the win32
+  // 'machine' scope. Folding it into listPortsFn would have pinned every test
+  // to 'repo' and left the scope branch permanently uncovered.
+  listPortsScopedFn?: typeof listPortsScoped;
 }
 
 export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps = {}) {
@@ -49,6 +53,9 @@ export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps =
   const listWorkspaces = deps.listWorkspaces ?? listWorkspacesDefault;
   const revealFn = deps.revealFn ?? reveal;
   const listPorts = deps.listPortsFn ?? listeningPorts;
+  const listPortsScopedFn =
+    deps.listPortsScopedFn ??
+    (deps.listPortsFn ? async (dir: string) => ({ scope: 'repo' as const, ports: await listPorts(dir) }) : listPortsScoped);
 
   // The resolver runs provider store scans — far too heavy per 10s poll, and
   // the id→path mapping essentially never changes. Memoize per registration.
@@ -218,8 +225,7 @@ export default async function gitRoutes(f: FastifyInstance, deps: GitRouteDeps =
     // `supported` is kept for older clients but is now always true: win32 no
     // longer returns "unsupported", it returns a machine-scoped answer. `scope`
     // is what the panel must render.
-    const res = deps.listPortsFn ? { scope: 'repo' as const, ports: await listPorts(target.dir) } : await listPortsScoped(target.dir);
-    return { ...res, supported: true };
+    return { ...(await listPortsScopedFn(target.dir)), supported: true };
   });
 
   // Drag-and-drop upload: raw body (one file per request, the browser hands us

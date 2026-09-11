@@ -180,6 +180,49 @@ describe('POST /api/preview/run', () => {
   });
 });
 
+describe('POST /api/preview/proxy', () => {
+  // The docblock used to claim the port was bounded to this session's discovery
+  // and it was not. These are the bounds that actually exist.
+  it('stands up a proxy for a port that is really listening', async () => {
+    const f = makeApp({ listPortsFn: noPorts, probeFn: async () => true });
+    const res = await f.inject({ method: 'POST', url: '/api/preview/proxy', payload: { port: 3000 } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().targetPort).toBe(3000);
+    (await import('../../server/lib/preview-proxy')).stopAllProxies();
+  });
+
+  it('refuses a port with nothing on it, rather than leaving a listener in front of nothing', async () => {
+    const f = makeApp({ listPortsFn: noPorts, probeFn: async () => false });
+    const res = await f.inject({ method: 'POST', url: '/api/preview/proxy', payload: { port: 3000 } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/nothing is listening/);
+  });
+
+  it('refuses a nonsense port', async () => {
+    const f = makeApp({ listPortsFn: noPorts, probeFn: async () => true });
+    for (const port of [0, 70000, 'abc']) {
+      const res = await f.inject({ method: 'POST', url: '/api/preview/proxy', payload: { port } });
+      expect(res.statusCode, String(port)).toBe(400);
+    }
+  });
+
+  // seshmux in seshmux is a funhouse mirror, and it is the one port guaranteed
+  // to be listening.
+  it('refuses to proxy seshmux itself', async () => {
+    const prev = process.env.PORT;
+    process.env.PORT = '4700';
+    try {
+      const f = makeApp({ listPortsFn: noPorts, probeFn: async () => true });
+      const res = await f.inject({ method: 'POST', url: '/api/preview/proxy', payload: { port: 4700 } });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toMatch(/seshmux itself/);
+    } finally {
+      if (prev === undefined) delete process.env.PORT;
+      else process.env.PORT = prev;
+    }
+  });
+});
+
 describe('GET /api/preview/frame', () => {
   it('reports a page that refuses to be embedded', async () => {
     const fetchFn = (async () =>

@@ -76,14 +76,20 @@ function portOf(name: string): number | null {
  * project. Otherwise a stale panel row (or a crafted request) could signal any
  * process on the machine. SIGTERM only — a dev server gets to clean up, and
  * nothing here escalates to SIGKILL.
+ *
+ * REPO SCOPE IS THE GUARD, so this stays lsof-only and REFUSES on win32 even
+ * though listPortsScoped() can now enumerate ports there. That enumeration is
+ * machine-wide — it would put a kill button next to sshd, Postgres and the
+ * user's editor — and on win32 'SIGTERM' maps to TerminateProcess, an
+ * unconditional kill with no chance to clean up. Widening a destructive path
+ * because a *read* path got wider is exactly the move hard rule 7 forbids: a
+ * guard on a destructive path fails CLOSED. The panel hides the affordance to
+ * match (PortsPanel `scope`), and this refuses regardless of what the UI does.
  */
 export async function killPort(dir: string, port: number, pid: number): Promise<'ok' | 'not-found' | 'failed'> {
-  // Same rule on both platforms: the pid is only signalled if the CURRENT
-  // listener list still pairs it with that port. On win32 that list is the
-  // machine-wide one, which is a wider net than the repo — but it is a real
-  // observation of a live listener, never the client's say-so.
-  const { ports } = await listPortsScoped(dir);
-  const match = ports.some((p) => p.pid === pid && p.port === port);
+  // Fail closed where we cannot prove the process belongs to this project.
+  if (process.platform === 'win32') return 'not-found';
+  const match = (await listeningPorts(dir)).some((p) => p.pid === pid && p.port === port);
   if (!match) return 'not-found';
   try {
     process.kill(pid, 'SIGTERM');
