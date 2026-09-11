@@ -1,18 +1,28 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import net from 'node:net';
 import {
+  _resetHttpCacheForTest,
   discoverPorts,
+  filterHttp,
   frameBlock,
   isLoopbackUrl,
   mergePorts,
+  parseNetstat,
+  parseTasklist,
   probePort,
   scrapePorts,
+  winListeners,
+  type MachinePort,
 } from '../../server/lib/preview';
 import type { PortEntry } from '../../server/lib/ports';
 
 const headers = (h: Record<string, string>) => ({
   get: (name: string) => h[name.toLowerCase()] ?? null,
 });
+
+// Fixtures below are line-oriented command output; joining an array reads far
+// better than one long embedded string.
+const LF = '\n';
 
 // Scraping PTY scrollback is the ONLY port source that works on win32 (ports.ts
 // is lsof-only), so these cases are the Windows story, not a nicety.
@@ -73,6 +83,134 @@ describe('mergePorts', () => {
   });
 });
 
+// The scrollback scrape only finds servers started INSIDE a seshmux session.
+// netstat is what finds the one you started in VSCode — the common case.
+describe('parseNetstat', () => {
+  // Real `netstat -ano -p TCP` output, including the 0.0.0.0 bind a Next dev
+  // server actually uses. Matching only 127.0.0.1 would miss it entirely.
+  const out = [
+    '',
+    'Active Connections',
+    '',
+    '  Proto  Local Address          Foreign Address        State           PID',
+    '  TCP    0.0.0.0:3000           0.0.0.0:0              LISTENING       36040',
+    '  TCP    [::]:3000              [::]:0                 LISTENING       36040',
+    '  TCP    127.0.0.1:4800         0.0.0.0:0              LISTENING       38228',
+    '  TCP    192.168.1.20:7000      0.0.0.0:0              LISTENING       999',
+    '  TCP    127.0.0.1:50959        127.0.0.1:4800         ESTABLISHED     40528',
+    '',
+  ].join(LF);
+
+  it('takes wildcard and loopback binds, collapsing v4+v6 of one server', () => {
+    expect(parseNetstat(out)).toEqual([
+      { port: 3000, pid: 36040, command: '' },
+      { port: 4800, pid: 38228, command: '' },
+    ]);
+  });
+
+  it('ignores a LAN-only bind that localhost could not reach', () => {
+    expect(parseNetstat(out).some((p) => p.port === 7000)).toBe(false);
+  });
+
+  it('ignores non-LISTENING rows', () => {
+    expect(parseNetstat(out).some((p) => p.port === 50959)).toBe(false);
+  });
+
+  it('returns nothing for empty or garbage input', () => {
+    expect(parseNetstat('')).toEqual([]);
+    expect(parseNetstat('not netstat output at all')).toEqual([]);
+  });
+});
+
+describe('parseTasklist', () => {
+  it('reads image names, tolerating a comma inside one', () => {
+    const out = [
+      '"node.exe","36040","Console","1","250,168 K"',
+      '"My App, Inc.exe","999","Console","1","10 K"',
+    ].join(LF);
+    expect(parseTasklist(out).get(36040)).toBe('node.exe');
+    expect(parseTasklist(out).get(999)).toBe('My App, Inc.exe');
+  });
+});
+
+describe('winListeners', () => {
+  const netstat = [
+    '  TCP    0.0.0.0:3000           0.0.0.0:0              LISTENING       36040',
+    '  TCP    0.0.0.0:445            0.0.0.0:0              LISTENING       4',
+    '  TCP    127.0.0.1:5040         0.0.0.0:0              LISTENING       7777',
+  ].join(LF);
+  const tasks = ['"node.exe","36040","Console","1","250 K"', '"System","4","Services","0","1 K"'].join(LF);
+  const runner = async (cmd: string) => (cmd === 'netstat' ? netstat : tasks);
+
+  it('names the owner and drops Windows system services', async () => {
+    if (process.platform !== 'win32') return; // guarded: [] off win32 by contract
+    const out = await winListeners(runner);
+    // :445 is System (dropped). :5040 has no tasklist row — an unknown owner is
+    // KEPT, since tasklist omits other users' processes and an elevated dev
+    // server would otherwise vanish.
+    expect(out).toEqual([
+      { port: 3000, pid: 36040, command: 'node.exe' },
+      { port: 5040, pid: 7777, command: '' },
+    ]);
+  });
+
+  it('is empty off win32, where lsof answers a better question', async () => {
+    if (process.platform === 'win32') return;
+    expect(await winListeners(runner)).toEqual([]);
+  });
+
+  it('drops the OS dynamic range and puts dev ports first', async () => {
+    if (process.platform !== 'win32') return;
+    // A real sweep of this box found Spotify/Plex/editor helpers on random high
+    // ports. Nobody types a port the OS handed out, so they are not browsable
+    // in any useful sense — while :3000 must lead without the user reading on.
+    const rows = [
+      '  TCP    0.0.0.0:32400          0.0.0.0:0              LISTENING       11',
+      '  TCP    0.0.0.0:52220          0.0.0.0:0              LISTENING       12',
+      '  TCP    0.0.0.0:3000           0.0.0.0:0              LISTENING       13',
+      '  TCP    0.0.0.0:8288           0.0.0.0:0              LISTENING       14',
+    ].join(LF);
+    const out = await winListeners(async (cmd) => (cmd === 'netstat' ? rows : ''));
+    expect(out.map((p) => p.port)).toEqual([3000, 8288, 32400]);
+  });
+});
+
+describe('filterHttp', () => {
+  beforeEach(() => _resetHttpCacheForTest());
+
+  const rows: MachinePort[] = [
+    { port: 3000, pid: 1, command: 'node.exe' },
+    { port: 5432, pid: 2, command: 'postgres.exe' },
+  ];
+
+  it('keeps only what answers HTTP — a netstat sweep is mostly not a web server', async () => {
+    const out = await filterHttp(rows, async (p) => p === 3000);
+    expect(out.map((p) => p.port)).toEqual([3000]);
+  });
+
+  it('caches by port AND pid, so a poll does not re-probe two dozen ports', async () => {
+    let probes = 0;
+    const probe = async () => {
+      probes++;
+      return true;
+    };
+    await filterHttp(rows, probe);
+    await filterHttp(rows, probe);
+    expect(probes).toBe(2); // once each, not twice each
+
+    // A port whose OWNER changed is a different server and must be re-tested.
+    await filterHttp([{ port: 3000, pid: 99, command: 'node.exe' }], probe);
+    expect(probes).toBe(3);
+  });
+
+  it('treats a probe that throws as not-HTTP rather than failing the sweep', async () => {
+    const out = await filterHttp(rows, async () => {
+      throw new Error('boom');
+    });
+    expect(out).toEqual([]);
+  });
+});
+
 describe('discoverPorts', () => {
   it('drops scraped ports that are no longer listening', async () => {
     // The banner outlives the server — ^C does not erase scrollback.
@@ -107,6 +245,38 @@ describe('discoverPorts', () => {
     });
     expect(probes).toBe(0);
     expect(ports.map((p) => p.port)).toEqual([3000]);
+  });
+
+  it('offers a machine-wide port the session never printed (the VSCode case)', async () => {
+    const ports = await discoverPorts({
+      machinePorts: [{ port: 3000, pid: 36040, command: 'node.exe' }],
+      probe: async () => false, // never consulted: netstat already proved it live
+    });
+    expect(ports).toEqual([
+      { port: 3000, url: 'http://localhost:3000', origin: 'listening', pid: 36040, command: 'node.exe' },
+    ]);
+  });
+
+  it('keeps a session-printed port ABOVE machine-wide ones, and skips its probe', async () => {
+    let probes = 0;
+    const ports = await discoverPorts({
+      histories: ['- Local: http://localhost:5173'],
+      machinePorts: [
+        { port: 3000, pid: 1, command: 'node.exe' },
+        { port: 5173, pid: 2, command: 'node.exe' },
+      ],
+      probe: async () => {
+        probes++;
+        return true;
+      },
+    });
+    // :5173 is this session's, so it leads and stays `output` — netstat
+    // confirming it must not demote it to an unattributed machine port.
+    expect(ports.map((p) => [p.port, p.origin])).toEqual([
+      [5173, 'output'],
+      [3000, 'listening'],
+    ]);
+    expect(probes).toBe(0);
   });
 
   it('reports a probe that throws as dead rather than failing the request', async () => {

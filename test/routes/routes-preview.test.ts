@@ -14,7 +14,11 @@ let prevConfigDir: string | undefined;
 
 function makeApp(deps: PreviewRouteDeps) {
   const f = Fastify();
-  f.register(previewRoutes, deps);
+  // machinePortsFn defaults to a REAL netstat sweep of the developer's box, so
+  // without this stub these tests would assert against whatever happens to be
+  // listening on the machine running them — green here, red on the next box,
+  // and red on CI. A test that reads the host's open ports is not a unit test.
+  f.register(previewRoutes, { machinePortsFn: async () => [], ...deps });
   return f;
 }
 

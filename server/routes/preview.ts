@@ -19,7 +19,14 @@ import { readEntries } from '../lib/live-ledger';
 import { readScratchMap, type ScratchMap } from '../lib/scratch-store';
 import { startScratchTerminal } from '../lib/scratch';
 import { listeningPorts } from '../lib/ports';
-import { discoverPorts, frameBlock, isLoopbackUrl, type PreviewPort } from '../lib/preview';
+import {
+  discoverPorts,
+  filterHttp,
+  frameBlock,
+  isLoopbackUrl,
+  winListeners,
+  type PreviewPort,
+} from '../lib/preview';
 import { findScriptGroups, resolveRunLine } from '../lib/dev-script';
 import { defaultResolveRepo } from './bridge';
 
@@ -44,6 +51,8 @@ export interface PreviewRouteDeps {
   // Injected so a test can assert the panel's states without a live listener.
   probeFn?: (port: number) => Promise<boolean>;
   fetchFn?: typeof fetch;
+  // win32 machine-wide listeners (netstat). Injected so tests never shell out.
+  machinePortsFn?: typeof winListeners;
 }
 
 export default async function previewRoutes(f: FastifyInstance, deps: PreviewRouteDeps = {}) {
@@ -99,11 +108,28 @@ export default async function previewRoutes(f: FastifyInstance, deps: PreviewRou
       reply.code(404);
       return { error: 'project not found' };
     }
-    const [processPorts, histories] = await Promise.all([
+    // machinePorts is the win32 answer to "my dev server was started in VSCode":
+    // the scrollback scrape only ever sees servers started inside a seshmux
+    // session, which is not how most people run their app. [] off win32, where
+    // lsof already answers a strictly better question.
+    const [processPorts, histories, listeners] = await Promise.all([
       listPorts(dir).catch(() => []),
       sessionHistories(pty),
+      (deps.machinePortsFn ?? winListeners)().catch(() => []),
     ]);
-    const ports: PreviewPort[] = await discoverPorts({ processPorts, histories, probe: deps.probeFn });
+    // Two filters before these reach the chooser. HTTP, because a netstat sweep
+    // is mostly Postgres/SSH/language servers and this is a browser. And our own
+    // port, because seshmux rendered inside seshmux is a funhouse mirror, not a
+    // preview — it is the one port guaranteed to be listening and guaranteed to
+    // be wrong.
+    const selfPort = Number(process.env.PORT) || 0;
+    const machinePorts = (await filterHttp(listeners.filter((l) => l.port !== selfPort)).catch(() => [])).slice();
+    const ports: PreviewPort[] = await discoverPorts({
+      processPorts,
+      histories,
+      machinePorts,
+      probe: deps.probeFn,
+    });
     return { ports, dir };
   });
 

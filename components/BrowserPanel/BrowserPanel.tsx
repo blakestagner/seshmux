@@ -41,6 +41,7 @@ import {
 import Button from '../ui/Button/Button';
 import IconButton from '../ui/IconButton/IconButton';
 import Segmented from '../ui/Segmented/Segmented';
+import Spinner from '../ui/Spinner/Spinner';
 import Select from '../ui/Select/Select';
 import TextInput from '../ui/TextInput/TextInput';
 import styles from './BrowserPanel.module.scss';
@@ -187,7 +188,10 @@ export default function BrowserPanel({
     checkFrame(url)
       .then((r) => alive && setFrame(r))
       .catch(() => {
-        /* the iframe is the real test; a failed check just means no warning */
+        // Could not check — let the iframe be the test rather than blocking on
+        // a verdict that will never arrive. `null` means "still checking", so
+        // this MUST resolve to something or the panel waits forever.
+        if (alive) setFrame({ reachable: true, status: 0, blocked: null });
       });
     return () => {
       alive = false;
@@ -291,15 +295,30 @@ export default function BrowserPanel({
   );
 
   function renderBody() {
+    // Wait for the verdict before painting anything. Rendering the iframe first
+    // is what made a blocked app (X-Frame-Options: DENY — common in real Next
+    // configs) show as a dead white rectangle: the browser silently refuses,
+    // and the explanation only lands a moment later, if the user is still there.
+    if (url && frame === null) {
+      return (
+        <div className={styles.empty}>
+          <Spinner /> checking {displayUrl(url)}…
+        </div>
+      );
+    }
+
     if (url && frame?.blocked) {
       return (
         <div className={styles.notice}>
-          <div className={styles.noticeTitle}>this app refuses to be embedded</div>
+          <div className={styles.noticeTitle}>this app blocks embedding</div>
           <p className={styles.noticeText}>
-            {frame.blocked === 'xfo'
-              ? 'It sends X-Frame-Options, so the browser will not render it inside seshmux.'
-              : "Its Content-Security-Policy sets frame-ancestors 'none'."}{' '}
-            Open it in a real browser window instead.
+            {displayUrl(url)} sends{' '}
+            <code className={styles.code}>
+              {frame.blocked === 'xfo' ? 'X-Frame-Options' : "frame-ancestors 'none'"}
+            </code>
+            , so the browser refuses to render it in a frame — nothing seshmux can override from
+            outside the page. Next.js apps often set this in <code className={styles.code}>next.config</code>{' '}
+            or middleware; relaxing it for dev would let it preview here.
           </p>
           <Button variant="chip" onClick={openExternal}>
             ↗ open {displayUrl(url)}
@@ -329,7 +348,12 @@ export default function BrowserPanel({
       );
     }
 
-    if (ports === null) return <div className={styles.empty}>looking for a server…</div>;
+    if (ports === null)
+      return (
+        <div className={styles.empty}>
+          <Spinner /> looking for a server…
+        </div>
+      );
 
     if (ports.length > 1) {
       return (
@@ -338,7 +362,13 @@ export default function BrowserPanel({
           {ports.map((p) => (
             <button type="button" key={p.url} className={styles.portRow} onClick={() => go(p.url)}>
               <span className={styles.port}>:{p.port}</span>
-              <span className={styles.portDir}>{p.dir || (p.origin === 'output' ? 'from output' : './')}</span>
+              <span className={styles.portDir}>
+                {p.origin === 'process'
+                  ? p.dir || './'
+                  : p.origin === 'output'
+                    ? 'this session'
+                    : 'this machine'}
+              </span>
               <span className={styles.portCmd}>{p.command ?? ''}</span>
             </button>
           ))}
@@ -353,7 +383,10 @@ export default function BrowserPanel({
     if (running) {
       return (
         <div className={styles.notice}>
-          <div className={styles.noticeTitle}>{waitedLong ? 'still nothing on a port' : 'starting…'}</div>
+          <div className={styles.noticeTitle}>
+            {waitedLong ? null : <Spinner size={12} label="Starting dev server" />}{' '}
+            {waitedLong ? 'still nothing on a port' : 'starting…'}
+          </div>
           <p className={styles.noticeText}>
             {running.command ? <code className={styles.code}>{running.command}</code> : 'spawning a terminal'}{' '}
             {waitedLong
@@ -370,7 +403,12 @@ export default function BrowserPanel({
       );
     }
 
-    if (groups === null) return <div className={styles.empty}>nothing listening — looking for a dev script…</div>;
+    if (groups === null)
+      return (
+        <div className={styles.empty}>
+          <Spinner /> nothing listening — looking for a dev script…
+        </div>
+      );
 
     if (groups.length === 0) {
       return (
