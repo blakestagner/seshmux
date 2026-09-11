@@ -78,6 +78,9 @@ export type TerminalPaneProps = {
   onOpenChanges?: () => void;
   // Clicking the ports chip opens the listening-ports panel for this repo.
   onOpenPorts?: () => void;
+  // Clicking the browser chip opens the embedded browser panel, pointed at
+  // whatever this session is serving (and offering to start it if nothing is).
+  onOpenBrowser?: () => void;
   // Opens the agent-memory panel in the right pane. The panel owns the search, the
   // budget and the load — this pane only knows how to ask for it to be shown.
   onOpenMemory?: () => void;
@@ -117,6 +120,7 @@ export default function TerminalPane({
   onOpenTeam,
   onOpenChanges,
   onOpenPorts,
+  onOpenBrowser,
   onOpenMemory,
   onOpenTerminal,
   visible = true,
@@ -878,6 +882,18 @@ export default function TerminalPane({
             <span className={styles.divider} aria-hidden="true" />
             <Button variant="chip" title="Listening ports" onClick={onOpenPorts}>
               ⇅ ports
+            </Button>
+          </>
+        ) : null}
+        {/* Browser chip: opens the embedded browser on this session's dev
+            server. One port -> straight there; several -> the panel's chooser;
+            none -> the panel offers the repo's own dev script. Generic glyph
+            (hard rule 5) — a window, not any vendor's browser mark. */}
+        {variant !== 'grid' && onOpenBrowser ? (
+          <>
+            <span className={styles.divider} aria-hidden="true" />
+            <Button variant="chip" title="Open this session's dev server in a browser" onClick={onOpenBrowser}>
+              ⧉ browser
             </Button>
           </>
         ) : null}

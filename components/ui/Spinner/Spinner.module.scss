@@ -1,0 +1,41 @@
+// Spinner — geometry + motion only. No text properties (hard rule 1); size and
+// border-width come from the component so one class serves every size.
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spinner {
+  display: inline-block;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  border-style: solid;
+  // Three sides dim, one accent: the gap is what reads as motion. A uniform
+  // ring rotating looks perfectly still.
+  border-color: var(--border-bright);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  // Sits on the text baseline next to a label rather than riding above it.
+  vertical-align: -0.125em;
+}
+
+// Respect the OS setting: a perpetual rotation is exactly the kind of motion
+// that triggers vestibular discomfort. Still legible — it pulses instead.
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: af-pulse 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes af-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}

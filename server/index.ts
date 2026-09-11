@@ -266,6 +266,11 @@ export async function startServer({ port = 4700, host, dev = false }: { port?: n
   // Read-only branch line stats (+N/-N chip + changes panel).
   await f.register((await import('./routes/git')).default);
 
+  // Embedded browser panel: what's listening for this session, what would start
+  // it, and whether a URL will render in an iframe. Separate from /api/git/ports
+  // on purpose — different source of truth, different platform story.
+  await f.register((await import('./routes/preview')).default);
+
   // Teams v1 (Task 3): template CRUD + team start via the SHARED startSession.
   // onTeamWatch (Task 4): first /api/teams/members request for a team arms the
   // hub's lazy config.json watch → live {event:'team'} pushes for the roster panel.
@@ -364,11 +369,16 @@ if (isMain) {
   // Direct `tsx server/index.ts` runs: a user Ctrl-C (SIGINT) / SIGTERM syncs the
   // ledger before exiting, without changing the conventional exit codes. The
   // supervised path (bin/seshmux.js) is covered by SIGUSR2/onApplied above.
+  // Preview proxies are plain http listeners owned by this process; left open
+  // they would hold the event loop and keep a "stopped" server alive.
+  const closeProxies = async () => {
+    (await import('./lib/preview-proxy')).stopAllProxies();
+  };
   process.once('SIGINT', () => {
-    void syncLedgerAtShutdown().finally(() => process.exit(130));
+    void closeProxies().finally(() => syncLedgerAtShutdown().finally(() => process.exit(130)));
   });
   process.once('SIGTERM', () => {
-    void syncLedgerAtShutdown().finally(() => process.exit(143));
+    void closeProxies().finally(() => syncLedgerAtShutdown().finally(() => process.exit(143)));
   });
   const dev = process.env.NODE_ENV !== 'production';
   const port = Number(process.env.PORT) || 4700;

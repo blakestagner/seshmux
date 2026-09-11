@@ -22,6 +22,7 @@ import TerminalPane from '../components/TerminalPane/TerminalPane';
 import SubagentViewer from '../components/SubagentViewer/SubagentViewer';
 import ChangesPanel from '../components/ChangesPanel/ChangesPanel';
 import PortsPanel from '../components/PortsPanel/PortsPanel';
+import BrowserPanel from '../components/BrowserPanel/BrowserPanel';
 import MemoryPanel from '../components/MemoryPanel/MemoryPanel';
 import GridView from '../components/GridView/GridView';
 import AgentsView from '../components/AgentsView/AgentsView';
@@ -60,6 +61,7 @@ const PANEL_LABELS: Record<string, string> = {
   team: 'Team',
   changes: 'Folder',
   ports: 'Ports',
+  browser: 'Browser',
   memory: 'Memory',
 };
 
@@ -799,6 +801,18 @@ function AppShell() {
     }
   }
 
+  // A shell someone else spawned for this tab (the browser panel's Run button):
+  // register it so the strip shows its terminal, then re-activate the panel that
+  // asked for it. openPanel() always activates, so without the second call the
+  // click would silently navigate away from the surface it was made on.
+  function handleShellStarted(tab: Tab, scratchPtyId: string, restore: PanelId = 'browser') {
+    setScratchByTab((m) => ({
+      ...m,
+      [tab.id]: [...(m[tab.id] ?? []).filter((p) => p !== scratchPtyId), scratchPtyId],
+    }));
+    setRightPane((r) => openPanel(openPanel(r, tab.id, terminalPanel(scratchPtyId)), tab.id, restore));
+  }
+
   // ⌘T / Ctrl+T while a terminal panel is the active right-pane tab → another
   // shell. Scoped deliberately: anywhere else the browser's own new-tab keeps
   // working. Chrome reserves ⌘T at the browser level and will NOT hand it to a
@@ -860,6 +874,7 @@ function AppShell() {
           onOpenTeam={tab.isTeamLead ? () => handleTogglePanel(tab.id, 'team') : undefined}
           onOpenChanges={tab.projectId ? () => handleTogglePanel(tab.id, 'changes') : undefined}
           onOpenPorts={tab.projectId ? () => handleTogglePanel(tab.id, 'ports') : undefined}
+          onOpenBrowser={tab.projectId ? () => handleTogglePanel(tab.id, 'browser') : undefined}
           onOpenMemory={tab.projectId ? () => handleTogglePanel(tab.id, 'memory') : undefined}
           onOpenTerminal={tab.ptyId ? () => handleOpenTerminal(tab) : undefined}
         />
@@ -944,6 +959,12 @@ function AppShell() {
           icon: '▤',
           label: 'Folder / changes',
           onClick: () => handleTogglePanel(activeTab.id, 'changes'),
+        },
+        activeTab.projectId && {
+          key: 'browser',
+          icon: '⧉',
+          label: 'Browser',
+          onClick: () => handleTogglePanel(activeTab.id, 'browser'),
         },
         activeTab.projectId && {
           key: 'memory',
@@ -1055,6 +1076,7 @@ function AppShell() {
                   case 'changes':
                   case 'ports':
                   case 'memory':
+                  case 'browser':
                     return !!activeTab.projectId;
                   default:
                     return false;
@@ -1124,6 +1146,26 @@ function AppShell() {
                         onClose={() => handleClosePanel(activeTab.id, 'ports')}
                       />
                     );
+                  case 'browser':
+                    return (
+                      // key: RightPane keys panels by PANEL id ('browser'), which is
+                      // the same string for every session tab, and nothing above it
+                      // is keyed by tab. Switching between two tabs that both have
+                      // this panel open would otherwise reconcile ONE instance with
+                      // new props while its nav/groups state — none of it derived
+                      // from props — kept pointing at the other project's app.
+                      <BrowserPanel
+                        key={activeTab.id}
+                        projectId={activeTab.projectId!}
+                        ptyId={activeTab.ptyId}
+                        // keepMounted keeps this alive behind other strip tabs, so
+                        // it must be told when it is off-screen or it polls a
+                        // daemon-history scan forever for a panel nobody sees.
+                        visible={shown === 'browser'}
+                        onShellStarted={(scratchPtyId) => handleShellStarted(activeTab, scratchPtyId)}
+                        onClose={() => handleClosePanel(activeTab.id, 'browser')}
+                      />
+                    );
                   case 'memory':
                     return (
                       <MemoryPanel
@@ -1144,13 +1186,15 @@ function AppShell() {
                     );
                 }
               };
-              // The terminal panel is the ONLY keepMounted one: its shell must
-              // survive a tab switch (hidden via display:none), unlike the
-              // agents/team/changes panels which remount/refetch on re-activate.
+              // Terminal and browser panels are keepMounted: a shell must survive
+              // a tab switch (hidden via display:none), and so must a previewed
+              // page — remounting its iframe would throw away scroll position,
+              // form state and the app's own client-side route. The
+              // agents/team/changes panels still remount/refetch on re-activate.
               const panels = stripTabs.map((t) => ({
                 id: t.id,
                 node: panelNode(t.id),
-                keepMounted: isTerminalPanel(t.id),
+                keepMounted: isTerminalPanel(t.id) || t.id === 'browser',
               }));
               return (
                 <div

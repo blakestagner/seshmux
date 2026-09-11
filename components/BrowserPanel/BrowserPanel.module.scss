@@ -1,0 +1,242 @@
+@use '../../styles/typography' as *;
+
+// Browser panel — layout/spacing/state only; text via t-* mixins (hard rule 1).
+// Chrome follows PortsPanel/ChangesPanel so the right-pane slot reads as one
+// family: a bordered head row, a scrolling body, --bg throughout.
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+// Nav row doubles as the panel head — in a pane this narrow a separate title
+// line would cost 36px to repeat what the strip tab above already says.
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.navGlyph {
+  @include t-glyph-panel;
+  flex: 0 0 auto;
+}
+
+.url {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0 4px;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.metaNote {
+  @include t-mono-micro;
+  color: var(--text-faint);
+}
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+// ── the page itself ─────────────────────────────────────────────────────────
+// The stage is the neutral ground a narrowed viewport sits on, so a 390px
+// frame reads as a device rather than as a broken layout.
+.stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  overflow: auto;
+  background: var(--bg-panel);
+}
+
+.frameWrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+}
+
+// A narrowed frame gets edges so it reads as a device on the stage; full-width
+// does not (there it IS the pane, and a border would just be a seam).
+.narrow {
+  flex: 0 0 auto;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+
+.frame {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+  // Not transparent: an app that paints no background would otherwise show the
+  // stage through it and look broken in whichever theme it wasn't built for.
+  background: #fff;
+}
+
+// ── states ──────────────────────────────────────────────────────────────────
+.empty {
+  @include t-mono-micro;
+  padding: 12px;
+  color: var(--text-faint);
+}
+
+.notice {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.noticeTitle {
+  @include t-section;
+}
+
+.noticeText {
+  @include t-section-note;
+  margin: 0;
+}
+
+.code {
+  @include t-mono-micro;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-raised);
+  color: var(--text);
+}
+
+.list {
+  @include t-mono-micro;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px 0;
+}
+
+.listHead {
+  padding: 4px 14px 8px;
+  color: var(--text-faint);
+}
+
+.error {
+  padding: 4px 14px 8px;
+  color: var(--waiting);
+}
+
+// ── port chooser ────────────────────────────────────────────────────────────
+.portRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 14px;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--text-dim);
+  text-align: left;
+  cursor: pointer;
+}
+
+.portRow:hover {
+  background: var(--bg-hover);
+}
+
+.port {
+  flex: 0 0 auto;
+  color: var(--live);
+}
+
+.portDir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.portCmd {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+// ── dev-script offer ────────────────────────────────────────────────────────
+.group {
+  padding: 4px 0;
+}
+
+.groupName {
+  padding: 2px 14px;
+  color: var(--text-faint);
+}
+
+.scriptRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 14px;
+}
+
+.scriptRow:hover {
+  background: var(--bg-hover);
+}
+
+.scriptText {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.scriptName {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scriptCmd {
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runBtn {
+  flex: 0 0 auto;
+}
+
+.more {
+  @include t-mono-micro;
+  display: block;
+  margin: 4px 14px 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.more:hover {
+  text-decoration: underline;
+}

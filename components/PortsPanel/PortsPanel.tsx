@@ -26,7 +26,10 @@ export interface PortsPanelProps {
 
 export default function PortsPanel({ projectId, branch, ptyId, onClose }: PortsPanelProps) {
   const [ports, setPorts] = useState<PortEntry[] | null>(null);
-  const [supported, setSupported] = useState(true);
+  // 'repo' = every row's owner runs inside this project (lsof). 'machine' =
+  // everything listening on the box, because win32 exposes no cwd per port and
+  // so cannot attribute one. The panel must say which it is showing.
+  const [scope, setScope] = useState<'repo' | 'machine'>('repo');
   const [killing, setKilling] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,7 +37,7 @@ export default function PortsPanel({ projectId, branch, ptyId, onClose }: PortsP
     try {
       const res = await getPorts(projectId, branch, ptyId);
       setPorts(res.ports);
-      setSupported(res.supported);
+      setScope(res.scope ?? 'repo');
     } catch {
       /* best-effort; next tick retries */
     }
@@ -65,18 +68,26 @@ export default function PortsPanel({ projectId, branch, ptyId, onClose }: PortsP
     <div className={styles.panel}>
       <div className={styles.head}>
         <span className={styles.title}>ports</span>
+        {/* Say the scope out loud. These rows look identical either way, and
+            silently widening "ports in this repo" to "ports on this machine"
+            would be a lie the user has no way to detect. */}
+        {scope === 'machine' ? (
+          <span className={styles.scope} title="Windows exposes no working directory per port, so ports cannot be attributed to a repo">
+            this machine
+          </span>
+        ) : null}
         <IconButton label="Close ports panel" className={styles.headGlyph} onClick={onClose}>
           ✕
         </IconButton>
       </div>
       <div className={styles.body}>
         {error ? <div className={styles.empty}>{error}</div> : null}
-        {!supported ? (
-          <div className={styles.empty}>port detection needs lsof (macOS/Linux)</div>
-        ) : ports === null ? (
+        {ports === null ? (
           <div className={styles.empty}>loading…</div>
         ) : ports.length === 0 ? (
-          <div className={styles.empty}>nothing listening in this repo</div>
+          <div className={styles.empty}>
+            {scope === 'machine' ? 'nothing listening on this machine' : 'nothing listening in this repo'}
+          </div>
         ) : (
           ports.map((p) => (
             <div key={`${p.pid}:${p.port}`} className={styles.row}>
@@ -88,18 +99,28 @@ export default function PortsPanel({ projectId, branch, ptyId, onClose }: PortsP
                 title={`pid ${p.pid} · ${p.command}`}
               >
                 <span className={styles.port}>:{p.port}</span>
-                <span className={styles.dir}>{p.dir || './'}</span>
-                <span className={styles.cmd}>{p.command}</span>
+                {/* No cwd on win32, so there is no subdir to show — the owning
+                    process name is the only identifying thing we have. */}
+                <span className={styles.dir}>{scope === 'machine' ? p.command : p.dir || './'}</span>
+                <span className={styles.cmd}>{scope === 'machine' ? `pid ${p.pid}` : p.command}</span>
               </a>
-              <Button
-                variant="chip"
-                className={styles.kill}
-                title={`SIGTERM pid ${p.pid}`}
-                disabled={killing === p.pid}
-                onClick={() => void kill(p)}
-              >
-                {killing === p.pid ? '…' : 'kill'}
-              </Button>
+              {/* Machine scope has no kill button. These rows are every
+                  listener on the box — sshd, Postgres, the editor — and we
+                  cannot tell which belong to this project, so offering to
+                  terminate them would be a foot-gun dressed as a feature.
+                  server/lib/ports.ts refuses regardless; this just stops
+                  showing a control that could only ever fail. */}
+              {scope === 'repo' ? (
+                <Button
+                  variant="chip"
+                  className={styles.kill}
+                  title={`SIGTERM pid ${p.pid}`}
+                  disabled={killing === p.pid}
+                  onClick={() => void kill(p)}
+                >
+                  {killing === p.pid ? '…' : 'kill'}
+                </Button>
+              ) : null}
             </div>
           ))
         )}
