@@ -10,6 +10,7 @@ import TextInput from '../ui/TextInput/TextInput';
 import StatusDot from '../ui/StatusDot/StatusDot';
 import IconButton from '../ui/IconButton/IconButton';
 import {
+  getProjects,
   getSessions,
   startSession,
   createWorkspace,
@@ -20,6 +21,7 @@ import {
 } from '../../lib/client/api';
 import type { TeamStartPayload, WorkspaceRecord } from '../../lib/client/api';
 import type { SessionMeta, Project, Config, ProviderId } from '../../lib/client/types';
+import { dirName } from '../../lib/client/fs-path';
 import { useAppState } from '../../lib/client/store';
 import { useDetectedProviders, provFilterOptions, showsProviderIdentity } from '../../lib/client/providers';
 import type { RailSort, Tab } from '../../lib/client/store';
@@ -224,6 +226,15 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
       provider,
     });
     dispatch({ type: 'setView', view: 'tabs' });
+    // List it NOW. The session-new event that normally refreshes the rail fires
+    // off the transcript being written, and an agent writes that on the first
+    // MESSAGE, not at spawn — so a project created here stayed invisible until
+    // the user typed something, which reads as "the create silently failed".
+    // The server answers this window from the live ledger; this is just the
+    // nudge to go and ask. Never fatal: the rail is already correct-but-stale.
+    await getProjects()
+      .then((projects) => dispatch({ type: 'setProjects', projects }))
+      .catch(() => {});
   }
 
   // Team modal's Start button (Task 5) — same split as handleStartSession:
@@ -451,14 +462,25 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
   const railActive = railFilter.trim().length > 0;
   // Provider filter: key off the server's per-provider counts (always present),
   // not the lazily-loaded session pages — otherwise unloaded projects vanish.
+  // `p.live` is the second arm because a live-only project (an agent running in a cwd
+  // that has no transcript yet) has a recorded count of 0 for EVERY provider — a
+  // count-only test dropped it, which is the whole thing the live listing exists to
+  // show. Its own provider is the one running there.
   let filteredProjects =
-    provFilter === 'all' ? ordered : ordered.filter((p) => (p.sessionCountByProvider?.[provFilter] ?? 0) > 0);
+    provFilter === 'all'
+      ? ordered
+      : ordered.filter(
+          (p) => (p.sessionCountByProvider?.[provFilter] ?? 0) > 0 || (p.live && p.provider === provFilter),
+        );
   // When the sidebar-wide filter is active, hide projects with no match — and
   // (below) force the matching ones open regardless of collapse state.
   if (railActive) filteredProjects = filteredProjects.filter((p) => visibleSessions(p as Project).shown.length > 0);
 
   const totalProjects = projects.length;
-  const hasAnySessions = projects.some((p) => p.sessionCount > 0);
+  // `|| p.live` for the same reason as the provider filter above: a store whose only
+  // project is a just-created one would otherwise render the "nothing here yet" empty
+  // state while an agent was visibly running in it.
+  const hasAnySessions = projects.some((p) => p.sessionCount > 0 || p.live);
 
   // Open-sessions panel (VS Code Outline-style): every open tab across
   // tabs/grid/agents, resizable via a drag handle on its top edge. Same
@@ -868,13 +890,10 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
         <NewProjectModal
           providers={availableProviders}
           // Parent dirs of existing projects, most-used first — the datalist.
-          suggestions={[
-            ...new Set(
-              projects
-                .map((p) => p.path.slice(0, p.path.lastIndexOf('/')))
-                .filter(Boolean),
-            ),
-          ]}
+          // dirName, not lastIndexOf('/'): a project path is a REAL OS path, and on
+          // Windows there is no '/' in it, so slice(0, -1) used to hand the dialog
+          // `C:\Users\Blake\Download` for `…\Downloads` — a directory that cannot exist.
+          suggestions={[...new Set(projects.map((p) => dirName(p.path)).filter(Boolean))]}
           onCreate={handleStartInNewProject}
           onClose={() => setNewProjectOpen(false)}
         />

@@ -19,6 +19,10 @@ export type Project = {
   missing: boolean;
   // Per-provider split of sessionCount (set by the server-side merge).
   sessionCountByProvider?: Partial<Record<ProviderId, number>>;
+  // An agent is running in this cwd but has written no transcript yet, so every
+  // recorded count is 0. Anything asking "does this project have anything in it"
+  // must test this too, or it vanishes from the view meant to show it.
+  live?: boolean;
 };
 
 export type SessionMeta = {
