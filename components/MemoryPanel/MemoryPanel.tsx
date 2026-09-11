@@ -1,14 +1,15 @@
 'use client';
 
-// The memory surface: browse, curate, and load into the live session.
+// The memory surface: pick a session's memory and hand it on.
 //
-// This used to be half the story — a statusbar dropdown did the loading and this panel
-// did everything else, which meant two places to look and a 560px popup that had to be
-// squeezed in beside the rail. The picker moved here: same filters, same rows (composed
-// from components/Memory), plus the full record body, pin/forget, hand-authoring,
-// distillation, and the selection + token budget that loading needs.
+// The panel deals in SESSIONS, not records. You tick the sessions whose work you want,
+// and Copy or Load hands over everything they learned as one block. The records are
+// underneath for checking what you are about to pass along, and pin/forget curate them,
+// but nothing here asks you to assemble a payload out of individual rows or to decide
+// which of seven record categories counts — that was a taxonomy quiz standing in front of
+// a simple intention.
 //
-// The budget is shown BEFORE the load, not after, because context spent on recalled
+// The budget is shown BEFORE the hand-off, not after, because context spent on recalled
 // memory is context the session cannot spend on anything else.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -16,7 +17,7 @@ import Button from '../ui/Button/Button';
 import IconButton from '../ui/IconButton/IconButton';
 import TextInput from '../ui/TextInput/TextInput';
 import MemoryFilters from '../Memory/MemoryFilters';
-import MemoryRowItem from '../Memory/MemoryRowItem';
+import MemoryGroupList from '../Memory/MemoryGroupList';
 import { useMemorySearch } from '../Memory/useMemorySearch';
 import {
   createMemory,
@@ -29,6 +30,7 @@ import {
   type MemoryStats,
 } from '../../lib/client/api';
 import { budgetLabel, estimateRowTokens, memoryPaste } from '../../lib/client/memory-paste';
+import { groupBySession, type MemoryGroup } from '../../lib/client/memory-groups';
 import { getTermSend } from '../../lib/client/term-send';
 import type { ProviderId } from '../../lib/client/types';
 import styles from './MemoryPanel.module.scss';
@@ -70,26 +72,73 @@ export default function MemoryPanel({
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<{ text: string; error: boolean } | null>(null);
-  // The selected ROWS, not just their ids. Holding ids alone made the token count a
-  // function of what happened to be on screen, so narrowing the query after picking
-  // silently under-counted while Load still sent everything.
-  const [selected, setSelected] = useState<MemoryRow[]>([]);
+  // The selected GROUPS, whole, not just their ids. Holding ids alone would make the
+  // token count a function of what happened to be on screen, so narrowing the query after
+  // picking would silently under-count while the hand-off still sent everything.
+  const [selected, setSelected] = useState<Map<string, MemoryGroup>>(new Map());
 
-  const selectedIds = useMemo(() => new Set(selected.map((r) => r.id)), [selected]);
-  const used = estimateRowTokens(selected);
+  const searching = search.query.trim().length > 0;
+  // Built here rather than in the list, so the load bar counts the same groups the list
+  // draws instead of re-deriving "how many sessions is this" from a second rule.
+  const groups = useMemo(() => groupBySession(search.rows, { searching }), [search.rows, searching]);
+
+  const selectedRows = useMemo(() => [...selected.values()].flatMap((g) => g.rows), [selected]);
+  const selectedIds = useMemo(() => new Set(selected.keys()), [selected]);
+  const used = estimateRowTokens(selectedRows);
   const over = used > budgetTokens;
 
-  const toggle = (id: string) => {
+  const toggleGroup = (group: MemoryGroup, select: boolean) => {
     setNote(null);
-    const row = search.rows.find((r) => r.id === id);
     setSelected((cur) => {
-      if (cur.some((r) => r.id === id)) return cur.filter((r) => r.id !== id);
-      return row ? [...cur, row] : cur;
+      const next = new Map(cur);
+      if (select) next.set(group.id, group);
+      else next.delete(group.id);
+      return next;
     });
   };
 
+  const selectAll = (select: boolean) =>
+    setSelected(select ? new Map(groups.map((g) => [g.id, g])) : new Map());
+
+  /**
+   * The one block these sessions add up to.
+   *
+   * The SERVER composes it, so what you copy, what lands in a terminal and what an agent
+   * gets from recall_memory are byte-identical — one composer, not three. It also trims
+   * to the budget, which is why the caller reports the count that came BACK: reporting
+   * the tick count made an over-budget selection claim it handed over 70 records when the
+   * server had packed the top ~20.
+   */
+  const packSelection = () =>
+    packMemory(
+      selectedRows.map((r) => r.id),
+      { budgetTokens, scope: search.scope },
+    );
+
+  const handedOver = (n: number, verb: string) =>
+    n < selectedRows.length
+      ? `${verb} the top ${n} of ${selectedRows.length} records — the rest did not fit the budget`
+      : `${verb} ${n} record${n === 1 ? '' : 's'} from ${selected.size} session${selected.size === 1 ? '' : 's'}`;
+
+  async function copy() {
+    if (selectedRows.length === 0) return;
+    setBusy('copy');
+    setNote(null);
+    try {
+      const packed = await packSelection();
+      await navigator.clipboard.writeText(packed.text);
+      setNote({ text: handedOver(packed.count, 'copied'), error: false });
+    } catch (err) {
+      // Clipboard writes are refused outside a secure context or without permission, and
+      // silently "succeeding" would leave the user pasting whatever was there before.
+      setNote({ text: err instanceof Error ? err.message : 'copy failed', error: true });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function load() {
-    if (!canLoad || selected.length === 0) return;
+    if (!canLoad || selectedRows.length === 0) return;
     // Resolved HERE, not at render: the writer comes and goes with the terminal socket,
     // and a stale capture would paste into a closed one. If it is missing, SAY so — a
     // no-op that still reported success is worse than an error, because the context
@@ -102,35 +151,21 @@ export default function MemoryPanel({
     setBusy('load');
     setNote(null);
     try {
-      // The server composes the block, so what lands in the terminal is byte-identical
-      // to what an agent gets from recall_memory — one composer, not two.
-      const packed = await packMemory(
-        selected.map((r) => r.id),
-        { budgetTokens, scope: search.scope },
-      );
+      const packed = await packSelection();
       const payload = memoryPaste(packed.text, { submit: submitOnLoad });
       if (!payload) {
         setNote({ text: 'nothing to load', error: false });
         return;
       }
-      // packMemory TRIMS to the budget, so the count that matters is the one that came
-      // back. Reporting the tick count made "select all" over budget claim it loaded 70
-      // records when the server had packed the top ~20.
-      const n = packed.count;
       if (!send(payload)) {
         // Registered but not writable: the socket is closed or mid-reconnect after a
         // server update. Keep the selection so the user can simply try again.
         setNote({ text: 'this terminal is not connected', error: true });
         return;
       }
-      setSelected([]);
-      setNote({
-        text:
-          n < selected.length
-            ? `loaded the top ${n} of ${selected.length} — the rest did not fit the budget`
-            : `loaded ${n} record${n === 1 ? '' : 's'} into the session`,
-        error: false,
-      });
+      const n = packed.count;
+      setSelected(new Map());
+      setNote({ text: handedOver(n, 'loaded'), error: false });
     } catch (err) {
       setNote({ text: err instanceof Error ? err.message : 'load failed', error: true });
     } finally {
@@ -165,14 +200,24 @@ export default function MemoryPanel({
   );
 
   const onPin = (row: MemoryRow) => act('pin', () => updateMemory(row.id, { pinned: !row.pinned }));
-  // Selection is held as ROWS and survives the query changing. Narrowing the search to
-  // find the next record to add is the normal way to use this panel, so reconciling the
-  // selection against what happens to be VISIBLE silently threw away earlier picks.
-  // Being forgotten is the one thing that should unselect a record, so do it here.
+  // Selection holds whole GROUPS and survives the query changing. Narrowing the search to
+  // find the next session to add is the normal way to use this panel, so reconciling the
+  // selection against what happens to be VISIBLE would silently throw away earlier picks.
+  // A forgotten record is the one thing that has to be dropped from it — otherwise the
+  // token count, and the hand-off, would still carry a record that no longer exists.
   const onDelete = (row: MemoryRow) =>
     act('forget', async () => {
       await deleteMemory(row.id);
-      setSelected((cur) => cur.filter((r) => r.id !== row.id));
+      setSelected((cur) => {
+        const next = new Map(cur);
+        for (const [id, group] of next) {
+          if (!group.rows.some((r) => r.id === row.id)) continue;
+          const rows = group.rows.filter((r) => r.id !== row.id);
+          if (rows.length) next.set(id, { ...group, rows });
+          else next.delete(id);
+        }
+        return next;
+      });
     });
 
   const onRemember = () => {
@@ -218,9 +263,7 @@ export default function MemoryPanel({
         onQuery={search.setQuery}
         scope={search.scope}
         onScope={search.setScope}
-        kinds={search.kinds}
-        onToggleKind={search.toggleKind}
-        placeholder="search everything agents have done here…"
+        placeholder="search what these sessions worked out…"
       />
 
       <div className={styles.list}>
@@ -230,41 +273,47 @@ export default function MemoryPanel({
             {search.loading ? 'searching…' : 'Nothing remembered yet — memory fills in as sessions run.'}
           </p>
         ) : null}
-        {search.rows.map((row) => (
-          <MemoryRowItem
-            key={row.id}
-            row={row}
-            expanded
-            selected={selectedIds.has(row.id)}
-            onToggle={toggle}
+        {groups.length > 0 ? (
+          <MemoryGroupList
+            groups={groups}
+            searching={searching}
+            selectedGroups={selectedIds}
+            onToggleGroup={toggleGroup}
             onPin={onPin}
             onDelete={onDelete}
             showRepo={search.scope === 'all'}
           />
-        ))}
+        ) : null}
       </div>
 
-      {/* Loading bar. Always present once there is anything to load, because the common
-          intent is "take what this session worked out into the next one" — and having to
-          hunt for a checkbox to tick before the Load button even appears is a poor way to
-          ask for that. Empty-handed it offers to take the lot. */}
-      {search.rows.length > 0 ? (
+      {/* The hand-off bar. Always present once there is anything to hand over, because the
+          common intent is "take what that session worked out into this one" — and having
+          to hunt for a checkbox to tick before the buttons even appear is a poor way to
+          ask for that. Empty-handed it offers to take the lot.
+
+          Copy sits beside Load because the destination is not always a terminal: a
+          session's memory is just as often pasted into a review, an issue, or another
+          machine's agent. Same block either way. */}
+      {groups.length > 0 ? (
         <div className={styles.loadBar}>
           <span className={over ? styles.budgetOver : styles.budget}>
-            {selected.length > 0
-              ? `${selected.length} selected · ${budgetLabel(used, budgetTokens)}`
-              : `${search.rows.length} shown`}
+            {selected.size > 0
+              ? `${selected.size} session${selected.size === 1 ? '' : 's'} · ${budgetLabel(used, budgetTokens)}`
+              : `${groups.length} session${groups.length === 1 ? '' : 's'}`}
           </span>
+          <Button variant="link" className={styles.clear} onClick={() => selectAll(selected.size === 0)}>
+            {selected.size > 0 ? 'clear' : 'select all'}
+          </Button>
           <Button
-            variant="link"
-            className={styles.clear}
-            onClick={() => setSelected(selected.length > 0 ? [] : [...search.rows])}
+            disabled={busy === 'copy' || selected.size === 0}
+            title="copy this memory to the clipboard"
+            onClick={copy}
           >
-            {selected.length > 0 ? 'clear' : 'select all'}
+            {busy === 'copy' ? 'copying…' : 'Copy'}
           </Button>
           <Button
             variant="primary"
-            disabled={busy === 'load' || !canLoad || selected.length === 0}
+            disabled={busy === 'load' || !canLoad || selected.size === 0}
             title={
               !canLoad
                 ? 'this session is not live'

@@ -12,31 +12,101 @@
   border-bottom: 1px solid var(--border);
 }
 
-.kinds {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+// ── session group ───────────────────────────────────────────────────────────
+
+.group {
+  border-bottom: 1px solid var(--border);
 }
 
-.kindChip {
-  @include t-chip;
-  padding: 2px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
+.group:last-child {
+  border-bottom: none;
+}
+
+.groupHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  // Raised against the rows so the session reads as the container and the records as its
+  // contents, rather than as one more row in the list.
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+}
+
+.groupHead:hover {
+  background: var(--bg-hover);
+}
+
+// Picked for hand-off. The whole header carries it, because the session is the thing
+// being chosen — a lone ticked checkbox on an otherwise unchanged row reads as a detail.
+.groupOn,
+.groupOn:hover {
+  background: var(--accent-soft);
+}
+
+// Pinned is not a session — it is the standing set, lifted out of every session. The
+// accent left edge says "this one is different" without giving it a second header shape.
+.groupPinned {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.groupToggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
   background: transparent;
-  color: var(--text-dim);
+  border: none;
+  text-align: left;
+  color: inherit;
   cursor: pointer;
 }
 
-.kindChip:hover {
-  border-color: var(--border-bright);
+.caret {
+  @include t-caret;
+  flex: none;
+  display: inline-block;
+  width: 10px;
+  color: var(--text-faint);
+  transition: transform 0.15s;
+}
+
+.caretOpen {
+  transform: rotate(90deg);
+}
+
+.groupStar {
+  @include t-glyph-statusbar;
+  flex: none;
+  color: var(--accent);
+}
+
+.groupLabel {
+  @include t-item-title;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text);
 }
 
-.kindOn {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  color: var(--accent);
+// Which kinds a folded group holds. Glyphs rather than a count per kind: the strip has to
+// survive a 320px pane, and "does this session hold a decision" is the question being asked.
+.groupKinds {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  color: var(--text-faint);
+}
+
+.groupMeta {
+  @include t-meta;
+  flex: none;
+  white-space: nowrap;
+  color: var(--text-faint);
 }
 
 // ── row ─────────────────────────────────────────────────────────────────────
@@ -53,12 +123,14 @@
   background: var(--bg-hover);
 }
 
-// --accent is reserved for STATE (selected, pinned, active filter). Kind is carried by the
-// glyph shape and by text weight, so a selected pinned decision still reads as selected
-// instead of dissolving into three overlapping accents.
-.rowOn,
-.rowOn:hover {
-  background: var(--accent-soft);
+// Nested under their session header. The indent is the only thing saying a row belongs to
+// the group above it once the header has scrolled past.
+.group .row {
+  padding-left: 26px;
+}
+
+.group .row:last-child {
+  border-bottom: none;
 }
 
 // A superseded record is inactive history. Dimmed with a token colour rather than
@@ -81,15 +153,6 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 0;
-  background: transparent;
-  border: none;
-  text-align: left;
-  color: inherit;
-}
-
-button.rowBody {
-  cursor: pointer;
 }
 
 .rowTop {
@@ -130,6 +193,17 @@ button.rowBody {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--text);
+}
+
+// Keeps one long record from burying the sessions under it. -webkit-line-clamp is the
+// only cross-browser way to cut at a line boundary, and it needs the -webkit-box display
+// even in browsers that have long since stopped needing the prefix for anything else.
+.textClamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .cite {

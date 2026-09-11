@@ -1,12 +1,14 @@
 'use client';
 
-// The search + scope + kind cluster. Built once and composed by the memory panel, so
-// "this repo" cannot come to mean two different things across surfaces.
+// The search + scope cluster above the session list.
+//
+// Search and "which repo" only. The kind chips that used to live here are gone: the panel
+// hands over a session's memory as one piece, and deciding which of seven record
+// categories to include was a taxonomy question nobody wanted to answer first.
 
 import Segmented from '../ui/Segmented/Segmented';
 import TextInput from '../ui/TextInput/TextInput';
-import type { MemoryKind, MemoryScopeMode } from '../../lib/client/api';
-import { MEMORY_KIND_FILTERS } from './useMemorySearch';
+import type { MemoryScopeMode } from '../../lib/client/api';
 import styles from './Memory.module.scss';
 
 const SCOPE_OPTIONS = [
@@ -19,8 +21,6 @@ export type MemoryFiltersProps = {
   onQuery: (v: string) => void;
   scope: MemoryScopeMode;
   onScope: (v: MemoryScopeMode) => void;
-  kinds: MemoryKind[];
-  onToggleKind: (k: MemoryKind) => void;
   placeholder?: string;
   autoFocus?: boolean;
 };
@@ -30,8 +30,6 @@ export default function MemoryFilters({
   onQuery,
   scope,
   onScope,
-  kinds,
-  onToggleKind,
   placeholder = 'search memory…',
   autoFocus,
 }: MemoryFiltersProps) {
@@ -44,18 +42,6 @@ export default function MemoryFilters({
         onChange={(id) => onScope(id as MemoryScopeMode)}
         variant="raised"
       />
-      <div className={styles.kinds}>
-        {MEMORY_KIND_FILTERS.map((k) => (
-          <button
-            key={k.id}
-            type="button"
-            className={`${styles.kindChip} ${kinds.includes(k.id) ? styles.kindOn : ''}`}
-            onClick={() => onToggleKind(k.id)}
-          >
-            {k.label}
-          </button>
-        ))}
-      </div>
     </div>
   );
 }

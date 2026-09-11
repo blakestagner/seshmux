@@ -41,6 +41,14 @@
   border-color: var(--accent);
 }
 
+// Partly selected. Accent-bordered but not accent-FILLED, so "some" and "all" are told
+// apart by the box itself and not only by the glyph inside it.
+.mixed {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .input:hover:not(:disabled) + .box {
   border-color: var(--accent);
 }
