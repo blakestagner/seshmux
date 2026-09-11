@@ -23,6 +23,16 @@ vi.mock('../../server/lib/providers/types', () => ({
   getProviders: async () => [{ id: 'claude', scanProjects: async () => scanned }],
 }));
 
+// The worktree fold, stubbed: the real one shells out to git. What matters here is that
+// the route ASKS, because scan.ts rewrites a worktree project's path to its parent and
+// so a worktree cwd appears in no Project.path to match against.
+let worktreeParents: Record<string, string> = {};
+vi.mock('../../server/lib/store/scan', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../server/lib/store/scan')>()),
+  derivedWorkspaceParent: (cwd: string) => worktreeParents[cwd] ?? null,
+  worktreeParent: async (cwd: string) => worktreeParents[cwd] ?? null,
+}));
+
 const projectsRoutes = (await import('../../server/routes/projects')).default;
 
 // An existing, non-temp directory: isTmpProject filters tmpdir, so a fixture under it
@@ -34,7 +44,14 @@ const list = async () => {
   await f.register(projectsRoutes);
   const res = await f.inject({ method: 'GET', url: '/api/projects' });
   await f.close();
-  return res.json() as { id: string; name: string; path: string; sessionCount: number; missing: boolean }[];
+  return res.json() as {
+    id: string;
+    name: string;
+    path: string;
+    sessionCount: number;
+    missing: boolean;
+    live?: boolean;
+  }[];
 };
 
 const entry = (cwd: string, over: Record<string, unknown> = {}) => ({
@@ -48,6 +65,7 @@ const entry = (cwd: string, over: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   ledger = [];
   scanned = [];
+  worktreeParents = {};
 });
 
 describe('GET /api/projects — live sessions with no transcript yet', () => {
@@ -129,5 +147,66 @@ describe('GET /api/projects — live sessions with no transcript yet', () => {
   it('names the project after its folder', async () => {
     ledger = [entry(REAL_DIR)];
     expect((await list())[0].name).toBe('seshmux');
+  });
+
+  it('marks a live-only project so consumers can tell it from an empty one', async () => {
+    // Every recorded count is 0, so the rail's provider filter and its "anything here
+    // yet" empty state both need a flag to test — a count-only test drops the project
+    // out of exactly the view this listing exists to populate.
+    ledger = [entry(REAL_DIR)];
+    expect((await list())[0].live).toBe(true);
+  });
+
+  it('does not mark a scanned project live', async () => {
+    scanned = [
+      {
+        id: 'known',
+        provider: 'claude',
+        name: 'seshmux',
+        path: REAL_DIR,
+        sessionCount: 5,
+        createdAt: 1,
+        updatedAt: 2,
+        missing: false,
+      },
+    ];
+    expect((await list())[0].live).toBeUndefined();
+  });
+});
+
+describe('GET /api/projects — worktree sessions', () => {
+  const WORKTREE = join(REAL_DIR, '.claude', 'worktrees', 'feat-x');
+
+  it('folds a live worktree session into its parent repo instead of sprouting a row', async () => {
+    // scan.ts rewrites a worktree project's path to the PARENT ("no rail sprout of one
+    // project group per workspace"), so the worktree cwd is in no Project.path and a
+    // raw comparison could never match it — every live workspace grew a duplicate
+    // top-level row named after its branch folder.
+    scanned = [
+      {
+        id: 'known',
+        provider: 'claude',
+        name: 'seshmux',
+        path: REAL_DIR,
+        sessionCount: 5,
+        createdAt: 1,
+        updatedAt: 2,
+        missing: false,
+      },
+    ];
+    worktreeParents = { [WORKTREE]: REAL_DIR };
+    ledger = [entry(WORKTREE)];
+    const out = await list();
+    expect(out).toHaveLength(1);
+    expect(out[0].path).toBe(REAL_DIR);
+  });
+
+  it('lists the PARENT when a worktree session is the only thing running there', async () => {
+    worktreeParents = { [WORKTREE]: REAL_DIR };
+    ledger = [entry(WORKTREE, { label: 'feat-x' })];
+    const out = await list();
+    expect(out).toHaveLength(1);
+    // Named after the repo, not the branch folder the ledger's label carries.
+    expect(out[0]).toMatchObject({ path: REAL_DIR, name: 'seshmux' });
   });
 });

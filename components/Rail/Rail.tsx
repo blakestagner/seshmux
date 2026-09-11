@@ -462,14 +462,25 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
   const railActive = railFilter.trim().length > 0;
   // Provider filter: key off the server's per-provider counts (always present),
   // not the lazily-loaded session pages — otherwise unloaded projects vanish.
+  // `p.live` is the second arm because a live-only project (an agent running in a cwd
+  // that has no transcript yet) has a recorded count of 0 for EVERY provider — a
+  // count-only test dropped it, which is the whole thing the live listing exists to
+  // show. Its own provider is the one running there.
   let filteredProjects =
-    provFilter === 'all' ? ordered : ordered.filter((p) => (p.sessionCountByProvider?.[provFilter] ?? 0) > 0);
+    provFilter === 'all'
+      ? ordered
+      : ordered.filter(
+          (p) => (p.sessionCountByProvider?.[provFilter] ?? 0) > 0 || (p.live && p.provider === provFilter),
+        );
   // When the sidebar-wide filter is active, hide projects with no match — and
   // (below) force the matching ones open regardless of collapse state.
   if (railActive) filteredProjects = filteredProjects.filter((p) => visibleSessions(p as Project).shown.length > 0);
 
   const totalProjects = projects.length;
-  const hasAnySessions = projects.some((p) => p.sessionCount > 0);
+  // `|| p.live` for the same reason as the provider filter above: a store whose only
+  // project is a just-created one would otherwise render the "nothing here yet" empty
+  // state while an agent was visibly running in it.
+  const hasAnySessions = projects.some((p) => p.sessionCount > 0 || p.live);
 
   // Open-sessions panel (VS Code Outline-style): every open tab across
   // tabs/grid/agents, resizable via a drag handle on its top edge. Same

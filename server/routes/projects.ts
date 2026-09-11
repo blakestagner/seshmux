@@ -12,7 +12,7 @@ import { pickFolder, pickerAvailable } from '../lib/folder-picker';
 import { readEntries } from '../lib/live-ledger';
 import { getProviders } from '../lib/providers/types';
 import type { Project, SessionMeta } from '../lib/providers/types';
-import { encodeProjectId, pathLeaf } from '../lib/store/scan';
+import { derivedWorkspaceParent, encodeProjectId, pathLeaf, worktreeParent } from '../lib/store/scan';
 
 // Sessions run inside temp dirs (test daemons, scratch runs, throwaway clones)
 // pollute the rail with cwd-projects that aren't real projects. Filter them out
@@ -50,7 +50,7 @@ function cwdKey(p: string): string {
  * The live ledger is the honest answer in that gap: it is seshmux's own record of the
  * agent PTYs it believes are alive, so an entry IS an agent running in that cwd. This
  * is not a registry — nothing is written here, an entry vanishes when the PTY exits,
- * and the moment a transcript lands the store-scanned project wins on id.
+ * and the moment a transcript lands the store-scanned project wins.
  */
 async function liveOnlyProjects(known: Iterable<Project>): Promise<Project[]> {
   // Matched on CWD, not on project id. A store's dirent name is the id, and it need not
@@ -62,23 +62,33 @@ async function liveOnlyProjects(known: Iterable<Project>): Promise<Project[]> {
   const out = new Map<string, Project>();
   for (const e of entries) {
     if (!e.cwd) continue;
-    const key = cwdKey(e.cwd);
+    // A WORKTREE session's ledger cwd is the worktree dir (workspaces.ts spawns with
+    // projectPath: dir), while scan.ts folds such a project onto its PARENT repo path
+    // and never lists the worktree on its own — "no rail sprout of one project group
+    // per workspace". So the worktree cwd appears in no Project.path and `seen` could
+    // never match it: every live workspace would have sprouted exactly the duplicate
+    // top-level row that fold exists to prevent. Fold first, then compare.
+    const cwd = derivedWorkspaceParent(e.cwd) ?? (await worktreeParent(e.cwd)) ?? e.cwd;
+    const key = cwdKey(cwd);
     if (seen.has(key) || out.has(key)) continue;
-    if (isTmpProject(e.cwd)) continue;
+    if (isTmpProject(cwd)) continue;
     out.set(key, {
-      id: encodeProjectId(e.cwd),
+      id: encodeProjectId(cwd),
       provider: e.provider,
-      name: e.label || pathLeaf(e.cwd) || e.cwd,
-      path: e.cwd,
-      // Zero, truthfully: no session has been RECORDED yet. The rail shows a live
-      // dot from the tab, so an invented count of 1 would only make the number
-      // disagree with the session list the moment it is opened.
+      // e.label is basename(ledger cwd) — the WORKTREE's name when this folded, which
+      // would title the row after a branch dir instead of the repo.
+      name: pathLeaf(cwd) || e.label || cwd,
+      path: cwd,
+      // Zero recorded sessions, truthfully — `live` is what says an agent is here, and
+      // an invented count of 1 would disagree with the session list the moment it is
+      // opened. Consumers that ask "is there anything here" must test both.
       sessionCount: 0,
+      live: true,
       createdAt: e.startedAt,
       updatedAt: e.startedAt,
       // A folder the user just made exists; a ledger entry can outlive its cwd
       // (deleted worktree), and the rail hides those the same as any other.
-      missing: !(await stat(e.cwd).then((s) => s.isDirectory()).catch(() => false)),
+      missing: !(await stat(cwd).then((s) => s.isDirectory()).catch(() => false)),
       sessionCountByProvider: { [e.provider]: 0 },
     });
   }

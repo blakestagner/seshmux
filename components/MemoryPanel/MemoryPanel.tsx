@@ -35,6 +35,9 @@ import { getTermSend } from '../../lib/client/term-send';
 import type { ProviderId } from '../../lib/client/types';
 import styles from './MemoryPanel.module.scss';
 
+/** Records fetched per query, across ALL sessions — not per session. */
+const ROW_LIMIT = 200;
+
 export type MemoryPanelProps = {
   projectId?: string;
   /** The session in view — enables distilling just that session. */
@@ -67,7 +70,7 @@ export default function MemoryPanel({
   submitOnLoad = false,
   onClose,
 }: MemoryPanelProps) {
-  const search = useMemorySearch(projectId, refreshKey, 200);
+  const search = useMemorySearch(projectId, refreshKey, ROW_LIMIT);
   const [stats, setStats] = useState<MemoryStats | null>(null);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
@@ -78,11 +81,25 @@ export default function MemoryPanel({
   const [selected, setSelected] = useState<Map<string, MemoryGroup>>(new Map());
 
   const searching = search.query.trim().length > 0;
+  // The query is capped (ROW_LIMIT) across ALL sessions, so a busy store hands back a
+  // SLICE of each session and a group's "N records" is the part that made the cut. Say
+  // so: this used to be visible as "N shown" in the load bar, and grouping replaced that
+  // with a session count — which reads as a complete inventory when it is not.
+  const truncated = search.total > search.rows.length;
   // Built here rather than in the list, so the load bar counts the same groups the list
   // draws instead of re-deriving "how many sessions is this" from a second rule.
   const groups = useMemo(() => groupBySession(search.rows, { searching }), [search.rows, searching]);
 
-  const selectedRows = useMemo(() => [...selected.values()].flatMap((g) => g.rows), [selected]);
+  // Deduped by id. Selection holds group SNAPSHOTS taken at tick time and is
+  // deliberately never reconciled against refetched rows, so the same record can sit in
+  // two of them: groupBySession lifts a pinned record out of its session into the Pinned
+  // group, and unpinning it between two ticks puts it back. The pack route maps ids
+  // straight through, so the block would have carried it twice and over-counted the
+  // budget against it.
+  const selectedRows = useMemo(
+    () => [...new Map([...selected.values()].flatMap((g) => g.rows).map((r) => [r.id, r])).values()],
+    [selected],
+  );
   const selectedIds = useMemo(() => new Set(selected.keys()), [selected]);
   const used = estimateRowTokens(selectedRows);
   const over = used > budgetTokens;
@@ -299,7 +316,7 @@ export default function MemoryPanel({
           <span className={over ? styles.budgetOver : styles.budget}>
             {selected.size > 0
               ? `${selected.size} session${selected.size === 1 ? '' : 's'} · ${budgetLabel(used, budgetTokens)}`
-              : `${groups.length} session${groups.length === 1 ? '' : 's'}`}
+              : `${groups.length} session${groups.length === 1 ? '' : 's'}${truncated ? ` · top ${search.rows.length} of ${search.total} records` : ''}`}
           </span>
           <Button variant="link" className={styles.clear} onClick={() => selectAll(selected.size === 0)}>
             {selected.size > 0 ? 'clear' : 'select all'}
@@ -355,7 +372,10 @@ export default function MemoryPanel({
           ) : null}
           {stats ? (
             <span className={styles.stats}>
-              {search.total} shown · {stats.total} stored · {stats.pinned} pinned
+              {/* `search.total` is the match count BEFORE the row limit, so labelling it
+                  "shown" overstated the list whenever the two differed. */}
+              {search.rows.length} shown · {search.total} matched · {stats.total} stored ·{' '}
+              {stats.pinned} pinned
             </span>
           ) : null}
         </div>

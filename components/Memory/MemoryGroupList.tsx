@@ -9,7 +9,7 @@
 // about to hand over; they are not separately selectable, because picking six of a
 // session's eleven records is not a thing anyone wants to spend attention on.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Checkbox from '../ui/Checkbox/Checkbox';
 import ProviderBadge from '../ui/ProviderBadge/ProviderBadge';
 import MemoryRowItem from './MemoryRowItem';
@@ -72,6 +72,13 @@ export default function MemoryGroupList({
   const [overrides, setOverrides] = useState<Map<string, boolean>>(new Map());
   const isOpen = (id: string) => overrides.get(id) ?? seeded.has(id);
   const setOpen = (id: string, open: boolean) => setOverrides((cur) => new Map(cur).set(id, open));
+
+  // Starting or clearing a search drops them. An override outranks the seed, so a group
+  // collapsed while browsing stayed collapsed once a query opened everything else —
+  // showing a header with a record count and nothing under it, which is precisely the
+  // "a folded group hides the match that was searched for" case the seed prevents.
+  // Browsing and searching are different questions; neither inherits the other's folds.
+  useEffect(() => setOverrides(new Map()), [searching]);
 
   return (
     <>

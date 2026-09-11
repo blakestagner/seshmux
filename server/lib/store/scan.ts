@@ -38,6 +38,11 @@ export interface Project {
   // Set by the /api/projects merge (not by providers): per-provider session
   // counts, so the rail's provider filter can show the filtered count.
   sessionCountByProvider?: Partial<Record<ProviderId, number>>;
+  // An agent is running in this cwd but has written no transcript yet, so the
+  // project exists only in the live ledger and every recorded count is 0.
+  // Anything asking "does this project have anything in it" must test this too,
+  // or the project vanishes from exactly the view that was meant to show it.
+  live?: boolean;
 }
 
 export interface SessionMeta {

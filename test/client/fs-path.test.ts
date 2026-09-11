@@ -99,4 +99,15 @@ describe('isWindowsPath / sepOf', () => {
     expect(sepOf('C:\\Users')).toBe('\\');
     expect(sepOf('/home/blake')).toBe('/');
   });
+
+  it('treats a backslash path with no drive or UNC prefix as posix, by contract', () => {
+    // `Users\Blake\proj` is three segments on Windows and ONE legal filename on posix,
+    // and nothing in the string decides it. These helpers take absolute paths — where
+    // the question never arises — so the posix reading is chosen deliberately: guessing
+    // Windows here would split real posix filenames, the exact corruption CLAUDE.local.md
+    // warns about. Pinned so the choice is a decision and not an accident.
+    expect(isWindowsPath('Users\\Blake\\proj')).toBe(false);
+    expect(baseName('Users\\Blake\\proj')).toBe('Users\\Blake\\proj');
+    expect(baseName('/home/b/we\\ird')).toBe('we\\ird');
+  });
 });

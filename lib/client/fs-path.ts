@@ -12,6 +12,14 @@
 //
 // Git paths are a different thing and do not belong here: git always emits forward slashes
 // on every platform, so git-tree.ts and the diff views are right to split on '/' alone.
+//
+// CONTRACT: these take an ABSOLUTE path — a recorded agent cwd, a repo path, a folder the
+// picker returned. Every caller has one. It matters because a RELATIVE path can be
+// genuinely ambiguous: `Users\Blake\proj` is three segments on Windows and one legal
+// filename on posix, and nothing in the string says which. Rather than guess and risk
+// splitting a real posix filename, a path with no drive letter, no UNC prefix and no '/'
+// is treated as posix — i.e. one segment. Absolute paths never land there: a posix one
+// always carries '/', a Windows one always carries its drive or UNC prefix.
 
 /** A drive-letter path (`C:\x`, `C:/x`) or a UNC share (`\\host\share`). */
 export function isWindowsPath(p: string): boolean {
