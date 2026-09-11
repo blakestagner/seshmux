@@ -9,8 +9,10 @@ import { mkdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pickFolder, pickerAvailable } from '../lib/folder-picker';
+import { readEntries } from '../lib/live-ledger';
 import { getProviders } from '../lib/providers/types';
 import type { Project, SessionMeta } from '../lib/providers/types';
+import { encodeProjectId, pathLeaf } from '../lib/store/scan';
 
 // Sessions run inside temp dirs (test daemons, scratch runs, throwaway clones)
 // pollute the rail with cwd-projects that aren't real projects. Filter them out
@@ -25,6 +27,62 @@ const TMP_ROOTS = ['/tmp/', '/private/tmp/', '/private/var/folders/', '/var/fold
 function isTmpProject(path: string): boolean {
   const p = norm(path);
   return TMP_ROOTS.some((root) => p.startsWith(root));
+}
+
+// Identity of a cwd, for comparing two paths that reached us by different routes: a
+// store's recorded cwd and seshmux's own ledger. Separators can differ (git says
+// `C:/Users/…`, node says `C:\Users\…`) and win32 filesystems are case-insensitive.
+function cwdKey(p: string): string {
+  const s = p.replace(/\\/g, '/').replace(/\/+$/, '');
+  return process.platform === 'win32' ? s.toLowerCase() : s;
+}
+
+/**
+ * Projects for cwds where an agent is running RIGHT NOW but has not written a
+ * transcript yet.
+ *
+ * A project is a cwd an agent has run in, and the stores are how that is normally
+ * known — but they lag. Claude Code creates its store dirent when the session starts
+ * and only writes the .jsonl on the first message, so "+ New project" left you with a
+ * live terminal and nothing in the rail until you typed something. It looked like the
+ * create had failed.
+ *
+ * The live ledger is the honest answer in that gap: it is seshmux's own record of the
+ * agent PTYs it believes are alive, so an entry IS an agent running in that cwd. This
+ * is not a registry — nothing is written here, an entry vanishes when the PTY exits,
+ * and the moment a transcript lands the store-scanned project wins on id.
+ */
+async function liveOnlyProjects(known: Iterable<Project>): Promise<Project[]> {
+  // Matched on CWD, not on project id. A store's dirent name is the id, and it need not
+  // agree with encodeProjectId() on case — this machine has a `c--Users-...-pokemon`
+  // dirent for `C:\Users\...\pokemon` — so an id comparison would list a second copy of
+  // a project that is already there the moment an agent is live in it.
+  const seen = new Set([...known].map((p) => cwdKey(p.path)));
+  const entries = await readEntries().catch(() => []);
+  const out = new Map<string, Project>();
+  for (const e of entries) {
+    if (!e.cwd) continue;
+    const key = cwdKey(e.cwd);
+    if (seen.has(key) || out.has(key)) continue;
+    if (isTmpProject(e.cwd)) continue;
+    out.set(key, {
+      id: encodeProjectId(e.cwd),
+      provider: e.provider,
+      name: e.label || pathLeaf(e.cwd) || e.cwd,
+      path: e.cwd,
+      // Zero, truthfully: no session has been RECORDED yet. The rail shows a live
+      // dot from the tab, so an invented count of 1 would only make the number
+      // disagree with the session list the moment it is opened.
+      sessionCount: 0,
+      createdAt: e.startedAt,
+      updatedAt: e.startedAt,
+      // A folder the user just made exists; a ledger entry can outlive its cwd
+      // (deleted worktree), and the rail hides those the same as any other.
+      missing: !(await stat(e.cwd).then((s) => s.isDirectory()).catch(() => false)),
+      sessionCountByProvider: { [e.provider]: 0 },
+    });
+  }
+  return [...out.values()];
 }
 
 // Expand a leading ~ and make absolute. The user types this path, so there is
@@ -112,7 +170,10 @@ export default async function projectsRoutes(f: FastifyInstance) {
         }
       }
     }
-    return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
+    // Added AFTER the merge so a store-backed project always wins on id — the
+    // ledger only fills the gap before the first transcript is written.
+    const live = await liveOnlyProjects(merged.values());
+    return [...merged.values(), ...live].sort((a, b) => a.name.localeCompare(b.name));
   });
 
   f.get<{

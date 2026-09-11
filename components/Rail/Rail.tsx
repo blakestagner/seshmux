@@ -10,6 +10,7 @@ import TextInput from '../ui/TextInput/TextInput';
 import StatusDot from '../ui/StatusDot/StatusDot';
 import IconButton from '../ui/IconButton/IconButton';
 import {
+  getProjects,
   getSessions,
   startSession,
   createWorkspace,
@@ -225,6 +226,15 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
       provider,
     });
     dispatch({ type: 'setView', view: 'tabs' });
+    // List it NOW. The session-new event that normally refreshes the rail fires
+    // off the transcript being written, and an agent writes that on the first
+    // MESSAGE, not at spawn — so a project created here stayed invisible until
+    // the user typed something, which reads as "the create silently failed".
+    // The server answers this window from the live ledger; this is just the
+    // nudge to go and ask. Never fatal: the rail is already correct-but-stale.
+    await getProjects()
+      .then((projects) => dispatch({ type: 'setProjects', projects }))
+      .catch(() => {});
   }
 
   // Team modal's Start button (Task 5) — same split as handleStartSession:
