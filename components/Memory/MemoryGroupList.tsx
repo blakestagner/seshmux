@@ -15,16 +15,12 @@ import ProviderBadge from '../ui/ProviderBadge/ProviderBadge';
 import MemoryRowItem from './MemoryRowItem';
 import { KIND_GLYPH } from './kinds';
 import { defaultOpenGroups, type MemoryGroup } from '../../lib/client/memory-groups';
+import { baseName } from '../../lib/client/fs-path';
 import type { MemoryKind, MemoryRow } from '../../lib/client/api';
 import styles from './Memory.module.scss';
 
 function day(ts: number): string {
   return new Date(ts).toISOString().slice(0, 10);
-}
-
-function leaf(repo: string): string {
-  const norm = repo.replace(/\\/g, '/').replace(/\/+$/, '');
-  return norm.slice(norm.lastIndexOf('/') + 1) || norm;
 }
 
 /** Distinct kinds in the group, in the order they first appear — "what is in here". */
@@ -37,7 +33,7 @@ function kindStrip(rows: MemoryRow[]): MemoryKind[] {
 function headMeta(group: MemoryGroup, showRepo: boolean): string {
   const n = `${group.rows.length} record${group.rows.length === 1 ? '' : 's'}`;
   if (group.kind === 'pinned') return n;
-  const parts = [showRepo ? leaf(group.repo) : null];
+  const parts = [showRepo ? baseName(group.repo) : null];
   // The session id is the provenance a claim is checked against; it survives here because
   // the rows beneath no longer repeat it.
   if (group.kind === 'session') parts.push(group.sessionId.slice(0, 8));

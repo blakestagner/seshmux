@@ -18,6 +18,7 @@
 
 import { useEffect, useState } from 'react';
 import { createProjectFolder, getHomeDir, pickFolder } from '../../lib/client/api';
+import { baseName, dirName, joinPath } from '../../lib/client/fs-path';
 import type { ProviderId } from '../../lib/client/types';
 import Modal from '../ui/Modal/Modal';
 import Button from '../ui/Button/Button';
@@ -43,8 +44,8 @@ export default function NewProjectModal({ providers, suggestions, onCreate, onCl
   const [browsing, setBrowsing] = useState(false);
   const [hasPicker, setHasPicker] = useState(false);
   // Set once the native dialog returned a path. That folder EXISTS on disk
-  // already (Finder's New Folder made it), so its name is no longer a choice —
-  // editing it would create a second, differently-named folder and leave the
+  // already (the chooser's New Folder button made it), so its name is no longer
+  // a choice — editing it would create a second, differently-named folder and leave the
   // one the user just made empty. Typing in Location clears this and hands the
   // form back to the manual flow.
   const [picked, setPicked] = useState<string | null>(null);
@@ -71,11 +72,14 @@ export default function NewProjectModal({ providers, suggestions, onCreate, onCl
     try {
       const { path } = await pickFolder(parent.trim() || undefined);
       if (path) {
-        const cut = path.lastIndexOf('/');
-        // Picking '/' itself leaves the name empty rather than inventing one.
-        if (cut > 0) {
-          setParent(path.slice(0, cut));
-          setName(path.slice(cut + 1));
+        // dirName/baseName, not lastIndexOf('/'): the picker hands back a real OS path,
+        // and a Windows one has no '/' in it at all — this used to drop the whole path
+        // into Location and leave Folder name empty, so Browse could never complete.
+        const dir = dirName(path);
+        // Picking a root itself leaves the name empty rather than inventing one.
+        if (dir) {
+          setParent(dir);
+          setName(baseName(path));
           setPicked(path);
         } else {
           setParent(path);
@@ -145,7 +149,7 @@ export default function NewProjectModal({ providers, suggestions, onCreate, onCl
 
         <label className={styles.field}>
           <span className={styles.label}>
-            Folder name{picked ? <span className={styles.lockNote}> · chosen in Finder</span> : null}
+            Folder name{picked ? <span className={styles.lockNote}> · chosen in the folder chooser</span> : null}
           </span>
           <TextInput
             value={name}
@@ -167,9 +171,10 @@ export default function NewProjectModal({ providers, suggestions, onCreate, onCl
           </div>
         ) : null}
 
-        <div className={styles.preview}>
-          {parent.trim() && name.trim() ? `${parent.trim().replace(/\/+$/, '')}/${name.trim()}` : ' '}
-        </div>
+        {/* Joined the way the location is written, so a Windows path previews as
+            `C:\Users\Blake\Downloads\yes` rather than the half-and-half
+            `C:\Users\Blake\Downloads/yes`. */}
+        <div className={styles.preview}>{parent.trim() && name.trim() ? joinPath(parent, name) : ' '}</div>
         {error ? <div className={styles.error}>{error}</div> : null}
 
         <div className={styles.actions}>

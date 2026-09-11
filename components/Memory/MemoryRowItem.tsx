@@ -14,16 +14,12 @@ import IconButton from '../ui/IconButton/IconButton';
 import MetaLine from '../ui/MetaLine/MetaLine';
 import ProviderBadge from '../ui/ProviderBadge/ProviderBadge';
 import type { MemoryRow } from '../../lib/client/api';
+import { baseName } from '../../lib/client/fs-path';
 import { KIND_GLYPH, KIND_LABEL } from './kinds';
 import styles from './Memory.module.scss';
 
 function day(ts: number): string {
   return new Date(ts).toISOString().slice(0, 10);
-}
-
-function leaf(repo: string): string {
-  const norm = repo.replace(/\\/g, '/').replace(/\/+$/, '');
-  return norm.slice(norm.lastIndexOf('/') + 1) || norm;
 }
 
 export type MemoryRowItemProps = {
@@ -53,7 +49,7 @@ export default function MemoryRowItem({
   // Provider identity is the badge's job — repeating it as text renders "✳ claude · claude".
   const cite = inGroup
     ? KIND_LABEL[row.kind] ?? row.kind
-    : [showRepo ? leaf(row.repo) : null, day(row.ts), row.sessionId.slice(0, 8)].filter(Boolean).join(' · ');
+    : [showRepo ? baseName(row.repo) : null, day(row.ts), row.sessionId.slice(0, 8)].filter(Boolean).join(' · ');
 
   return (
     <div className={`${styles.row} ${row.superseded ? styles.rowStale : ''}`}>

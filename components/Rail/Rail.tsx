@@ -20,6 +20,7 @@ import {
 } from '../../lib/client/api';
 import type { TeamStartPayload, WorkspaceRecord } from '../../lib/client/api';
 import type { SessionMeta, Project, Config, ProviderId } from '../../lib/client/types';
+import { dirName } from '../../lib/client/fs-path';
 import { useAppState } from '../../lib/client/store';
 import { useDetectedProviders, provFilterOptions, showsProviderIdentity } from '../../lib/client/providers';
 import type { RailSort, Tab } from '../../lib/client/store';
@@ -868,13 +869,10 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
         <NewProjectModal
           providers={availableProviders}
           // Parent dirs of existing projects, most-used first — the datalist.
-          suggestions={[
-            ...new Set(
-              projects
-                .map((p) => p.path.slice(0, p.path.lastIndexOf('/')))
-                .filter(Boolean),
-            ),
-          ]}
+          // dirName, not lastIndexOf('/'): a project path is a REAL OS path, and on
+          // Windows there is no '/' in it, so slice(0, -1) used to hand the dialog
+          // `C:\Users\Blake\Download` for `…\Downloads` — a directory that cannot exist.
+          suggestions={[...new Set(projects.map((p) => dirName(p.path)).filter(Boolean))]}
           onCreate={handleStartInNewProject}
           onClose={() => setNewProjectOpen(false)}
         />
