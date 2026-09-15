@@ -7,6 +7,12 @@ export function clampSize(proposed: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, proposed));
 }
 
+// True when a proposed size has been dragged more than `threshold` px below
+// `min` — releasing there collapses the pane instead of clamping it.
+export function shouldSnapClosed(proposed: number, min: number, threshold: number): boolean {
+  return proposed < min - threshold;
+}
+
 // Read a persisted number from a raw string|null (localStorage.getItem result),
 // clamp to [min,max]; return `fallback` (already assumed in-range) if absent/NaN/corrupt.
 export function readPersistedSize(raw: string | null, min: number, max: number, fallback: number): number {

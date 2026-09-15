@@ -10,6 +10,7 @@ import type { EventMessage } from '../lib/client/ws';
 import TopNav from '../components/TopNav/TopNav';
 import CustomizationsModal from '../components/CustomizationsModal/CustomizationsModal';
 import Rail from '../components/Rail/Rail';
+import IconButton from '../components/ui/IconButton/IconButton';
 import Tabs from '../components/Tabs/Tabs';
 import Transcript from '../components/Transcript/Transcript';
 import Settings from '../components/Settings/Settings';
@@ -37,7 +38,7 @@ import type { ProviderId } from '../lib/client/types';
 import { DetectedProvidersProvider, providersFromEnv } from '../lib/client/providers';
 import Card from '../components/ui/Card/Card';
 import Button from '../components/ui/Button/Button';
-import { clampSize, readPersistedSize, clampSplit } from '../lib/client/drag-resize';
+import { clampSize, readPersistedSize, clampSplit, shouldSnapClosed } from '../lib/client/drag-resize';
 import { persistDebounced } from '../lib/client/persist';
 import { useDragResize } from '../lib/client/use-drag-resize';
 import {
@@ -70,6 +71,8 @@ const PANEL_LABELS: Record<string, string> = {
 const RAIL_MIN = 288;
 const RAIL_MAX = 560;
 const RAIL_DEFAULT = 288;
+// Drag the handle this far below RAIL_MIN and release → the rail collapses.
+const RAIL_SNAP = 96;
 
 // Term↔viewer split bounds (Task 2). Ratio (left fraction) persisted instead of
 // px since the split's container width isn't known outside a resize.
@@ -308,14 +311,47 @@ function AppShell() {
   // that snapshot + delta (never of the latest railWidth, which would drift
   // under rAF-throttled updates).
   const railDragStartRef = useRef(RAIL_DEFAULT);
+  // Snap-to-close: while armed the rail sits at RAIL_MIN, dimmed; the decision
+  // is made on release (not mid-drag) so the handle holding pointer capture is
+  // never hidden under the pointer. Ref mirrors state for onDragEnd.
+  const [railSnapping, setRailSnapping] = useState(false);
+  const railSnapRef = useRef(false);
   const railDrag = useDragResize({
     onDragStart: () => {
       railDragStartRef.current = railWidth;
     },
     onDrag: (deltaX) => {
-      setRailWidth(clampSize(railDragStartRef.current + deltaX, RAIL_MIN, RAIL_MAX));
+      const proposed = railDragStartRef.current + deltaX;
+      railSnapRef.current = shouldSnapClosed(proposed, RAIL_MIN, RAIL_SNAP);
+      setRailSnapping(railSnapRef.current);
+      setRailWidth(clampSize(proposed, RAIL_MIN, RAIL_MAX));
+    },
+    onDragEnd: () => {
+      if (!railSnapRef.current) return;
+      railSnapRef.current = false;
+      setRailSnapping(false);
+      // Reopen at the width the user had before this drag, not RAIL_MIN.
+      setRailWidth(railDragStartRef.current);
+      setRailCollapsed(true);
     },
   });
+
+  // Rail collapse (desktop only): same SSR-safe read+write-in-one-effect pattern.
+  // Collapsing hides the rail rather than unmounting it, so its scroll position
+  // and expanded projects survive a close/open.
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  const railCollapsedLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!railCollapsedLoadedRef.current) {
+      railCollapsedLoadedRef.current = true;
+      if (localStorage.getItem('seshmux-rail-collapsed') === '1') {
+        setRailCollapsed(true);
+        return;
+      }
+    }
+    localStorage.setItem('seshmux-rail-collapsed', railCollapsed ? '1' : '0');
+  }, [railCollapsed]);
+  const railHidden = railCollapsed && !isMobile;
 
   // Term↔viewer split ratio (Task 2): same SSR-safe read+write-in-one-effect
   // pattern as railWidth above. Stored as a RATIO (not px) since container
@@ -990,14 +1026,26 @@ function AppShell() {
       <div className={styles.app} data-screen={mobileScreen} data-drawer={drawerOpen ? 'open' : 'closed'}>
         {/* Settings is a full-page overlay: hide the rail so it reads as its own
             page. Sibling of <main>, so gate it here. */}
+        {state.settingsOpen || !railHidden ? null : (
+          // The whole 24px strip is the hit target; the button inside is what
+          // keyboard users tab to (its click bubbles up to this handler).
+          <div className={styles.railSliver} onClick={() => setRailCollapsed(false)}>
+            <IconButton label="Show sidebar" className={styles.railSliverBtn}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </IconButton>
+          </div>
+        )}
         {state.settingsOpen ? null : (
-          <div className={styles.railCol}>
+          <div className={`${styles.railCol} ${railHidden ? styles.railColHidden : ''} ${railSnapping ? styles.railColSnapping : ''}`}>
             <Rail
               width={isMobile ? undefined : railWidth}
               jumpTo={jumpTo}
               onJumped={() => setJumpTo(null)}
               onOpenCustomizations={setCustOpen}
               onOpenGlobalCustomizations={() => setCustOpen({})}
+              onCollapse={isMobile ? undefined : () => setRailCollapsed(true)}
             />
             <div
               className={styles.railHandle}

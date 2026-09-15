@@ -69,6 +69,49 @@
   background: var(--accent);
 }
 
+// Collapsed rail (desktop): the rail stays mounted but hidden, and a 24px strip
+// takes its place. The chevron sits level with the rail's Projects head.
+.railColHidden {
+  display: none;
+}
+
+// Handle dragged past the snap threshold: dim the rail to preview "release closes it".
+.railColSnapping {
+  opacity: 0.45;
+  transition: opacity 0.12s;
+}
+
+.railSliver {
+  flex: 0 0 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 14px;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.railSliver:hover {
+  background: var(--bg-hover);
+}
+
+.railSliverBtn {
+  padding: 4px 2px;
+}
+
+.railSliver:hover .railSliverBtn {
+  color: var(--accent);
+}
+
+// Collapse is desktop-only (page.tsx gates on isMobile); belt-and-braces for
+// the first paint before isMobile resolves.
+@media (max-width: 640px) {
+  .railSliver {
+    display: none;
+  }
+}
+
 .main {
   flex: 1;
   min-width: 0;

@@ -67,6 +67,9 @@ export default function NewProjectModal({ providers, suggestions, onCreate, onCl
   // of having a native picker at all. The result is split back into the two
   // fields so it stays visible and editable before Create.
   async function browse() {
+    // Clicking the Location field while a dialog is already open must not stack a
+    // second one (the server would dismiss the first mid-pick).
+    if (browsing) return;
     setBrowsing(true);
     setError(null);
     try {
@@ -127,6 +130,9 @@ export default function NewProjectModal({ providers, suggestions, onCreate, onCl
                 }}
                 placeholder="~/Documents/GitHub"
                 list="seshmux-project-parents"
+                // Click opens the folder chooser; Tab still focuses it for typing,
+                // and cancelling the chooser leaves the field focused to type in.
+                onClick={hasPicker ? () => void browse() : undefined}
                 onKeyDown={(e) => e.key === 'Enter' && void submit()}
               />
             </span>

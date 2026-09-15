@@ -157,6 +157,30 @@ export default async function projectsRoutes(f: FastifyInstance) {
     return { path: target, existed: !!existing };
   });
 
+  // POST /api/projects/open { path } -> { path }
+  // "+ Add project": a folder that must ALREADY exist. Never creates anything —
+  // a typo has to fail here rather than mkdir a stray directory (create does
+  // that on purpose; this route is the one that must not). Like create, it only
+  // resolves the path; the client's session start is what makes it a project.
+  f.post<{ Body: { path?: string } }>('/api/projects/open', async (req, reply) => {
+    const input = req.body?.path;
+    if (!input || !input.trim()) {
+      reply.code(400);
+      return { error: 'path is required' };
+    }
+    const target = resolveUserPath(input);
+    const existing = await stat(target).catch(() => null);
+    if (!existing) {
+      reply.code(400);
+      return { error: `no such directory: ${target}` };
+    }
+    if (!existing.isDirectory()) {
+      reply.code(400);
+      return { error: `not a directory: ${target}` };
+    }
+    return { path: target };
+  });
+
   f.get('/api/projects', async () => {
     const providers = await getProviders();
     const lists = await Promise.all(providers.map((p) => p.scanProjects().catch(() => [])));

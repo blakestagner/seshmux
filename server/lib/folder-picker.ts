@@ -24,9 +24,12 @@ const PICKER_TIMEOUT_MS = 180_000;
 // whole timeout — pressing Browse again must always just work.
 let child: ReturnType<typeof execFile> | null = null;
 
-function run(cmd: string, args: string[]): Promise<{ ok: boolean; out: string }> {
+function run(cmd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<{ ok: boolean; out: string }> {
   return new Promise((resolve) => {
-    child = execFile(cmd, args, { timeout: PICKER_TIMEOUT_MS, maxBuffer: 1 << 20 }, (err, stdout) => {
+    // windowsHide: without it the PowerShell host flashes a console window
+    // behind the dialog. A no-op on every other platform.
+    const opts = { timeout: PICKER_TIMEOUT_MS, maxBuffer: 1 << 20, windowsHide: true, env: env ?? process.env };
+    child = execFile(cmd, args, opts, (err, stdout) => {
       child = null;
       resolve({ ok: !err, out: stdout.trim() });
     });
@@ -64,17 +67,116 @@ async function onPath(bin: string): Promise<boolean> {
   return false;
 }
 
+// Windows PowerShell 5.1 ships with every supported Windows; the full path avoids
+// resolving a `powershell.exe` planted earlier on PATH.
+function winPowerShell(): string {
+  return `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+}
+
+// Windows: the Explorer-style folder dialog (IFileOpenDialog + FOS_PICKFOLDERS).
+// NOT WinForms' FolderBrowserDialog — on Windows PowerShell 5.1 (.NET Framework)
+// that is the old tree-view SHBrowseForFolder box, with no address bar to paste
+// a path into. Add-Type compiles the small COM shim on every open (~1s), the
+// price of needing nothing installed.
+//
+// Owner window: the server is a background process, which Windows will not let
+// take the foreground, so a bare dialog opens BEHIND the browser. An invisible
+// TopMost form as the owner keeps the owned dialog above everything, and
+// CenterScreen puts the dialog in the middle of the screen (it centres on its owner).
+//
+// The start folder arrives via $env:SESHMUX_PICK_START, never spliced into the
+// script text, so there is nothing to escape. UTF-8 stdout so a non-ASCII path
+// survives the pipe (PowerShell defaults to the OEM codepage).
+const WIN_PICKER_PS = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class SeshmuxFolderPicker {
+  [ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
+  class FileOpenDialog {}
+
+  [ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IFileDialog {
+    [PreserveSig] int Show(IntPtr parent);
+    void SetFileTypes(uint count, IntPtr specs);
+    void SetFileTypeIndex(uint index);
+    void GetFileTypeIndex(out uint index);
+    void Advise(IntPtr events, out uint cookie);
+    void Unadvise(uint cookie);
+    void SetOptions(uint options);
+    void GetOptions(out uint options);
+    void SetDefaultFolder(IShellItem item);
+    void SetFolder(IShellItem item);
+    void GetFolder(out IShellItem item);
+    void GetCurrentSelection(out IShellItem item);
+    void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string name);
+    void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string name);
+    void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title);
+    void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string label);
+    void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string label);
+    void GetResult(out IShellItem item);
+  }
+
+  [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IShellItem {
+    void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+    void GetParent(out IShellItem parent);
+    void GetDisplayName(uint sigdn, [MarshalAs(UnmanagedType.LPWStr)] out string name);
+  }
+
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+  static extern void SHCreateItemFromParsingName(string path, IntPtr pbc, [MarshalAs(UnmanagedType.LPStruct)] Guid riid, out IShellItem item);
+
+  const uint FOS_PICKFOLDERS = 0x20, FOS_FORCEFILESYSTEM = 0x40, FOS_PATHMUSTEXIST = 0x800;
+  const uint SIGDN_FILESYSPATH = 0x80058000;
+
+  public static string Pick(IntPtr owner, string title, string startIn) {
+    IFileDialog dialog = (IFileDialog)new FileOpenDialog();
+    uint options;
+    dialog.GetOptions(out options);
+    dialog.SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+    dialog.SetTitle(title);
+    if (!string.IsNullOrEmpty(startIn)) {
+      try {
+        IShellItem folder;
+        SHCreateItemFromParsingName(startIn, IntPtr.Zero, typeof(IShellItem).GUID, out folder);
+        dialog.SetFolder(folder);
+      } catch { } // a start folder that no longer exists just opens the default
+    }
+    if (dialog.Show(owner) != 0) return null; // cancelled (ERROR_CANCELLED) or failed
+    IShellItem result;
+    dialog.GetResult(out result);
+    string path;
+    result.GetDisplayName(SIGDN_FILESYSPATH, out path);
+    return path;
+  }
+}
+'@
+$owner = New-Object System.Windows.Forms.Form -Property @{
+  TopMost = $true; ShowInTaskbar = $false; Opacity = 0; FormBorderStyle = 'None'; StartPosition = 'CenterScreen'
+}
+$owner.Show()
+$owner.Activate()
+try {
+  $path = [SeshmuxFolderPicker]::Pick($owner.Handle, 'Choose or create your project folder', $env:SESHMUX_PICK_START)
+} finally {
+  $owner.Close()
+}
+if ($path) { [Console]::Out.Write($path) }
+`;
+
 /**
  * Whether a native dialog can be opened here at all.
  *
- * win32 is deliberately OFF (issue: native folder picker on Windows) — the
- * PowerShell FolderBrowserDialog path was written blind and never run on a
- * Windows machine, and a dialog that might silently hang is worse than a typed
- * path. Windows users get the typed-path flow, which works everywhere.
+ * win32: Windows PowerShell drives the Explorer folder dialog (WIN_PICKER_PS),
+ * so it's available wherever powershell.exe is — i.e. any desktop Windows.
  */
 export async function pickerAvailable(): Promise<boolean> {
   if (process.platform === 'darwin') return true;
-  if (process.platform === 'win32') return false;
+  if (process.platform === 'win32') return access(winPowerShell(), constants.F_OK).then(() => true, () => false);
   // Linux: only if a GTK/KDE dialog binary AND a display are actually present.
   if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return false;
   return (await onPath('zenity')) || (await onPath('kdialog'));
@@ -95,6 +197,17 @@ export async function pickFolder(rawStartIn?: string): Promise<{ path: string | 
   }
   const startIn = safeStartIn(rawStartIn);
   try {
+    if (process.platform === 'win32') {
+      const script = Buffer.from(WIN_PICKER_PS, 'utf16le').toString('base64');
+      const { ok, out } = await run(
+        winPowerShell(),
+        ['-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', script],
+        { ...process.env, SESHMUX_PICK_START: startIn ?? '' },
+      );
+      // Cancel prints nothing and exits 0; a failure exits non-zero. Both: no pick.
+      return { path: ok && out ? out : null };
+    }
+
     if (process.platform === 'darwin') {
       // NOT `tell application "System Events"`: driving another app needs macOS
       // Automation permission, and the permission prompt itself blocks — the

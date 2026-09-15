@@ -27,6 +27,7 @@ import { useDetectedProviders, provFilterOptions, showsProviderIdentity } from '
 import type { RailSort, Tab } from '../../lib/client/store';
 import NewSessionModal, { type SessionMode } from '../NewSessionModal/NewSessionModal';
 import NewProjectModal from '../NewProjectModal/NewProjectModal';
+import AddProjectModal from '../AddProjectModal/AddProjectModal';
 import TeamModal, { teamsAllowed } from '../TeamModal/TeamModal';
 import FilterMenu from '../FilterMenu/FilterMenu';
 import { PrList } from '../PrLinks/PrLinks';
@@ -147,9 +148,12 @@ export type RailProps = {
   // Drag-resize (page.tsx owns the state + persistence); undefined falls back
   // to the CSS 288px default for SSR/first paint.
   width?: number;
+  // Collapse to the 24px strip (page.tsx owns the state). Omitted on mobile,
+  // where the rail is a full screen/drawer and has nothing to collapse to.
+  onCollapse?: () => void;
 };
 
-export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlobalCustomizations, width }: RailProps) {
+export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlobalCustomizations, width, onCollapse }: RailProps) {
   const { state, dispatch } = useAppState();
   const { config, provFilter, railSort } = state;
   // Hide repos whose folder no longer exists on disk (deleted worktrees, /tmp
@@ -171,6 +175,8 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
   const [modalProject, setModalProject] = useState<Project | null>(null);
   // Rail footer "+ New project": create a folder anywhere, then start in it.
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  // Rail footer "+ Add project": pick an existing folder, then start in it.
+  const [addProjectOpen, setAddProjectOpen] = useState(false);
   // "⚑" (or NewSessionModal's "Team…") opens TeamModal for one project.
   const [teamProject, setTeamProject] = useState<Project | null>(null);
   // Task 5 Step 1b: claude's claude-swarm teammate backend — Teams entry
@@ -209,11 +215,12 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
     }
   }
 
-  // New project: the folder already exists by now (the modal created it), so
-  // this is just a session spawn in a cwd that has none yet. No project id
+  // New / Add project: the folder exists by now (NewProjectModal created it;
+  // AddProjectModal had the server confirm it), so this is just a session spawn
+  // in a cwd that usually has none yet. No project id
   // exists until the agent writes its first jsonl, so the tab is keyed on the
   // path — exactly what the rehydrate path does for an unmatched cwd.
-  async function handleStartInNewProject(path: string, name: string, provider: ProviderId) {
+  async function handleStartInFolder(path: string, name: string, provider: ProviderId) {
     const { tabMeta } = await startSession({ projectPath: path, provider, mode: 'new' });
     // tabMeta.projectId is what this cwd's project WILL be called once the
     // agent writes its first jsonl — key the tab on that, not the raw path, so
@@ -619,6 +626,12 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
     </div>
   ) : null;
 
+  // Parent dirs of existing projects, most-used first — the New/Add project
+  // datalists. dirName, not lastIndexOf('/'): a project path is a REAL OS path,
+  // and on Windows there is no '/' in it, so slice(0, -1) used to hand the dialog
+  // `C:\Users\Blake\Download` for `…\Downloads` — a directory that cannot exist.
+  const projectParents = [...new Set(projects.map((p) => dirName(p.path)).filter(Boolean))];
+
   return (
     <aside className={styles.rail} style={width != null ? { width, flex: `0 0 ${width}px` } : undefined}>
       {sessionsPos === 'top' ? sessionsPanel : null}
@@ -630,7 +643,16 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
         onDragEnd={() => setSectionDrag(null)}
       >
         <h2>Projects</h2>
-        <span className={styles.scan}>{totalProjects}</span>
+        <span className={styles.headEnd}>
+          <span className={styles.scan}>{totalProjects}</span>
+          {onCollapse ? (
+            <IconButton label="Hide sidebar" onClick={onCollapse} className={styles.collapseBtn}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
+            </IconButton>
+          ) : null}
+        </span>
       </div>
       <div className={styles.provFilter}>
         {provOptions.length ? (
@@ -880,22 +902,31 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
         )}
         {/* Always available, even with zero projects — this is the only way in
             for a machine that has never run an agent anywhere. */}
-        <button type="button" className={styles.newProject} onClick={() => setNewProjectOpen(true)}>
-          + New project
-        </button>
+        <div className={styles.footerActions}>
+          <button type="button" className={styles.newProject} onClick={() => setNewProjectOpen(true)}>
+            + New project
+          </button>
+          <button type="button" className={styles.newProject} onClick={() => setAddProjectOpen(true)}>
+            + Add project
+          </button>
+        </div>
       </div>
       </div>
       {sessionsPos === 'bottom' ? sessionsPanel : null}
       {newProjectOpen ? (
         <NewProjectModal
           providers={availableProviders}
-          // Parent dirs of existing projects, most-used first — the datalist.
-          // dirName, not lastIndexOf('/'): a project path is a REAL OS path, and on
-          // Windows there is no '/' in it, so slice(0, -1) used to hand the dialog
-          // `C:\Users\Blake\Download` for `…\Downloads` — a directory that cannot exist.
-          suggestions={[...new Set(projects.map((p) => dirName(p.path)).filter(Boolean))]}
-          onCreate={handleStartInNewProject}
+          suggestions={projectParents}
+          onCreate={handleStartInFolder}
           onClose={() => setNewProjectOpen(false)}
+        />
+      ) : null}
+      {addProjectOpen ? (
+        <AddProjectModal
+          providers={availableProviders}
+          suggestions={projectParents}
+          onAdd={handleStartInFolder}
+          onClose={() => setAddProjectOpen(false)}
         />
       ) : null}
       {modalProject ? (

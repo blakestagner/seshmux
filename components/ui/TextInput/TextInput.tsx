@@ -1,6 +1,6 @@
 'use client';
 
-import type { ChangeEventHandler, KeyboardEventHandler } from 'react';
+import type { ChangeEventHandler, KeyboardEventHandler, MouseEventHandler } from 'react';
 import styles from './TextInput.module.scss';
 
 export type TextInputProps = {
@@ -20,6 +20,8 @@ export type TextInputProps = {
   // id for inputs that offer suggestions.
   onKeyDown?: KeyboardEventHandler<HTMLInputElement>;
   list?: string;
+  // Click hook for path fields that open the native folder chooser when clicked.
+  onClick?: MouseEventHandler<HTMLInputElement>;
   // Focus on mount. Behaviour, not chrome — for inputs that ARE the reason a surface
   // opened (a dropdown whose whole purpose is its search box), where making the user click
   // once more is just friction.
@@ -36,6 +38,7 @@ export default function TextInput({
   className,
   onKeyDown,
   list,
+  onClick,
   autoFocus,
 }: TextInputProps) {
   if (multiline) {
@@ -61,6 +64,7 @@ export default function TextInput({
         value={value}
         onChange={handleChange}
         onKeyDown={onKeyDown}
+        onClick={onClick}
         list={list}
         placeholder={placeholder}
         disabled={disabled}
