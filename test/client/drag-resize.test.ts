@@ -1,5 +1,23 @@
 import { describe, it, expect } from 'vitest';
-import { clampSize, readPersistedSize, clampSplit, ratioToLeftPx } from '../../lib/client/drag-resize';
+import { clampSize, readPersistedSize, clampSplit, ratioToLeftPx, shouldSnapClosed } from '../../lib/client/drag-resize';
+
+describe('shouldSnapClosed', () => {
+  it('inside the threshold below min -> false', () => {
+    expect(shouldSnapClosed(200, 288, 96)).toBe(false);
+  });
+
+  it('exactly at min - threshold -> false (strictly past it to snap)', () => {
+    expect(shouldSnapClosed(192, 288, 96)).toBe(false);
+  });
+
+  it('past the threshold -> true', () => {
+    expect(shouldSnapClosed(191, 288, 96)).toBe(true);
+  });
+
+  it('above min -> false', () => {
+    expect(shouldSnapClosed(400, 288, 96)).toBe(false);
+  });
+});
 
 describe('clampSize', () => {
   it('returns proposed when in range', () => {

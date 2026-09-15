@@ -13,6 +13,7 @@ import type { ProviderId } from '../../lib/client/types';
 import { getEnvCommands, type CommandPreview } from '../../lib/client/api';
 import Segmented from '../ui/Segmented/Segmented';
 import OptionRow from '../ui/OptionRow/OptionRow';
+import { PROV } from '../ui/ProviderBadge/ProviderBadge';
 import styles from './NewSessionModal.module.scss';
 
 export type SessionMode = 'new' | 'continue' | 'plan';
@@ -39,10 +40,12 @@ export type NewSessionModalProps = {
   onClose: () => void;
 };
 
+// Agent glyphs + names come from the shared PROV (never hand-typed copies, which
+// drift); only 'both' is this modal's own option.
 const PROV_LABEL: Record<ModalProvider, string> = {
-  claude: '✳ Claude Code',
-  codex: '⬡ Codex',
-  both: '✳⬡ Both',
+  claude: `${PROV.claude.glyph} ${PROV.claude.name}`,
+  codex: `${PROV.codex.glyph} ${PROV.codex.name}`,
+  both: `${PROV.claude.glyph}${PROV.codex.glyph} Both`,
 };
 
 export default function NewSessionModal({

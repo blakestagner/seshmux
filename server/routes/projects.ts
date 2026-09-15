@@ -95,13 +95,18 @@ async function liveOnlyProjects(known: Iterable<Project>): Promise<Project[]> {
   return [...out.values()];
 }
 
-// Expand a leading ~ and make absolute. The user types this path, so there is
-// no traversal boundary to defend — but it MUST end up absolute, or mkdir would
-// land relative to wherever the server happens to be running.
-function resolveUserPath(input: string): string {
+// Expand a leading ~ and require an absolute result, else null. The user types
+// this path, so there is no traversal boundary to defend — but a RELATIVE one
+// would resolve against wherever the server happens to be running (usually the
+// seshmux install), so `.` or `src` would mkdir / start an agent in there. It is
+// refused rather than guessed. `~\` is a home path only on win32; on posix a
+// backslash is a legal filename character, so there it stays relative → refused.
+function resolveUserPath(input: string): string | null {
   const trimmed = input.trim();
-  const expanded = trimmed === '~' || trimmed.startsWith('~/') ? path.join(os.homedir(), trimmed.slice(1)) : trimmed;
-  return path.resolve(expanded);
+  const home =
+    trimmed === '~' || trimmed.startsWith('~/') || (process.platform === 'win32' && trimmed.startsWith('~\\'));
+  const expanded = home ? path.join(os.homedir(), trimmed.slice(1)) : trimmed;
+  return path.isAbsolute(expanded) ? path.resolve(expanded) : null;
 }
 
 export default async function projectsRoutes(f: FastifyInstance) {
@@ -137,6 +142,10 @@ export default async function projectsRoutes(f: FastifyInstance) {
       return { error: 'invalid folder name' };
     }
     const parentPath = resolveUserPath(parent);
+    if (!parentPath) {
+      reply.code(400);
+      return { error: `use a full path, not a relative one: ${parent.trim()}` };
+    }
     const parentStat = await stat(parentPath).catch(() => null);
     if (!parentStat?.isDirectory()) {
       reply.code(400);
@@ -155,6 +164,34 @@ export default async function projectsRoutes(f: FastifyInstance) {
       return { error: `could not create ${target}` };
     }
     return { path: target, existed: !!existing };
+  });
+
+  // POST /api/projects/open { path } -> { path }
+  // "+ Add project": a folder that must ALREADY exist. Never creates anything —
+  // a typo has to fail here rather than mkdir a stray directory (create does
+  // that on purpose; this route is the one that must not). Like create, it only
+  // resolves the path; the client's session start is what makes it a project.
+  f.post<{ Body: { path?: string } }>('/api/projects/open', async (req, reply) => {
+    const input = req.body?.path;
+    if (!input || !input.trim()) {
+      reply.code(400);
+      return { error: 'path is required' };
+    }
+    const target = resolveUserPath(input);
+    if (!target) {
+      reply.code(400);
+      return { error: `use a full path, not a relative one: ${input.trim()}` };
+    }
+    const existing = await stat(target).catch(() => null);
+    if (!existing) {
+      reply.code(400);
+      return { error: `no such directory: ${target}` };
+    }
+    if (!existing.isDirectory()) {
+      reply.code(400);
+      return { error: `not a directory: ${target}` };
+    }
+    return { path: target };
   });
 
   f.get('/api/projects', async () => {
