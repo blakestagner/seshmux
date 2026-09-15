@@ -10,7 +10,6 @@ import type { EventMessage } from '../lib/client/ws';
 import TopNav from '../components/TopNav/TopNav';
 import CustomizationsModal from '../components/CustomizationsModal/CustomizationsModal';
 import Rail from '../components/Rail/Rail';
-import IconButton from '../components/ui/IconButton/IconButton';
 import Tabs from '../components/Tabs/Tabs';
 import Transcript from '../components/Transcript/Transcript';
 import Settings from '../components/Settings/Settings';
@@ -1027,15 +1026,19 @@ function AppShell() {
         {/* Settings is a full-page overlay: hide the rail so it reads as its own
             page. Sibling of <main>, so gate it here. */}
         {state.settingsOpen || !railHidden ? null : (
-          // The whole 24px strip is the hit target; the button inside is what
-          // keyboard users tab to (its click bubbles up to this handler).
-          <div className={styles.railSliver} onClick={() => setRailCollapsed(false)}>
-            <IconButton label="Show sidebar" className={styles.railSliverBtn}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <polyline points="9 18 15 12 9 6" />
-              </svg>
-            </IconButton>
-          </div>
+          // The whole 24px strip is one button: a hit target the full height of the
+          // window, and a single tab stop for keyboard users.
+          <button
+            type="button"
+            className={styles.railSliver}
+            onClick={() => setRailCollapsed(false)}
+            aria-label="Show sidebar"
+            title="Show sidebar"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+          </button>
         )}
         {state.settingsOpen ? null : (
           <div className={`${styles.railCol} ${railHidden ? styles.railColHidden : ''} ${railSnapping ? styles.railColSnapping : ''}`}>

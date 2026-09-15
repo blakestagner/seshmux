@@ -16,11 +16,11 @@ export type TextInputProps = {
   // TextInput in a custom layout — chrome (border/bg/radius/padding) stays
   // owned by TextInput.module.scss, never overridden by consumers.
   className?: string;
-  // Behaviour passthroughs (never chrome): submit-on-Enter, and a <datalist>
-  // id for inputs that offer suggestions.
+  // Behaviour passthroughs (never chrome): submit-on-Enter, a <datalist> id for
+  // inputs that offer suggestions, and a click hook (FolderField opens the
+  // native folder chooser from it). Single-line input only.
   onKeyDown?: KeyboardEventHandler<HTMLInputElement>;
   list?: string;
-  // Click hook for path fields that open the native folder chooser when clicked.
   onClick?: MouseEventHandler<HTMLInputElement>;
   // Focus on mount. Behaviour, not chrome — for inputs that ARE the reason a surface
   // opened (a dropdown whose whole purpose is its search box), where making the user click

@@ -12,7 +12,6 @@
 
 .hint {
   @include t-sub;
-  color: var(--text-faint);
 }
 
 .field {
@@ -23,18 +22,6 @@
 
 .label {
   @include t-sub;
-}
-
-// Path input + Browse… on one line; the input takes the slack.
-.locationRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.locationInput {
-  flex: 1 1 auto;
-  min-width: 0;
 }
 
 .error {

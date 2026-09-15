@@ -81,26 +81,23 @@
   transition: opacity 0.12s;
 }
 
+// A plain <button> (globals.scss resets its chrome), not an IconButton: the
+// strip itself is the control, so there is no primitive to override.
 .railSliver {
   flex: 0 0 24px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: 14px;
+  // Puts the chevron level with the rail's Projects heading, whose .head has an
+  // 18px top padding (Rail.module.scss) — keep the two in step.
+  padding-top: 18px;
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
-  cursor: pointer;
+  color: var(--text-faint);
 }
 
 .railSliver:hover {
   background: var(--bg-hover);
-}
-
-.railSliverBtn {
-  padding: 4px 2px;
-}
-
-.railSliver:hover .railSliverBtn {
   color: var(--accent);
 }
 

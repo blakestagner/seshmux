@@ -20,7 +20,7 @@ Mixins (as built, `t-*`): t-page-title, t-section, t-item-title, t-heading, t-bo
 Primitives-first: shared visuals live in `components/ui/`; feature components compose, never redraw. As built: StatusDot, ProviderBadge, CtxBadge, MeterBar, MetaLine, BranchLabel, Card, Button, IconButton, Toggle, Select, Segmented, TextInput, **LinkChip**. Notable signatures:
 - StatusDot: `{ status: 'live'|'waiting'|'done'|'neutral'; size?: 7|8|9 }` (default 8).
 - Segmented: `{ options; value; onChange; variant?: 'default'|'raised'; className? }`.
-- TextInput: `{ value; onChange; placeholder?; kbdHint?; multiline?: number }` — `multiline=N` renders `<textarea rows={N}>`.
+- TextInput: `{ value; onChange; placeholder?; kbdHint?; multiline?: number; disabled?; className?; onKeyDown?; list?; onClick?; autoFocus? }` — `multiline=N` renders `<textarea rows={N}>`, which ignores `kbdHint`/`onKeyDown`/`list`/`onClick`. `className` is a layout-only passthrough; the rest are behaviour, never chrome.
 - ProviderBadge: `{ provider; withName? }`; exports `PROV: Record<ProviderId,{glyph,name}>` (✳ Claude Code / ⬡ Codex CLI). Generic glyphs only — never ship vendor logos.
 - LinkChip: `{ kind: 'handoff'|'review'|'planoff' }` (⇄ / ⊙ / ⚖).
 

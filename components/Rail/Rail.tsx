@@ -903,10 +903,10 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
         {/* Always available, even with zero projects — this is the only way in
             for a machine that has never run an agent anywhere. */}
         <div className={styles.footerActions}>
-          <button type="button" className={styles.newProject} onClick={() => setNewProjectOpen(true)}>
+          <button type="button" className={styles.footerBtn} onClick={() => setNewProjectOpen(true)}>
             + New project
           </button>
-          <button type="button" className={styles.newProject} onClick={() => setAddProjectOpen(true)}>
+          <button type="button" className={styles.footerBtn} onClick={() => setAddProjectOpen(true)}>
             + Add project
           </button>
         </div>
