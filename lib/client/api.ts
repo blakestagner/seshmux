@@ -97,6 +97,15 @@ export function createProjectFolder(parent: string, name: string): Promise<{ pat
   return req('/api/projects/create', { method: 'POST', body: JSON.stringify({ parent, name }) });
 }
 
+/**
+ * Resolve an EXISTING folder (~ expanded, made absolute) so a session can be
+ * started in it. Rejects when the path is not an existing directory — unlike
+ * createProjectFolder, this never creates anything.
+ */
+export function openProjectFolder(path: string): Promise<{ path: string }> {
+  return req('/api/projects/open', { method: 'POST', body: JSON.stringify({ path }) });
+}
+
 /** Deep width-correct scrollback for a live PTY (tmux capture-pane via the
  *  daemon's additive history RPC). A daemon predating the method answers
  *  200 + { supported: false } (not an error — see routes/term.ts); callers

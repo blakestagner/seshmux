@@ -58,6 +58,19 @@ describe('POST /api/projects/create', () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it('400s a relative parent instead of creating under the server cwd', async () => {
+    // "." exists relative to the test runner, so before the fix this would have
+    // mkdir'd inside the checkout. Clean up either way so a regression can't litter.
+    const name = `smx-relative-parent-${process.pid}`;
+    try {
+      const res = await create({ parent: '.', name });
+      expect(res.statusCode).toBe(400);
+      expect(existsSync(join(process.cwd(), name))).toBe(false);
+    } finally {
+      rmSync(join(process.cwd(), name), { recursive: true, force: true });
+    }
+  });
+
   it('400s without a name', async () => {
     expect((await create({ parent: base, name: '   ' })).statusCode).toBe(400);
     expect((await create({ parent: base })).statusCode).toBe(400);

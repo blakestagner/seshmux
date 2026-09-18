@@ -40,6 +40,19 @@
   @include t-meta;
 }
 
+// Count + collapse chevron, grouped so space-between keeps them together on the right.
+.headEnd {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+// Cancels IconButton's 6px side padding (IconButton.module.scss) so the chevron's
+// glyph, not its padding box, sits on the head's right edge — keep the two in step.
+.collapseBtn {
+  margin-right: -6px;
+}
+
 .provFilter {
   margin: 0 18px 12px;
   display: flex;
@@ -513,20 +526,30 @@
   color: var(--done);
 }
 
-// Rail footer "+ New project" — sits under the last project, full width.
-.newProject {
-  @include t-row;
-  display: block;
-  width: 100%;
-  padding: 10px 14px;
+// Rail footer "+ New project" | "+ Add project" — under the last project, the
+// pair splitting the full width with a hairline between them.
+.footerActions {
+  display: flex;
   margin-top: 4px;
-  text-align: left;
-  color: var(--text-faint);
   border-top: 1px solid var(--border);
+}
+
+.footerBtn {
+  @include t-row;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 10px 14px;
+  text-align: left;
+  white-space: nowrap;
+  color: var(--text-faint);
   background: transparent;
 }
 
-.newProject:hover {
+.footerBtn + .footerBtn {
+  border-left: 1px solid var(--border);
+}
+
+.footerBtn:hover {
   color: var(--accent);
   background: var(--bg-hover);
 }
