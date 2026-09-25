@@ -116,14 +116,29 @@ export function getTermHistory(ptyId: string, lines = 2000): Promise<{ supported
 
 export function getSessions(
   projectId: string,
-  opts?: { before?: number; limit?: number; q?: string },
+  opts?: { before?: number; limit?: number; q?: string; archived?: 'exclude' | 'only' },
 ): Promise<SessionMeta[]> {
   const qs = new URLSearchParams();
   if (opts?.before != null) qs.set('before', String(opts.before));
   if (opts?.limit != null) qs.set('limit', String(opts.limit));
   if (opts?.q) qs.set('q', opts.q);
+  if (opts?.archived) qs.set('archived', opts.archived);
   const suffix = qs.toString() ? `?${qs}` : '';
   return req(`/api/projects/${projectId}/sessions${suffix}`);
+}
+
+// Per-session archive (server/routes/archived-sessions.ts). Never touches a transcript.
+export type ArchivedSession = { provider: ProviderId; sessionId: string; projectId: string; archivedAt: number };
+
+export function getArchivedSessions(): Promise<ArchivedSession[]> {
+  return req('/api/sessions/archived');
+}
+
+export function putArchivedSession(
+  s: { provider: ProviderId; sessionId: string; projectId: string },
+  archived: boolean,
+): Promise<ArchivedSession[]> {
+  return req('/api/sessions/archived', { method: 'PUT', body: JSON.stringify({ ...s, archived }) });
 }
 
 export type Msg = { role: 'user' | 'assistant'; text: string; tools: { name: string; input: string; output: string }[]; ts: number };

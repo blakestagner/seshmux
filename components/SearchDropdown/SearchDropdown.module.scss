@@ -54,6 +54,14 @@
   @include t-meta;
 }
 
+// Hit on an archived session (issue #64): search still finds it; the tag says
+// why it isn't in the rail's default list.
+.archivedTag {
+  @include t-rail-agent;
+  margin-left: 8px;
+  color: var(--text-faint);
+}
+
 .empty {
   @include t-body;
   padding: 14px 12px;

@@ -1,6 +1,7 @@
 // GET /api/projects            -> Project[] merged across ALL providers (same repo path in
 //                                 two stores = ONE entry, sessionCount summed).
-// GET /api/projects/:id/sessions?before&limit&q -> SessionMeta[] merged then sorted+sliced.
+// GET /api/projects/:id/sessions?before&limit&q&archived=exclude|only -> SessionMeta[]
+//                                 merged, archive-filtered, then sorted+sliced.
 //
 // No provider specifics here: everything flows through getProviders() (hard rule 3).
 
@@ -9,6 +10,7 @@ import { mkdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pickFolder, pickerAvailable } from '../lib/folder-picker';
+import { filterArchived } from '../lib/archived-sessions';
 import { readEntries } from '../lib/live-ledger';
 import { getProviders } from '../lib/providers/types';
 import type { Project, SessionMeta } from '../lib/providers/types';
@@ -225,16 +227,33 @@ export default async function projectsRoutes(f: FastifyInstance) {
 
   f.get<{
     Params: { id: string };
-    Querystring: { before?: string; limit?: string; q?: string };
+    Querystring: { before?: string; limit?: string; q?: string; archived?: string };
   }>('/api/projects/:id/sessions', async (req) => {
     const providers = await getProviders();
     const q = req.query.q;
+    const failed = new Set<string>();
     const lists = await Promise.all(
-      providers.map((p) => p.listSessions(req.params.id, { q }).catch(() => [] as SessionMeta[])),
+      providers.map((p) =>
+        p.listSessions(req.params.id, { q }).catch(() => {
+          failed.add(p.id);
+          return [] as SessionMeta[];
+        }),
+      ),
     );
 
     // Merge, then sort by mtime desc, THEN apply before/limit on the merged list.
     let sessions = lists.flat().sort((a, b) => b.mtime - a.mtime);
+    // Archived sessions (archived-sessions.ts): filtered BEFORE paging, so a page
+    // of `limit` is never silently short. Absent param = include (old callers).
+    const mode = req.query.archived;
+    if (mode === 'exclude' || mode === 'only') {
+      sessions = await filterArchived(sessions, mode, {
+        projectId: req.params.id,
+        // Only an unfiltered listing that actually succeeded may prove a record's
+        // transcript is gone (see pruneArchived's guards).
+        completeProviders: q ? [] : providers.map((p) => p.id).filter((id) => !failed.has(id)),
+      });
+    }
     const before = req.query.before != null ? Number(req.query.before) : undefined;
     if (before != null && !Number.isNaN(before)) sessions = sessions.filter((s) => s.mtime < before);
     const limit = req.query.limit != null ? Number(req.query.limit) : undefined;

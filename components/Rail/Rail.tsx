@@ -31,6 +31,7 @@ import AddProjectModal from '../AddProjectModal/AddProjectModal';
 import TeamModal, { teamsAllowed } from '../TeamModal/TeamModal';
 import FilterMenu from '../FilterMenu/FilterMenu';
 import { PrList } from '../PrLinks/PrLinks';
+import { loadArchived, refreshArchived, setSessionArchived, useArchived } from '../../lib/client/archived-sessions';
 import styles from './Rail.module.scss';
 
 
@@ -57,6 +58,23 @@ const LINES_SVG = (
 const PLUS_SVG = (
   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
     <path d="M12 5v14M5 12h14" />
+  </svg>
+);
+
+// Archive box (per-session hide). Same 11×11 stroke-2 box as the other row icons.
+const ARCHIVE_SVG = (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="2" y="3" width="20" height="5" rx="1" />
+    <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+    <path d="M10 12h4" />
+  </svg>
+);
+
+// Restore from archive — counter-clockwise arrow.
+const RESTORE_SVG = (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+    <path d="M3 3v5h5" />
   </svg>
 );
 
@@ -120,6 +138,11 @@ function formatDuration(ms: number): string {
 }
 
 type ProjSessions = { sessions: SessionMeta[]; cursor: number | null; hasMore: boolean; loaded: boolean };
+// A project's archived group (issue #64), fetched on demand when the user opens it.
+type ArchivedGroup = { sessions: SessionMeta[]; loaded: boolean };
+
+const byMtimeDesc = (a: SessionMeta, b: SessionMeta) => b.mtime - a.mtime;
+const sameSession = (a: SessionMeta, b: SessionMeta) => a.id === b.id && a.provider === b.provider;
 
 function railOrder(projects: Project[], config: Config, sort: RailSort): Project[] {
   const pinSet = new Set(config.pins);
@@ -141,7 +164,7 @@ function railOrder(projects: Project[], config: Config, sort: RailSort): Project
 }
 
 export type RailProps = {
-  jumpTo?: { projectId: string; sessionId: string } | null;
+  jumpTo?: { projectId: string; sessionId: string; provider?: ProviderId } | null;
   onJumped?: () => void;
   onOpenCustomizations?: (scope: { projectId: string; projectName: string }) => void;
   onOpenGlobalCustomizations?: () => void;
@@ -165,6 +188,19 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
   // The session open in the active tab — its rail row gets the accent-soft fill.
   const activeSessionId = state.tabs.find((t) => t.id === state.activeTab)?.sessionId ?? null;
   const [byProject, setByProject] = useState<Record<string, ProjSessions>>({});
+  // Archived sessions (issue #64): excluded from the pages above server-side;
+  // each project's "archived" group lists them on demand. A key present here =
+  // that project's group is open.
+  const archived = useArchived();
+  const [archivedOpen, setArchivedOpen] = useState<Record<string, ArchivedGroup>>({});
+  useEffect(() => {
+    void loadArchived();
+    // Resync on focus (same cadence as the worktree rows): another browser tab
+    // may have archived/restored something since.
+    const onFocus = () => void refreshArchived();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
   const [dragProjId, setDragProjId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [projFilter, setProjFilterState] = useState<Record<string, string>>({});
@@ -344,7 +380,7 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
     if (firstPageInFlight.current.has(projectId)) return;
     firstPageInFlight.current.add(projectId);
     try {
-      const sessions = await getSessions(projectId, { limit: CHUNK });
+      const sessions = await getSessions(projectId, { limit: CHUNK, archived: 'exclude' });
       setByProject((prev) => ({
         ...prev,
         [projectId]: {
@@ -362,7 +398,7 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
   async function loadMore(projectId: string) {
     const entry = byProject[projectId];
     if (!entry || entry.cursor == null) return;
-    const more = await getSessions(projectId, { before: entry.cursor, limit: CHUNK });
+    const more = await getSessions(projectId, { before: entry.cursor, limit: CHUNK, archived: 'exclude' });
     setByProject((prev) => ({
       ...prev,
       [projectId]: {
@@ -372,6 +408,64 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
         loaded: true,
       },
     }));
+  }
+
+  async function openArchivedGroup(projectId: string) {
+    setArchivedOpen((prev) => ({ ...prev, [projectId]: prev[projectId] ?? { sessions: [], loaded: false } }));
+    const fetched = await getSessions(projectId, { archived: 'only' }).catch(() => [] as SessionMeta[]);
+    // The server may have pruned records whose transcript is gone — resync the
+    // counts. Then merge rather than overwrite: a row archived from the main list
+    // while the GET was in flight was already added to the group by handleArchive
+    // (restores can't happen meanwhile — the group shows "loading…" until now).
+    // Closed again while in flight → stay closed.
+    void refreshArchived();
+    setArchivedOpen((prev) => {
+      const cur = prev[projectId];
+      if (!cur) return prev;
+      const merged = [...fetched, ...cur.sessions.filter((x) => !fetched.some((f) => sameSession(f, x)))].sort(
+        byMtimeDesc,
+      );
+      return { ...prev, [projectId]: { sessions: merged, loaded: true } };
+    });
+  }
+
+  function toggleArchivedGroup(projectId: string) {
+    if (!archivedOpen[projectId]) {
+      void openArchivedGroup(projectId);
+      return;
+    }
+    setArchivedOpen((prev) => {
+      const next = { ...prev };
+      delete next[projectId];
+      return next;
+    });
+  }
+
+  // Archive / restore one session: moves the row between the project's normal
+  // list and its archived group locally, so paging state (cursor) survives.
+  // Only seshmux's own archive list changes — never the transcript.
+  async function handleArchive(p: Project, s: SessionMeta, on: boolean) {
+    try {
+      await setSessionArchived({ provider: s.provider, sessionId: s.id, projectId: p.id }, on);
+    } catch {
+      return; // the store reverted its optimistic update; the row stays put
+    }
+    setByProject((prev) => {
+      const entry = prev[p.id];
+      if (!entry) return prev;
+      const rest = entry.sessions.filter((x) => !sameSession(x, s));
+      // Restoring: re-insert only inside the range already paged in — past the
+      // cursor, "load more" reaches it in order.
+      const inRange = !entry.hasMore || entry.cursor == null || s.mtime >= entry.cursor;
+      const sessions = !on && inRange ? [...rest, s].sort(byMtimeDesc) : rest;
+      return { ...prev, [p.id]: { ...entry, sessions } };
+    });
+    setArchivedOpen((prev) => {
+      const group = prev[p.id];
+      if (!group) return prev;
+      const rest = group.sessions.filter((x) => !sameSession(x, s));
+      return { ...prev, [p.id]: { ...group, sessions: on ? [...rest, s].sort(byMtimeDesc) : rest } };
+    });
   }
 
   // Provider filter needs to know every project's sessions to decide which
@@ -400,6 +494,17 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
     const p = projects.find((x) => x.id === jumpTo.projectId);
     if (p && !(p as Project & { open?: boolean }).open) dispatch({ type: 'toggleProject', id: jumpTo.projectId });
     if (!byProject[jumpTo.projectId]?.loaded) loadFirstPage(jumpTo.projectId);
+    // A search hit on an archived session: open that project's archived group so
+    // the row jumped to is actually on screen. Keyed off the archive record's own
+    // (rail) project id — a search hit's `projectId` is the project NAME.
+    const rec = [...archived.values()].find(
+      (a) => a.sessionId === jumpTo.sessionId && (!jumpTo.provider || a.provider === jumpTo.provider),
+    );
+    const target = rec ? (projects.find((x) => x.id === rec.projectId) as (Project & { open?: boolean }) | undefined) : undefined;
+    if (rec && target) {
+      if (rec.projectId !== jumpTo.projectId && !target.open) dispatch({ type: 'toggleProject', id: rec.projectId });
+      if (!archivedOpen[rec.projectId]) void openArchivedGroup(rec.projectId);
+    }
     onJumped?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jumpTo]);
@@ -463,6 +568,81 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
     if (projVal) list = list.filter((s) => matchQuery(s, projVal));
     const filtered = !!rail || !!projVal;
     return { shown: list, hasMore: filtered ? false : entry?.hasMore ?? false, filtered };
+  }
+
+  // One session row — shared by the normal list and the archived group. The
+  // archive/restore action is a SIBLING of the row button (buttons can't nest),
+  // positioned over the row's right edge and revealed on hover/focus.
+  function renderSessRow(p: Project, s: SessionMeta, projTabs: Tab[], open: boolean, isArchived: boolean) {
+    return (
+      <div key={`${s.provider}:${s.id}`}>
+        <div className={`${styles.sessRow} ${isArchived ? styles.archived : ''}`}>
+          <button
+            type="button"
+            className={`${styles.sess} ${s.id === activeSessionId ? styles.selected : ''}`}
+            onClick={() =>
+              dispatch({
+                type: 'openSession',
+                sessionId: s.id,
+                projectId: s.projectId,
+                label: s.title || s.branch || 'untitled',
+                // Open the read-only transcript. A live session that seshmux
+                // itself spawned is rehydrated as a term tab via getLive() on
+                // load; clicking a rail row (which has no PTY handle) always
+                // opens the transcript rather than a PTY-less blank term.
+                kind: 'transcript',
+                provider: s.provider,
+                status: s.live ? 'live' : 'done',
+              })
+            }
+          >
+            <span className={styles.sessDot}>
+              <StatusDot status={sessDotStatus(s, projTabs)} size={7} />
+            </span>
+            <span className={styles.sessInfo}>
+              <div className={styles.sessTop}>
+                {/* Workspace sessions carry the agent/<slug>-<n> branch this
+                    rail already displays — no server flag needed, the
+                    naming convention (Spec 1) IS the marker. */}
+                {s.branch?.startsWith('agent/') ? (
+                  <span className={styles.workspaceMark} title="Workspace session">⑃</span>
+                ) : null}
+                <span className={styles.sessTitle}>{s.title || s.branch || 'untitled'}</span>
+                {showProvider ? (
+                  <span className={`${styles.sessAgent} ${styles[s.provider]}`}>{s.provider}</span>
+                ) : null}
+              </div>
+              <div className={styles.sessSub}>
+                {s.branch ? `${s.branch} · ` : ''}
+                {timeAgo(s.mtime)}
+                {!s.live && s.durationMs ? ` · ${formatDuration(s.durationMs)}` : ''}
+              </div>
+            </span>
+          </button>
+          <IconButton
+            label={isArchived ? 'Restore session to the list' : 'Archive session (hide from the list)'}
+            revealOnHover={!isArchived}
+            className={styles.sessAction}
+            onClick={(e) => {
+              e.stopPropagation();
+              void handleArchive(p, s, !isArchived);
+            }}
+          >
+            {isArchived ? RESTORE_SVG : ARCHIVE_SVG}
+          </IconButton>
+        </div>
+        {/* PRs created in this session — fetch only while the
+            project is expanded (rows stay mounted when collapsed). */}
+        {open ? <PrList projectId={s.projectId} sessionId={s.id} /> : null}
+      </div>
+    );
+  }
+
+  // Per-project archived counts off the client's archive set (see the group below).
+  const archivedCountByProject = new Map<string, number>();
+  for (const a of archived.values()) {
+    if (provFilter !== 'all' && a.provider !== provFilter) continue;
+    archivedCountByProject.set(a.projectId, (archivedCountByProject.get(a.projectId) ?? 0) + 1);
   }
 
   const ordered = railOrder(projects, config, railSort);
@@ -707,6 +887,11 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
             const anyLive = projTabs.some((t) => t.status !== 'waiting') || (entry?.sessions ?? []).some((s) => s.live);
             const projDotStatus: 'waiting' | 'unviewed' | 'live' = anyWaiting ? 'waiting' : anyUnviewed ? 'unviewed' : 'live';
             const showFilterInput = p.sessionCount > FILTER_THRESHOLD;
+            const archivedGroup = archivedOpen[p.id];
+            const archivedCount = archivedCountByProject.get(p.id) ?? 0;
+            const archivedShown = (archivedGroup?.sessions ?? []).filter(
+              (s) => provFilter === 'all' || s.provider === provFilter,
+            );
 
             return (
               <div
@@ -840,60 +1025,36 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                       ))}
                     </div>
                   ) : null}
-                  {shown.map((s) => (
-                    <div key={s.id}>
-                    <button
-                      type="button"
-                      className={`${styles.sess} ${s.id === activeSessionId ? styles.selected : ''}`}
-                      onClick={() =>
-                        dispatch({
-                          type: 'openSession',
-                          sessionId: s.id,
-                          projectId: s.projectId,
-                          label: s.title || s.branch || 'untitled',
-                          // Open the read-only transcript. A live session that seshmux
-                          // itself spawned is rehydrated as a term tab via getLive() on
-                          // load; clicking a rail row (which has no PTY handle) always
-                          // opens the transcript rather than a PTY-less blank term.
-                          kind: 'transcript',
-                          provider: s.provider,
-                          status: s.live ? 'live' : 'done',
-                        })
-                      }
-                    >
-                      <span className={styles.sessDot}>
-                        <StatusDot status={sessDotStatus(s, projTabs)} size={7} />
-                      </span>
-                      <span className={styles.sessInfo}>
-                        <div className={styles.sessTop}>
-                          {/* Workspace sessions carry the agent/<slug>-<n> branch this
-                              rail already displays — no server flag needed, the
-                              naming convention (Spec 1) IS the marker. */}
-                          {s.branch?.startsWith('agent/') ? (
-                            <span className={styles.workspaceMark} title="Workspace session">⑃</span>
-                          ) : null}
-                          <span className={styles.sessTitle}>{s.title || s.branch || 'untitled'}</span>
-                          {showProvider ? (
-                            <span className={`${styles.sessAgent} ${styles[s.provider]}`}>{s.provider}</span>
-                          ) : null}
-                        </div>
-                        <div className={styles.sessSub}>
-                          {s.branch ? `${s.branch} · ` : ''}
-                          {timeAgo(s.mtime)}
-                          {!s.live && s.durationMs ? ` · ${formatDuration(s.durationMs)}` : ''}
-                        </div>
-                      </span>
-                    </button>
-                    {/* PRs created in this session — fetch only while the
-                        project is expanded (rows stay mounted when collapsed). */}
-                    {open ? <PrList projectId={s.projectId} sessionId={s.id} /> : null}
-                    </div>
-                  ))}
+                  {shown.map((s) => renderSessRow(p, s, projTabs, open, false))}
                   {filtered && !shown.length ? <div className={styles.noMatch}>no matching sessions</div> : null}
                   {!filtered && hasMore ? (
                     <Button variant="link" className={styles.loadMore} onClick={() => loadMore(p.id)}>
                       load more…
                     </Button>
+                  ) : null}
+                  {/* Archived sessions (issue #64): out of the list above, one
+                      click away here. Count is the client's archive set; the
+                      group itself is the server's authoritative listing. */}
+                  {archivedGroup || archivedCount > 0 ? (
+                    <Button
+                      variant="link"
+                      className={styles.loadMore}
+                      onClick={() => toggleArchivedGroup(p.id)}
+                    >
+                      {archivedGroup ? 'hide archived' : `archived (${archivedCount})`}
+                    </Button>
+                  ) : null}
+                  {archivedGroup ? (
+                    <div className={styles.worktreeGroup}>
+                      <div className={styles.worktreeGroupHead}>archived</div>
+                      {!archivedGroup.loaded ? (
+                        <div className={styles.noMatch}>loading…</div>
+                      ) : archivedShown.length ? (
+                        archivedShown.map((s) => renderSessRow(p, s, projTabs, open, true))
+                      ) : (
+                        <div className={styles.noMatch}>no archived sessions</div>
+                      )}
+                    </div>
                   ) : null}
                 </div>
               </div>
