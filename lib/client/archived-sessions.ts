@@ -5,9 +5,14 @@
 // and none of them needs the rest of app state to do so.
 //
 // The server is the source of truth (it persists to archived-sessions.json and
-// filters the rail's session pages); this copy only drives counts, labels and
-// optimistic updates, and is replaced by server responses — the LATEST one only,
-// so an out-of-order reply can't roll the set back.
+// filters the rail's session pages); this copy drives counts, labels and
+// optimistic updates. Ordering rules, so no reply can roll the set back:
+//   - every in-flight PUT's intent is kept in `pending` and overlaid on ANY
+//     server list applied while it is in flight;
+//   - a GET applies only if no PUT completed since it was sent (it may have been
+//     answered before that write landed) and it is the newest GET;
+//   - PUTs are SERIALIZED (one in flight at a time), so replies arrive in the
+//     order the server applied them and each one is the newest server state.
 
 import { useSyncExternalStore } from 'react';
 import { getArchivedSessions, putArchivedSession, type ArchivedSession } from './api';
@@ -21,16 +26,26 @@ type Snapshot = ReadonlyMap<string, ArchivedSession>;
 
 let snapshot: Snapshot = new Map();
 const listeners = new Set<() => void>();
-// Bumped by every request; a response applies only if it is still the newest.
-let seq = 0;
+// key -> intended record (null = restore), for PUTs still in flight. `n` counts
+// overlapping PUTs on the same key so the entry is cleared by the last one only.
+const pending = new Map<string, { rec: ArchivedSession | null; n: number }>();
+let putTail: Promise<unknown> = Promise.resolve(); // serializes PUTs
+let putsDone = 0; // bumped when a PUT settles — invalidates GETs sent before it
+let getSeq = 0;
 
-function set(next: Snapshot): void {
+function emit(next: Snapshot): void {
   snapshot = next;
   for (const l of listeners) l();
 }
 
-function fromList(list: ArchivedSession[]): Snapshot {
-  return new Map(list.map((a) => [archivedKey(a.provider, a.sessionId), a]));
+// Server list + every in-flight PUT's intent on top.
+function applyServer(list: ArchivedSession[]): void {
+  const next = new Map(list.map((a) => [archivedKey(a.provider, a.sessionId), a]));
+  for (const [k, { rec }] of pending) {
+    if (rec) next.set(k, rec);
+    else next.delete(k);
+  }
+  emit(next);
 }
 
 function subscribe(l: () => void): () => void {
@@ -45,21 +60,18 @@ export function useArchived(): Snapshot {
   return useSyncExternalStore(subscribe, () => snapshot, () => EMPTY);
 }
 
-/** Synchronous read of the current set (for merges inside state updaters). */
-export function isArchived(provider: string, sessionId: string): boolean {
-  return snapshot.has(archivedKey(provider, sessionId));
-}
-
-/** Re-fetch the set from the server. Best-effort; a newer request wins. */
+/** Re-fetch the set from the server. Best-effort; never overrides a write (see top). */
 export async function refreshArchived(): Promise<void> {
-  const mine = ++seq;
+  const mine = ++getSeq;
+  const doneAtSend = putsDone;
   try {
     const list = await getArchivedSessions();
-    if (mine === seq) set(fromList(list));
+    if (mine === getSeq && doneAtSend === putsDone) applyServer(list);
   } catch {
     /* keep what we have */
   }
 }
+
 
 let loaded: Promise<void> | null = null;
 /** First load, once per page (callers may call freely). Later: refreshArchived(). */
@@ -68,28 +80,45 @@ export function loadArchived(): Promise<void> {
   return loaded;
 }
 
-/** Archive / restore one session. Optimistic; on failure undoes only THIS
- *  session's change (other in-flight toggles keep theirs), resyncs, rethrows. */
+/** Archive / restore one session. Optimistic; on failure the intent is dropped
+ *  and the set resynced from the server (other in-flight toggles keep theirs). */
 export async function setSessionArchived(
   s: { provider: ProviderId; sessionId: string; projectId: string },
   archived: boolean,
 ): Promise<void> {
   const key = archivedKey(s.provider, s.sessionId);
   const before = snapshot.get(key);
-  const apply = (on: boolean, rec?: ArchivedSession) => {
-    const next = new Map(snapshot);
-    if (on) next.set(key, rec ?? { ...s, archivedAt: Date.now() });
-    else next.delete(key);
-    set(next);
+  const rec = archived ? (snapshot.get(key) ?? { ...s, archivedAt: Date.now() }) : null;
+  const slot = pending.get(key);
+  pending.set(key, { rec, n: (slot?.n ?? 0) + 1 });
+  const next = new Map(snapshot);
+  if (rec) next.set(key, rec);
+  else next.delete(key);
+  emit(next);
+
+  const settle = () => {
+    putsDone++;
+    const cur = pending.get(key);
+    if (cur && --cur.n <= 0) pending.delete(key);
   };
-  apply(archived);
-  const mine = ++seq;
+  let list: ArchivedSession[];
   try {
-    const list = await putArchivedSession(s, archived);
-    if (mine === seq) set(fromList(list));
+    const run = putTail.then(() => putArchivedSession(s, archived));
+    putTail = run.catch(() => {});
+    list = await run;
   } catch (e) {
-    apply(!!before, before);
+    settle();
+    // Undo this key locally right away (unless another toggle of it is still in
+    // flight), then resync from the server.
+    if (!pending.has(key)) {
+      const undo = new Map(snapshot);
+      if (before) undo.set(key, before);
+      else undo.delete(key);
+      emit(undo);
+    }
     void refreshArchived();
     throw e;
   }
+  settle();
+  applyServer(list);
 }

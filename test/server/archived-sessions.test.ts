@@ -2,7 +2,7 @@
 // against a fresh tmp SESHMUX_CONFIG_DIR with the memoized store reset, so the
 // on-disk persistence is exercised for real (a "server restart" = a store reset).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -95,18 +95,69 @@ describe('archived-sessions store', () => {
     expect(Object.keys(await a.readArchived())).toEqual(['claude:ok']);
   });
 
-  it('a corrupt or non-object file reads as empty and self-heals on write', async () => {
-    writeFileSync(join(dir, 'archived-sessions.json'), '[1,2,3]');
+
+  it('a corrupt file is moved aside (not silently overwritten) by the next write', async () => {
+    writeFileSync(join(dir, 'archived-sessions.json'), '{"claude:a": {"provider": "claude", tor');
     const a = await fresh();
     expect(await a.readArchived()).toEqual({});
+    // A READ never renames (only the serialized write path may) …
+    expect(readdirSync(dir).filter((f) => f.includes('.corrupt-'))).toHaveLength(0);
     await a.setArchived(S, true);
+    // … the write quarantines first, keeping the original bytes.
+    const aside = readdirSync(dir).filter((f) => f.startsWith('archived-sessions.json.corrupt-'));
+    expect(aside).toHaveLength(1);
+    expect(readFileSync(join(dir, aside[0]), 'utf8')).toContain('tor');
     expect(Object.keys(JSON.parse(readFileSync(join(dir, 'archived-sessions.json'), 'utf8')))).toEqual([
       'claude:abc-1',
     ]);
   });
+
+  it('a non-object JSON file is also quarantined', async () => {
+    writeFileSync(join(dir, 'archived-sessions.json'), '[1,2,3]');
+    const a = await fresh();
+    await a.setArchived(S, true);
+    expect(readdirSync(dir).some((f) => f.startsWith('archived-sessions.json.corrupt-'))).toBe(true);
+  });
+
+  it('a read racing a write never moves the freshly written file aside', async () => {
+    writeFileSync(join(dir, 'archived-sessions.json'), 'not json');
+    const a = await fresh();
+    await Promise.all([a.readArchived(), a.setArchived(S, true), a.readArchived()]);
+    expect(Object.keys(JSON.parse(readFileSync(join(dir, 'archived-sessions.json'), 'utf8')))).toEqual([
+      'claude:abc-1',
+    ]);
+    expect(readdirSync(dir).filter((f) => f.includes('.corrupt-'))).toHaveLength(1);
+  });
+
+  it('an unreadable file (read error other than ENOENT) refuses writes instead of overwriting', async () => {
+    // A directory at the file's path: readFile fails with EISDIR on every platform.
+    mkdirSync(join(dir, 'archived-sessions.json'));
+    const a = await fresh();
+    expect(await a.readArchived()).toEqual({}); // listing degrades, doesn't crash
+    await expect(a.readArchivedStrict()).rejects.toThrow(); // the GET route surfaces this
+    await expect(a.setArchived(S, true)).rejects.toThrow();
+    expect(existsSync(join(dir, 'archived-sessions.json'))).toBe(true);
+  });
+
+  it('a write builds on the STRICT read of the file, not a lenient one', async () => {
+    const a = await fresh();
+    await a.setArchived(S, true);
+    // Another writer's valid content appears on disk; the next write must keep it.
+    const onDisk = JSON.parse(readFileSync(join(dir, 'archived-sessions.json'), 'utf8'));
+    onDisk['claude:ext'] = { provider: 'claude', sessionId: 'ext', projectId: 'p', archivedAt: 1 };
+    writeFileSync(join(dir, 'archived-sessions.json'), JSON.stringify(onDisk));
+    await a.setArchived({ ...S, sessionId: 'abc-2' }, true);
+    expect(Object.keys(await a.readArchived()).sort()).toEqual(['claude:abc-1', 'claude:abc-2', 'claude:ext']);
+  });
+
+  it('concurrent first reads share one load and never clobber a newer write', async () => {
+    const a = await fresh();
+    await Promise.all([a.readArchived(), a.setArchived(S, true), a.readArchived()]);
+    expect(Object.keys(await a.readArchived())).toEqual(['claude:abc-1']);
+  });
 });
 
-describe('filterArchived — pruning records whose transcript is gone', () => {
+describe('filterArchived', () => {
   const row = (id: string, provider = 'claude') => ({ id, provider });
   const setup = async () => {
     const a = await fresh();
@@ -116,34 +167,144 @@ describe('filterArchived — pruning records whose transcript is gone', () => {
     await a.setArchived({ provider: 'claude', sessionId: 'other', projectId: 'q' }, true);
     return a;
   };
+  type Opts = {
+    projectId: string;
+    listedAt: number;
+    completeProviders: string[];
+    existingIds: (provider: string) => Promise<Set<string> | null>;
+    locate: (provider: string, sessionId: string) => Promise<string | null>;
+  };
+  // Default: the store holds nothing but 'kept' → every other candidate is gone.
+  const opts = (over: Partial<Opts> = {}): Opts => ({
+    projectId: 'p',
+    listedAt: Date.now() + 60_000,
+    completeProviders: ['claude', 'codex'],
+    existingIds: async () => new Set(['kept']),
+    locate: async () => null,
+    ...over,
+  });
 
-  it('only-mode drops a record its provider listed completely without it', async () => {
+  it('exclude drops archived sessions; only returns just them', async () => {
     const a = await setup();
-    const out = await a.filterArchived([row('kept'), row('live')], 'only', {
-      projectId: 'p',
-      completeProviders: ['claude', 'codex'],
-    });
-    expect(out.map((s) => s.id)).toEqual(['kept']);
+    expect((await a.filterArchived([row('kept'), row('live')], 'exclude', opts())).map((s) => s.id)).toEqual(['live']);
+    expect((await a.filterArchived([row('kept'), row('live')], 'only', opts())).map((s) => s.id)).toEqual(['kept']);
+  });
+
+  it('prunes a record only when the provider CONFIRMS the transcript is gone', async () => {
+    const a = await setup();
+    const asked: string[] = [];
+    await a.filterArchived(
+      [row('kept')],
+      'only',
+      opts({
+        existingIds: async (p) => {
+          asked.push(p);
+          return new Set(['kept']);
+        },
+      }),
+    );
     const keys = await a.archivedKeys();
     expect(keys.has('claude:gone')).toBe(false);
-    // codex listed nothing for this project → nothing proven → its record stays;
-    // another project's record is never touched.
-    expect(keys).toEqual(new Set(['claude:kept', 'codex:cx', 'claude:other']));
+    expect(keys.has('codex:cx')).toBe(false);
+    expect(keys.has('claude:other')).toBe(true); // another project's record is never judged
+    expect(asked.sort()).toEqual(['claude', 'codex']);
   });
 
-  it('never prunes for a provider that failed / was filtered (not in completeProviders)', async () => {
+  it('(a) a record whose session re-grouped is RE-HOMED to where it lists now', async () => {
     const a = await setup();
-    await a.filterArchived([row('kept')], 'only', { projectId: 'p', completeProviders: [] });
+    await a.filterArchived(
+      [row('kept')],
+      'only',
+      opts({ existingIds: async () => new Set(['kept', 'gone', 'cx']), locate: async (_p, id) => (id === 'gone' ? 'w' : null) }),
+    );
+    const m = await a.readArchived();
+    expect(m['claude:gone'].projectId).toBe('w'); // follows the session
+    expect(m['codex:cx'].projectId).toBe('p'); // exists but can't be located → left alone
+  });
+
+  it('(b) never judges a record archived after the listing started', async () => {
+    const a = await setup();
+    let called = false;
+    await a.filterArchived(
+      [row('kept')],
+      'only',
+      opts({
+        listedAt: 0, // every record is newer than this listing
+        existingIds: async () => {
+          called = true;
+          return new Set();
+        },
+      }),
+    );
+    expect(called).toBe(false);
     expect((await a.archivedKeys()).has('claude:gone')).toBe(true);
   });
 
-  it('exclude-mode never prunes', async () => {
+  it('(c) keeps the record when the store walk errors (unreadable dir) — fails closed', async () => {
     const a = await setup();
-    const out = await a.filterArchived([row('kept'), row('live')], 'exclude', {
-      projectId: 'p',
-      completeProviders: ['claude'],
-    });
+    await a.filterArchived(
+      [row('kept')],
+      'only',
+      opts({
+        existingIds: async () => {
+          throw new Error('EACCES');
+        },
+      }),
+    );
+    expect((await a.archivedKeys()).has('claude:gone')).toBe(true);
+  });
+
+  it('keeps records for a provider that cannot answer (null id set)', async () => {
+    const a = await setup();
+    await a.filterArchived([row('kept')], 'only', opts({ existingIds: async () => null }));
+    expect((await a.archivedKeys()).has('claude:gone')).toBe(true);
+  });
+
+  it('never prunes for a provider whose listing failed / was filtered', async () => {
+    const a = await setup();
+    await a.filterArchived([row('kept')], 'only', opts({ completeProviders: [] }));
+    expect((await a.archivedKeys()).has('claude:gone')).toBe(true);
+  });
+
+  it('exclude never prunes', async () => {
+    const a = await setup();
+    await a.filterArchived([row('live')], 'exclude', opts());
+    expect((await a.archivedKeys()).has('claude:gone')).toBe(true);
+  });
+
+  it('exclude filters by provider+id regardless of project, and never writes', async () => {
+    const a = await setup();
+    // 'other' was archived under q; it also lists under p (e.g. a case-variant id).
+    const out = await a.filterArchived([row('other'), row('live')], 'exclude', opts());
     expect(out.map((s) => s.id)).toEqual(['live']);
+    expect((await a.readArchived())['claude:other'].projectId).toBe('q'); // no flip-flop
+  });
+
+  it('a record restored + re-archived while the listing ran is not clobbered', async () => {
+    const a = await setup();
+    const listedAt = Date.now() + 5; // listing "started" now
+    await new Promise((r) => setTimeout(r, 10));
+    const run = a.filterArchived(
+      [row('kept')],
+      'only',
+      opts({
+        listedAt,
+        existingIds: async () => {
+          // Meanwhile the user restores and re-archives 'gone' (fresh record).
+          await a.setArchived({ provider: 'claude', sessionId: 'gone', projectId: 'p' }, false);
+          await a.setArchived({ provider: 'claude', sessionId: 'gone', projectId: 'p' }, true);
+          return new Set(['kept']);
+        },
+      }),
+    );
+    await run;
     expect((await a.archivedKeys()).has('claude:gone')).toBe(true);
+  });
+
+  it('only-mode reads strictly: an unreadable archive file throws (route → 500)', async () => {
+    mkdirSync(join(dir, 'archived-sessions.json'));
+    const a = await fresh();
+    await expect(a.filterArchived([row('x')], 'only', opts())).rejects.toThrow();
+    expect(await a.filterArchived([row('x')], 'exclude', opts())).toEqual([row('x')]);
   });
 });

@@ -10,7 +10,15 @@
 //
 // Keyed by `${provider}:${sessionId}` — ids come from two independent stores,
 // so the provider is part of a session's identity here.
+//
+// The file is the user's only copy of what they archived, so it is handled more
+// carefully than json-store's default "unreadable/corrupt = empty":
+//   - corrupt (unparseable / not an object): moved aside to
+//     archived-sessions.json.corrupt-<ts> before anything is written over it;
+//   - unreadable (any read error but ENOENT): every write REFUSES, rather than
+//     replacing a file we could not see with a near-empty one.
 
+import { readFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { configDir } from '../daemon-client';
 import { createJsonStore, type JsonStore } from './json-store';
@@ -18,7 +26,7 @@ import { createJsonStore, type JsonStore } from './json-store';
 export interface ArchivedRecord {
   provider: string;
   sessionId: string;
-  projectId: string; // rail project the session was listed under (per-project counts)
+  projectId: string; // rail project the session is listed under (per-project counts)
   archivedAt: number;
 }
 export type ArchivedMap = Record<string, ArchivedRecord>;
@@ -39,11 +47,6 @@ function getStore(): JsonStore<ArchivedMap> {
   return store;
 }
 
-// In-memory copy. This server process is the file's only writer (json-store's
-// contract), and every rail page asks — so read disk once, then keep it current
-// from each update()'s persisted result.
-let cache: ArchivedMap | null = null;
-
 function isRecord(v: unknown): v is ArchivedRecord {
   const r = v as ArchivedRecord;
   return (
@@ -56,9 +59,8 @@ function isRecord(v: unknown): v is ArchivedRecord {
   );
 }
 
-// A hand-edited or torn file can parse to anything; never let that crash a
-// session listing — drop what isn't a well-formed record (the next write
-// self-heals the file).
+// Well-formed records only. Malformed ENTRIES in an otherwise valid object are
+// dropped (they could never match or render); a malformed FILE is quarantined.
 function clean(m: unknown): ArchivedMap {
   if (!m || typeof m !== 'object' || Array.isArray(m)) return {};
   const out: ArchivedMap = {};
@@ -66,18 +68,83 @@ function clean(m: unknown): ArchivedMap {
   return out;
 }
 
-export async function readArchived(): Promise<ArchivedMap> {
-  if (!cache) cache = clean(await getStore().read());
+/**
+ * Read the file ourselves (json-store's read hides every failure as "empty").
+ * ENOENT → {}; any other read error → throws; corrupt → {} and, when
+ * `quarantine` (ONLY inside the serialized write queue, so a concurrent write
+ * can never have its fresh file renamed away), moved aside first.
+ */
+async function loadStrict(quarantine: boolean): Promise<ArchivedMap> {
+  const file = archivedStorePath();
+  let raw: string;
+  try {
+    raw = await readFile(file, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw e;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = undefined;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    if (quarantine) {
+      const aside = `${file}.corrupt-${Date.now()}`;
+      await rename(file, aside); // throws → no write proceeds over it
+      console.error('[seshmux] archived-sessions: corrupt file moved aside to', aside);
+    }
+    return {};
+  }
+  return clean(parsed);
+}
+
+// In-memory copy. This server process is the file's only writer (json-store's
+// contract), and every rail page asks — so read disk once (one shared promise,
+// never re-assigned by a slower first read), then keep it current from each
+// write's persisted result.
+let cache: Promise<ArchivedMap> | null = null;
+
+/** The archive map; THROWS if the file exists but can't be read (not memoized). */
+export function readArchivedStrict(): Promise<ArchivedMap> {
+  if (!cache) {
+    const p = loadStrict(false);
+    cache = p;
+    p.catch(() => {
+      if (cache === p) cache = null; // retry next time, never memoize "empty"
+    });
+  }
   return cache;
+}
+
+/** Tolerant read for listing filters: an unreadable file degrades to "nothing archived". */
+export function readArchived(): Promise<ArchivedMap> {
+  return readArchivedStrict().catch((e) => {
+    console.error('[seshmux] archived-sessions: unreadable, listing as empty:', e);
+    return {};
+  });
 }
 
 export async function archivedKeys(): Promise<Set<string>> {
   return new Set(Object.keys(await readArchived()));
 }
 
-async function update(fn: (cur: ArchivedMap) => ArchivedMap): Promise<ArchivedMap> {
-  cache = await getStore().update((raw) => fn(clean(raw)));
-  return cache;
+// Every write goes through here, one at a time. The strict read IS the base the
+// change is applied to (json-store is used only for its atomic temp+rename write,
+// its own lenient read never feeds a write), so an unreadable file refuses the
+// write and a corrupt one is quarantined first.
+let writeTail: Promise<unknown> = Promise.resolve();
+function update(fn: (cur: ArchivedMap) => ArchivedMap): Promise<ArchivedMap> {
+  const run = writeTail.then(async () => {
+    const cur = await loadStrict(true);
+    const next = fn(cur);
+    await getStore().write(next);
+    cache = Promise.resolve(next);
+    return next;
+  });
+  writeTail = run.catch(() => {});
+  return run;
 }
 
 /** Archive (on=true) or restore (on=false) one session. Idempotent both ways. */
@@ -98,45 +165,93 @@ export async function setArchived(
   });
 }
 
+export interface FilterOpts {
+  /** The rail project this listing is for. */
+  projectId: string;
+  /** When the provider listing started — records archived after it are never judged by it. */
+  listedAt: number;
+  /** Providers whose listing completed without error and unfiltered (no `q`). */
+  completeProviders: string[];
+  /** Every session id the provider's store holds (AgentProvider.allSessionIds).
+   *  null or a throw = can't tell → keep. Callers should memoize per request. */
+  existingIds: (provider: string) => Promise<Set<string> | null>;
+  /** The rail project a session currently lists under, or null if not found. */
+  locate: (provider: string, sessionId: string) => Promise<string | null>;
+}
+
+// Records whose session exists but could not be located anywhere: don't repeat the
+// (full-store) locate sweep for them on every group open. key -> retry-after ms.
+const LOCATE_RETRY_MS = 10 * 60_000;
+const unlocatable = new Map<string, number>();
+
 /**
  * Filter a project's merged session listing by archive state ('exclude' = the
- * rail's default list, 'only' = its archived group).
+ * rail's default list, 'only' = its archived group). 'exclude' only filters —
+ * it never writes (a session can list under two project ids on a case-
+ * insensitive FS, and a write-per-listing there would flip-flop the record).
  *
- * The 'only' call also drops records whose transcript is gone — the agent's own
- * cleanup (or the user) deleted it — so the rail's "archived (N)" count cannot
- * drift from the group forever. Guarded so a flaky listing can't wipe records: a
- * provider must be in `completeProviders` (listed, unfiltered, without error)
- * AND must have returned at least one session for this project. Losing a record
- * wrongly only un-hides a session; it never touches a transcript.
+ * 'only' also keeps records filed under the project their session lists under.
+ * A record for this project whose session is missing from this listing is a
+ * CANDIDATE only — missing-from-this-listing proves nothing (it may have
+ * re-grouped, or a dir was unreadable). Guards, all failing closed: the record
+ * predates the listing, the provider listed completely, and the provider's
+ * whole-store id set is readable. Then: still in the store → RE-HOME it to where
+ * it lists now (left as-is if it can't be located); positively absent → drop it.
+ * Each write re-checks the record it finds (same project, still predating the
+ * listing), so a restore + re-archive that landed meanwhile is never clobbered.
+ *
+ * Reads strictly: an unreadable archive file THROWS (the route answers 500) rather
+ * than presenting an empty archived group.
  */
 export async function filterArchived<S extends { id: string; provider: string }>(
   sessions: S[],
   mode: 'exclude' | 'only',
-  opts: { projectId: string; completeProviders: string[] },
+  opts: FilterOpts,
 ): Promise<S[]> {
-  const map = await readArchived();
-  const has = (s: S) => archivedKey(s.provider, s.id) in map;
-  if (mode === 'exclude') return sessions.filter((s) => !has(s));
+  if (mode === 'exclude') {
+    const map = await readArchived(); // tolerant: an unreadable file just filters nothing
+    return sessions.filter((s) => !(archivedKey(s.provider, s.id) in map));
+  }
 
+  const map = await readArchivedStrict();
   const listed = new Set(sessions.map((s) => archivedKey(s.provider, s.id)));
-  const provable = new Set(
-    opts.completeProviders.filter((p) => sessions.some((s) => s.provider === p)),
+  const complete = new Set(opts.completeProviders);
+  const candidates = Object.entries(map).filter(
+    ([k, r]) => r.projectId === opts.projectId && !listed.has(k) && r.archivedAt < opts.listedAt && complete.has(r.provider),
   );
-  const stale = Object.entries(map)
-    .filter(([k, r]) => r.projectId === opts.projectId && provable.has(r.provider) && !listed.has(k))
-    .map(([k]) => k);
-  if (stale.length) {
+  const gone: string[] = [];
+  const moves: [string, string][] = [];
+  const now = Date.now();
+  for (const [k, r] of candidates) {
+    const ids = await opts.existingIds(r.provider).catch(() => null);
+    if (!ids) continue; // can't tell → keep
+    if (!ids.has(r.sessionId)) {
+      gone.push(k);
+      continue;
+    }
+    if ((unlocatable.get(k) ?? 0) > now) continue;
+    const where = await opts.locate(r.provider, r.sessionId).catch(() => null);
+    if (where && where !== opts.projectId) moves.push([k, where]);
+    else unlocatable.set(k, now + LOCATE_RETRY_MS);
+  }
+  // Still the record this listing judged? (not restored/re-archived meanwhile)
+  const unchanged = (cur: ArchivedMap, k: string) =>
+    !!cur[k] && cur[k].projectId === opts.projectId && cur[k].archivedAt < opts.listedAt;
+  if (gone.length || moves.length) {
     await update((cur) => {
       const next = { ...cur };
-      for (const k of stale) delete next[k];
+      for (const k of gone) if (unchanged(cur, k)) delete next[k];
+      for (const [k, projectId] of moves) if (unchanged(cur, k)) next[k] = { ...cur[k], projectId };
       return next;
-    }).catch(() => {}); // best-effort housekeeping; the listing is still right
+    }).catch(() => {}); // best-effort housekeeping; the listing itself is still right
   }
-  return sessions.filter(has);
+  return sessions.filter((s) => archivedKey(s.provider, s.id) in map);
 }
 
 // Test hook: drop the memoized store so a test can repoint SESHMUX_CONFIG_DIR.
 export function _resetArchivedStoreForTest(): void {
   store = null;
   cache = null;
+  writeTail = Promise.resolve();
+  unlocatable.clear();
 }

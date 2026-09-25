@@ -3,7 +3,7 @@
 // providers are stubbed so the listing is deterministic.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Fastify from 'fastify';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -20,12 +20,28 @@ const sess = (id: string, provider: string, mtime: number) => ({
 });
 
 // Two providers sharing one project; ids chosen so 'shared' exists in BOTH stores.
-const claudeSessions = [sess('c1', 'claude', 500), sess('c2', 'claude', 400), sess('shared', 'claude', 300)];
+let claudeSessions = [sess('c1', 'claude', 500), sess('c2', 'claude', 400), sess('shared', 'claude', 300)];
 const codexSessions = [sess('x1', 'codex', 450), sess('shared', 'codex', 250)];
+// What the claude store still holds on disk, per allSessionIds. 'throw' = unreadable.
+let claudeOnDisk: Set<string> | 'throw' = new Set();
+// Sessions listing under OTHER claude projects (where a re-grouped session now lives).
+let elsewhere: Record<string, ReturnType<typeof sess>[]> = {};
 
 vi.mock('../../server/lib/providers/types', () => ({
   getProviders: async () => [
-    { id: 'claude', listSessions: async () => claudeSessions, scanProjects: async () => [] },
+    {
+      id: 'claude',
+      listSessions: async (pid: string) => (pid === 'proj-a' ? claudeSessions : (elsewhere[pid] ?? [])),
+      scanProjects: async () => [
+        { id: 'proj-a', path: '/repo/a' },
+        ...Object.keys(elsewhere).map((id) => ({ id, path: `/repo/${id}` })),
+      ],
+      allSessionIds: async () => {
+        if (claudeOnDisk === 'throw') throw new Error('EACCES');
+        return claudeOnDisk;
+      },
+    },
+    // codex deliberately has no allSessionIds → its records are never pruned.
     { id: 'codex', listSessions: async () => codexSessions, scanProjects: async () => [] },
   ],
 }));
@@ -42,6 +58,9 @@ beforeEach(() => {
   prevConfigDir = process.env.SESHMUX_CONFIG_DIR;
   process.env.SESHMUX_CONFIG_DIR = dir;
   _resetArchivedStoreForTest();
+  claudeSessions = [sess('c1', 'claude', 500), sess('c2', 'claude', 400), sess('shared', 'claude', 300)];
+  claudeOnDisk = new Set();
+  elsewhere = {};
 });
 
 afterEach(() => {
@@ -87,6 +106,7 @@ describe('/api/sessions/archived', () => {
       {},
       { provider: 'claude', sessionId: 'c2', projectId: 'proj-a' }, // archived missing
       { provider: 'claude', sessionId: 'c2', projectId: 'proj-a', archived: 'yes' },
+      { provider: 'gemini', sessionId: 'c2', projectId: 'proj-a', archived: true }, // not a provider this server has
       { provider: 'claude', sessionId: '../etc', projectId: 'proj-a', archived: true },
       { provider: 'Claude Code!', sessionId: 'c2', projectId: 'proj-a', archived: true },
       { provider: 'claude', sessionId: 'c2', projectId: '', archived: true },
@@ -94,6 +114,31 @@ describe('/api/sessions/archived', () => {
       expect((await put(f, body)).statusCode).toBe(400);
     }
     expect((await f.inject({ method: 'GET', url: '/api/sessions/archived' })).json()).toEqual([]);
+    await f.close();
+  });
+
+  it('RESTORING a record whose provider is gone is still allowed', async () => {
+    const f = await app();
+    const file = join(dir, 'archived-sessions.json');
+    writeFileSync(
+      file,
+      JSON.stringify({ 'gemini:g1': { provider: 'gemini', sessionId: 'g1', projectId: 'proj-a', archivedAt: 1 } }),
+    );
+    _resetArchivedStoreForTest();
+    const res = await put(f, { provider: 'gemini', sessionId: 'g1', projectId: 'proj-a', archived: false });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual([]);
+    await f.close();
+  });
+
+  it('GET answers 500 (not an empty 200) when the archive file cannot be read', async () => {
+    const f = await app();
+    mkdirSync(join(dir, 'archived-sessions.json')); // EISDIR on read
+    _resetArchivedStoreForTest();
+    expect((await f.inject({ method: 'GET', url: '/api/sessions/archived' })).statusCode).toBe(500);
+    expect(
+      (await put(f, { provider: 'claude', sessionId: 'c2', projectId: 'proj-a', archived: true })).statusCode,
+    ).toBe(500); // refused, not overwritten
     await f.close();
   });
 });
@@ -137,6 +182,75 @@ describe('GET /api/projects/:id/sessions ?archived=', () => {
     await put(f, { provider: 'claude', sessionId: 'c1', projectId: 'proj-a', archived: false });
     expect(await listIds(f, '?archived=exclude')).toContain('claude:c1');
     expect(await listIds(f, '?archived=only')).toEqual([]);
+    await f.close();
+  });
+});
+
+describe('GET ?archived=only — pruning stale records through the provider layer', () => {
+  const archive = (f: Awaited<ReturnType<typeof app>>, provider: string, sessionId: string) =>
+    put(f, { provider, sessionId, projectId: 'proj-a', archived: true });
+  const archivedIds = async (f: Awaited<ReturnType<typeof app>>) =>
+    ((await f.inject({ method: 'GET', url: '/api/sessions/archived' })).json() as { sessionId: string }[]).map(
+      (r) => r.sessionId,
+    );
+  // Records must predate the listing to be judged at all (guard b).
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+
+  it('drops a record whose transcript the provider confirms is gone', async () => {
+    const f = await app();
+    await archive(f, 'claude', 'c2');
+    await tick();
+    claudeSessions = claudeSessions.filter((s) => s.id !== 'c2'); // agent cleanup deleted it
+    claudeOnDisk = new Set(['c1', 'shared']);
+    expect(await listIds(f, '?archived=only')).toEqual([]);
+    expect(await archivedIds(f)).toEqual([]);
+    await f.close();
+  });
+
+  it('(a) keeps a re-grouped session and RE-HOMES its record to where it lists now', async () => {
+    const f = await app();
+    await archive(f, 'claude', 'c2');
+    await tick();
+    const c2 = claudeSessions.find((s) => s.id === 'c2')!;
+    claudeSessions = claudeSessions.filter((s) => s.id !== 'c2'); // no longer under proj-a …
+    elsewhere = { 'proj-w': [{ ...c2, projectId: 'proj-w' }] }; // … it lists under proj-w
+    claudeOnDisk = new Set(['c1', 'c2', 'shared']); // and the transcript is still there
+    await listIds(f, '?archived=only');
+    const recs = (await f.inject({ method: 'GET', url: '/api/sessions/archived' })).json() as {
+      sessionId: string;
+      projectId: string;
+    }[];
+    expect(recs).toMatchObject([{ sessionId: 'c2', projectId: 'proj-w' }]);
+    await f.close();
+  });
+
+  it('(c) keeps the record when the store cannot be read', async () => {
+    const f = await app();
+    await archive(f, 'claude', 'c2');
+    await tick();
+    claudeSessions = []; // e.g. readDirSessions swallowed an unreadable dir
+    claudeOnDisk = 'throw';
+    await listIds(f, '?archived=only');
+    expect(await archivedIds(f)).toEqual(['c2']);
+    await f.close();
+  });
+
+  it('never prunes for a provider without allSessionIds', async () => {
+    const f = await app();
+    await archive(f, 'codex', 'gone-cx');
+    await tick();
+    await listIds(f, '?archived=only');
+    expect(await archivedIds(f)).toEqual(['gone-cx']);
+    await f.close();
+  });
+
+  it('a q-filtered listing never prunes', async () => {
+    const f = await app();
+    await archive(f, 'claude', 'c2');
+    await tick();
+    claudeSessions = [];
+    await listIds(f, '?archived=only&q=zzz');
+    expect(await archivedIds(f)).toEqual(['c2']);
     await f.close();
   });
 });

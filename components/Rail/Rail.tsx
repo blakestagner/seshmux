@@ -31,7 +31,12 @@ import AddProjectModal from '../AddProjectModal/AddProjectModal';
 import TeamModal, { teamsAllowed } from '../TeamModal/TeamModal';
 import FilterMenu from '../FilterMenu/FilterMenu';
 import { PrList } from '../PrLinks/PrLinks';
-import { loadArchived, refreshArchived, setSessionArchived, useArchived } from '../../lib/client/archived-sessions';
+import {
+  loadArchived,
+  refreshArchived,
+  setSessionArchived,
+  useArchived,
+} from '../../lib/client/archived-sessions';
 import styles from './Rail.module.scss';
 
 
@@ -139,7 +144,7 @@ function formatDuration(ms: number): string {
 
 type ProjSessions = { sessions: SessionMeta[]; cursor: number | null; hasMore: boolean; loaded: boolean };
 // A project's archived group (issue #64), fetched on demand when the user opens it.
-type ArchivedGroup = { sessions: SessionMeta[]; loaded: boolean };
+type ArchivedGroup = { sessions: SessionMeta[]; loaded: boolean; error: boolean };
 
 const byMtimeDesc = (a: SessionMeta, b: SessionMeta) => b.mtime - a.mtime;
 const sameSession = (a: SessionMeta, b: SessionMeta) => a.id === b.id && a.provider === b.provider;
@@ -395,27 +400,67 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
     }
   }
 
+  // Bumped by every archive/restore this tab completes. A page fetched while one
+  // landed may predate it (still listing a just-archived row, or missing a
+  // just-restored one), so loadMore then re-asks the server — the authority — for
+  // the whole range instead of patching around the race.
+  const archiveEpoch = useRef(0);
+
   async function loadMore(projectId: string) {
     const entry = byProject[projectId];
     if (!entry || entry.cursor == null) return;
+    const epoch = archiveEpoch.current;
     const more = await getSessions(projectId, { before: entry.cursor, limit: CHUNK, archived: 'exclude' });
-    setByProject((prev) => ({
-      ...prev,
-      [projectId]: {
-        sessions: [...entry.sessions, ...more],
-        cursor: more.length ? more[more.length - 1].mtime : entry.cursor,
-        hasMore: more.length === CHUNK,
-        loaded: true,
-      },
-    }));
+    if (archiveEpoch.current !== epoch) {
+      // Everything already shown plus one more page, from the top, in one listing.
+      const limit = entry.sessions.length + CHUNK;
+      const all = await getSessions(projectId, { limit, archived: 'exclude' });
+      setByProject((prev) => ({
+        ...prev,
+        [projectId]: {
+          sessions: all,
+          cursor: all.length ? all[all.length - 1].mtime : null,
+          hasMore: all.length === limit,
+          loaded: true,
+        },
+      }));
+      return;
+    }
+    // Build from the CURRENT entry, not the click-time one.
+    setByProject((prev) => {
+      const cur = prev[projectId] ?? entry;
+      const merged = [...cur.sessions];
+      for (const s of more) if (!merged.some((x) => sameSession(x, s))) merged.push(s);
+      return {
+        ...prev,
+        [projectId]: {
+          sessions: merged.sort(byMtimeDesc),
+          cursor: more.length ? more[more.length - 1].mtime : cur.cursor,
+          hasMore: more.length === CHUNK,
+          loaded: true,
+        },
+      };
+    });
   }
 
   async function openArchivedGroup(projectId: string) {
-    setArchivedOpen((prev) => ({ ...prev, [projectId]: prev[projectId] ?? { sessions: [], loaded: false } }));
-    const fetched = await getSessions(projectId, { archived: 'only' }).catch(() => [] as SessionMeta[]);
-    // The server may have pruned records whose transcript is gone — resync the
-    // counts. Then merge rather than overwrite: a row archived from the main list
-    // while the GET was in flight was already added to the group by handleArchive
+    setArchivedOpen((prev) => ({
+      ...prev,
+      [projectId]: { sessions: prev[projectId]?.sessions ?? [], loaded: false, error: false },
+    }));
+    let fetched: SessionMeta[];
+    try {
+      fetched = await getSessions(projectId, { archived: 'only' });
+    } catch {
+      // Say so — an empty group here would contradict the "archived (N)" count.
+      setArchivedOpen((prev) =>
+        prev[projectId] ? { ...prev, [projectId]: { ...prev[projectId], loaded: true, error: true } } : prev,
+      );
+      return;
+    }
+    // The server may have pruned or re-homed records — resync the counts. Then
+    // merge rather than overwrite: a row archived from the main list while the
+    // GET was in flight was already added to the group by handleArchive
     // (restores can't happen meanwhile — the group shows "loading…" until now).
     // Closed again while in flight → stay closed.
     void refreshArchived();
@@ -425,7 +470,7 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
       const merged = [...fetched, ...cur.sessions.filter((x) => !fetched.some((f) => sameSession(f, x)))].sort(
         byMtimeDesc,
       );
-      return { ...prev, [projectId]: { sessions: merged, loaded: true } };
+      return { ...prev, [projectId]: { sessions: merged, loaded: true, error: false } };
     });
   }
 
@@ -450,12 +495,13 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
     } catch {
       return; // the store reverted its optimistic update; the row stays put
     }
+    archiveEpoch.current++;
     setByProject((prev) => {
       const entry = prev[p.id];
       if (!entry) return prev;
       const rest = entry.sessions.filter((x) => !sameSession(x, s));
       // Restoring: re-insert only inside the range already paged in — past the
-      // cursor, "load more" reaches it in order.
+      // cursor, "load more" reaches it in order (the server has it by now).
       const inRange = !entry.hasMore || entry.cursor == null || s.mtime >= entry.cursor;
       const sessions = !on && inRange ? [...rest, s].sort(byMtimeDesc) : rest;
       return { ...prev, [p.id]: { ...entry, sessions } };
@@ -467,6 +513,22 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
       return { ...prev, [p.id]: { ...group, sessions: on ? [...rest, s].sort(byMtimeDesc) : rest } };
     });
   }
+
+  // Records counted for a project that its archived group can't render (a provider
+  // that's gone, a session that can't be located): offer to clear them, so the
+  // count is never stuck above what the group shows.
+  async function clearUnlisted(projectId: string, shown: SessionMeta[]) {
+    const stray = [...archived.values()].filter(
+      (a) => a.projectId === projectId && !shown.some((s) => s.provider === a.provider && s.id === a.sessionId),
+    );
+    for (const a of stray) {
+      await setSessionArchived({ provider: a.provider, sessionId: a.sessionId, projectId }, false).catch(() => {});
+    }
+    archiveEpoch.current++;
+    // They're un-archived now, so any that still exist belong in the normal list.
+    void loadFirstPage(projectId);
+  }
+
 
   // Provider filter needs to know every project's sessions to decide which
   // projects to hide (provider lives only on SessionMeta, not Project) — fan
@@ -503,6 +565,8 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
     const target = rec ? (projects.find((x) => x.id === rec.projectId) as (Project & { open?: boolean }) | undefined) : undefined;
     if (rec && target) {
       if (rec.projectId !== jumpTo.projectId && !target.open) dispatch({ type: 'toggleProject', id: rec.projectId });
+      // Opening it without its normal list would show only the archived group.
+      if (!byProject[rec.projectId]?.loaded) loadFirstPage(rec.projectId);
       if (!archivedOpen[rec.projectId]) void openArchivedGroup(rec.projectId);
     }
     onJumped?.();
@@ -573,10 +637,10 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
   // One session row — shared by the normal list and the archived group. The
   // archive/restore action is a SIBLING of the row button (buttons can't nest),
   // positioned over the row's right edge and revealed on hover/focus.
-  function renderSessRow(p: Project, s: SessionMeta, projTabs: Tab[], open: boolean, isArchived: boolean) {
+  function renderSessRow(p: Project, s: SessionMeta, projTabs: Tab[], open: boolean, inArchive: boolean) {
     return (
       <div key={`${s.provider}:${s.id}`}>
-        <div className={`${styles.sessRow} ${isArchived ? styles.archived : ''}`}>
+        <div className={`${styles.sessRow} ${inArchive ? styles.archived : ''}`}>
           <button
             type="button"
             className={`${styles.sess} ${s.id === activeSessionId ? styles.selected : ''}`}
@@ -620,15 +684,15 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
             </span>
           </button>
           <IconButton
-            label={isArchived ? 'Restore session to the list' : 'Archive session (hide from the list)'}
-            revealOnHover={!isArchived}
+            label={inArchive ? 'Restore session to the list' : 'Archive session (hide from the list)'}
+            revealOnHover={!inArchive}
             className={styles.sessAction}
             onClick={(e) => {
               e.stopPropagation();
-              void handleArchive(p, s, !isArchived);
+              void handleArchive(p, s, !inArchive);
             }}
           >
-            {isArchived ? RESTORE_SVG : ARCHIVE_SVG}
+            {inArchive ? RESTORE_SVG : ARCHIVE_SVG}
           </IconButton>
         </div>
         {/* PRs created in this session — fetch only while the
@@ -892,6 +956,14 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
             const archivedShown = (archivedGroup?.sessions ?? []).filter(
               (s) => provFilter === 'all' || s.provider === provFilter,
             );
+            // Records filed here that the group can't render (see clearUnlisted).
+            const strayCount = archivedGroup?.loaded
+              ? [...archived.values()].filter(
+                  (a) =>
+                    a.projectId === p.id &&
+                    !archivedGroup.sessions.some((s) => s.provider === a.provider && s.id === a.sessionId),
+                ).length
+              : 0;
 
             return (
               <div
@@ -1049,11 +1121,32 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                       <div className={styles.worktreeGroupHead}>archived</div>
                       {!archivedGroup.loaded ? (
                         <div className={styles.noMatch}>loading…</div>
+                      ) : archivedGroup.error ? (
+                        <>
+                          <div className={styles.noMatch}>couldn’t load archived sessions</div>
+                          <Button variant="link" className={styles.loadMore} onClick={() => void openArchivedGroup(p.id)}>
+                            retry
+                          </Button>
+                        </>
                       ) : archivedShown.length ? (
                         archivedShown.map((s) => renderSessRow(p, s, projTabs, open, true))
-                      ) : (
+                      ) : strayCount === 0 ? (
                         <div className={styles.noMatch}>no archived sessions</div>
-                      )}
+                      ) : null}
+                      {archivedGroup.loaded && !archivedGroup.error && strayCount > 0 ? (
+                        <>
+                          <div className={styles.noMatch}>
+                            {strayCount} archived {strayCount === 1 ? 'session isn’t' : 'sessions aren’t'} listed here
+                          </div>
+                          <Button
+                            variant="link"
+                            className={styles.loadMore}
+                            onClick={() => void clearUnlisted(p.id, archivedGroup.sessions)}
+                          >
+                            clear
+                          </Button>
+                        </>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
