@@ -38,13 +38,26 @@
 // Failed drop/paste upload notice (ui/Notice; auto-dismisses). Placement only.
 // Pinned to the TOP edge: agent TUIs keep their input box + status rows at the
 // bottom, which is exactly what the user is looking at after a paste.
-// Non-interactive, like the connecting overlay above.
+// Non-interactive, like the connecting overlay above — except the sticky
+// variant (saved-but-not-typed: carries a path to copy + a × to dismiss).
+// The wrapper stays click-through; only the sticky notice's own box takes
+// pointer events, sized to its content so the rest of the strip still
+// reaches xterm.
 .uploadError {
   position: absolute;
   top: 10px;
   left: 18px;
   right: 18px;
+  display: flex;
   pointer-events: none;
+
+  > * {
+    max-width: 100%;
+  }
+}
+
+.uploadError.sticky > * {
+  pointer-events: auto;
 }
 
 // xterm renders its own canvas/text; this is the terminal viewport container.

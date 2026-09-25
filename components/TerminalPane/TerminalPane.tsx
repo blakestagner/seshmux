@@ -161,10 +161,18 @@ export default function TerminalPane({
   // did nothing "more times than not". Focus explicitly on both paths.
   const focusRef = useRef<(() => void) | null>(null);
   const [dropping, setDropping] = useState(false);
-  // `at` makes each failure a distinct state value, so a repeat of the SAME
-  // message still restarts the auto-dismiss timer.
-  const [uploadError, setUploadError] = useState<{ msg: string; at: number } | null>(null);
-  const showUploadError = (msg: string) => setUploadError({ msg: `upload failed: ${msg}`, at: Date.now() });
+  // Drop/paste feedback over the terminal. `at` makes each failure a distinct
+  // state value, so a repeat of the SAME message still restarts the
+  // auto-dismiss timer. `sticky` = the user has something to act on (a saved
+  // path that could not be typed): it stays, is selectable, and has a ×.
+  const [notice, setNotice] = useState<{ msg: string; at: number; sticky: boolean } | null>(null);
+  // A sticky notice is never replaced or cleared by a later action — new
+  // messages are appended to it — so its saved path can't be lost.
+  const showNotice = (msg: string, sticky = false) =>
+    setNotice((prev) =>
+      prev?.sticky ? { msg: `${prev.msg} · ${msg}`, at: Date.now(), sticky: true } : { msg, at: Date.now(), sticky },
+    );
+  const clearTransientNotice = () => setNotice((prev) => (prev?.sticky ? prev : null));
 
   // Drop a file on the terminal → its path is typed at the cursor.
   //   - our own Folder-panel rows and Finder drags in browsers that expose
@@ -177,7 +185,7 @@ export default function TerminalPane({
     setDropping(false);
     const paths = pathsFromDrop(e.dataTransfer);
     if (paths.length) {
-      sendRef.current?.(pasteText(paths));
+      if (!sendRef.current?.(pasteText(paths))) showNotice(`terminal is not connected — could not type ${paths.join(', ')}`, true);
       return;
     }
     await uploadAndType(Array.from(e.dataTransfer.files));
@@ -185,43 +193,56 @@ export default function TerminalPane({
 
   // Upload real Files to the repo's .seshmux/dropped/ and type their paths at
   // the cursor. Shared by the drop handler and the image-paste handler below.
-  // Every failure is shown over the terminal (uploadError): a drop or paste
-  // that quietly types nothing reads as "seshmux ignored me".
+  // Every failure is shown over the terminal (notice): a drop or paste that
+  // quietly types nothing reads as "seshmux ignored me".
   async function uploadAndType(files: File[]) {
     if (!files.length) return;
     if (!projectId) {
-      showUploadError('this terminal has no project to save into');
+      showNotice('upload failed: this terminal has no project to save into');
       return;
     }
-    // Independent uploads (the server picks unique names), so run them in
-    // parallel, and type whatever DID save even if some failed.
-    const results = await Promise.allSettled(
-      files.map((file) => uploadFile(projectId, branch, '.seshmux/dropped', file)),
-    );
-    const saved = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
-    const failed = results.flatMap((r) => (r.status === 'rejected' ? [uploadErrorText(r.reason)] : []));
-    if (saved.length && !sendRef.current?.(pasteText(saved.map((s) => s.path)))) {
-      // Saved but could not be typed — say where it went so it isn't lost.
-      showUploadError(`terminal is not connected — saved as ${saved.map((s) => s.relPath).join(', ')}`);
-      return;
+    // One at a time (each upload buffers the whole file, client- and
+    // server-side), and type whatever DID save even if some failed.
+    const saved: { path: string; relPath: string }[] = [];
+    const failed: string[] = [];
+    for (const file of files) {
+      try {
+        saved.push(await uploadFile(projectId, branch, '.seshmux/dropped', file));
+      } catch (e) {
+        failed.push(uploadErrorText(e));
+      }
     }
+    // One combined message: upload failures AND a saved-but-untyped result
+    // can both happen in one drop.
+    const parts: string[] = [];
     if (failed.length) {
       const which = files.length > 1 ? `${failed.length} of ${files.length} files: ` : '';
-      showUploadError(which + failed[0]);
-    } else {
-      setUploadError(null);
+      parts.push(`upload failed: ${which}${failed[0]}`);
     }
+    let sticky = false;
+    if (saved.length && !sendRef.current?.(pasteText(saved.map((s) => s.path)))) {
+      // Saved but could not be typed — say where it went so it isn't lost,
+      // and keep it up until dismissed so the path can be copied.
+      parts.push(`terminal is not connected — saved as ${saved.map((s) => s.relPath).join(', ')}`);
+      sticky = true;
+    }
+    if (parts.length) showNotice(parts.join(' · '), sticky);
+    else clearTransientNotice();
   }
 
-  // Auto-dismiss: the notice is feedback on one action, not a sticky state.
+  // Auto-dismiss: a plain notice is feedback on one action, not a state.
   useEffect(() => {
-    if (!uploadError) return;
-    const t = setTimeout(() => setUploadError(null), UPLOAD_ERROR_MS);
+    if (!notice || notice.sticky) return;
+    const t = setTimeout(() => setNotice(null), UPLOAD_ERROR_MS);
     return () => clearTimeout(t);
-  }, [uploadError]);
+  }, [notice]);
 
-  // Pasting a screenshot (Cmd-V with an image on the clipboard) carries no
-  // text, so xterm has nothing to write and the paste silently did nothing.
+  // Pasting a screenshot (an image on the clipboard) carries no text, so
+  // xterm has nothing to write and the paste silently did nothing. Reached by
+  // a browser paste event only — right-click/Edit-menu paste, Cmd-V on macOS,
+  // Ctrl+Shift+V where the browser maps it. Plain Ctrl+V on Windows/Linux is
+  // turned into ^V by xterm and never fires a paste event (see
+  // clipboard-images.ts).
   // Same trick as a Chrome file drop: upload the bytes, type the path — which
   // is what an agent needs to read the image anyway. Text pastes fall through
   // to xterm untouched. imagesFromClipboard also reads clipboardData.items: a
@@ -829,10 +850,29 @@ export default function TerminalPane({
             <span>connecting…</span>
           </div>
         ) : null}
-        {uploadError ? (
-          <Notice tone="error" className={styles.uploadError}>
-            {uploadError.msg}
-          </Notice>
+        {notice ? (
+          // mousedown must not bubble to termWrap's focus-xterm handler, or
+          // selecting the path in a sticky notice would be yanked away.
+          <div
+            className={`${styles.uploadError} ${notice.sticky ? styles.sticky : ''}`}
+            onMouseDown={notice.sticky ? (e) => e.stopPropagation() : undefined}
+          >
+            <Notice
+              tone="error"
+              onDismiss={
+                notice.sticky
+                  ? () => {
+                      setNotice(null);
+                      // The × held focus and is about to unmount — hand it
+                      // back to xterm so the next keystroke/paste lands.
+                      focusRef.current?.();
+                    }
+                  : undefined
+              }
+            >
+              {notice.msg}
+            </Notice>
+          </div>
         ) : null}
       </div>
       <div className={`${styles.statusbar} ${variant === 'grid' ? styles.grid : ''}`}>

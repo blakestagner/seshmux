@@ -23,6 +23,6 @@ Primitives-first: shared visuals live in `components/ui/`; feature components co
 - TextInput: `{ value; onChange; placeholder?; kbdHint?; multiline?: number; disabled?; className?; onKeyDown?; list?; onClick?; autoFocus? }` — `multiline=N` renders `<textarea rows={N}>`, which ignores `kbdHint`/`onKeyDown`/`list`/`onClick`. `className` is a layout-only passthrough; the rest are behaviour, never chrome.
 - ProviderBadge: `{ provider; withName? }`; exports `PROV: Record<ProviderId,{glyph,name}>` (✳ Claude Code / ⬡ Codex CLI). Generic glyphs only — never ship vendor logos.
 - LinkChip: `{ kind: 'handoff'|'review'|'planoff' }` (⇄ / ⊙ / ⚖).
-- Notice: `{ tone?: 'error'|'info'; className?; children }` — raised transient message (e.g. TerminalPane's upload-failed overlay). Visual only; caller owns placement (className) and dismissal. `error` = `--hot` border/text + role="alert".
+- Notice: `{ tone?: 'error'|'info'; className?; onDismiss?; children }` — raised message (e.g. TerminalPane's upload-failed overlay). Visual only; caller owns placement (className) and dismissal state. `error` = `--hot` border/text + role="alert". `onDismiss` adds a × (IconButton) and makes the text selectable — for notices the user must act on.
 
 Enforcement: `scripts/lint-styles.sh` greps **all** `components/**/*.module.scss` — `ui/` is INCLUDED, not excluded — for raw `font-size|font-weight|letter-spacing|text-transform` declarations. Any match → exit 1. Wired into `npm test`.

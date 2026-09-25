@@ -1,9 +1,12 @@
 @use '../../../styles/typography' as *;
 
-// Notice — raised transient message. Tone sets the border + text color only.
+// Notice — raised message. Tone sets the border + text color only.
 
 .notice {
   @include t-mono-micro;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 6px 10px;
   background: var(--bg-raised);
   border: 1px solid var(--border-bright);
@@ -12,7 +15,27 @@
   color: var(--text-dim);
 }
 
+.body {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .error {
   border-color: var(--hot);
   color: var(--hot);
+}
+
+// A dismissable notice is something to act on (copy a path from). Callers
+// placing it in a non-interactive overlay must keep pointer events on for it.
+.dismissable {
+  user-select: text;
+  padding-right: 4px;
+}
+
+// Scoped under .notice so it deterministically beats IconButton's own
+// padding regardless of CSS chunk order.
+.notice .close {
+  flex: 0 0 auto;
+  padding: 0 6px;
 }
