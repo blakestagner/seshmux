@@ -33,12 +33,14 @@ import { useAppState } from '../../lib/client/store';
 import { useDetectedProviders, bridgeTarget } from '../../lib/client/providers';
 import { retryRepaintUntilReady } from '../../lib/client/repaint-retry';
 import { pasteText, pathsFromDrop } from '../../lib/client/drop-paths';
+import { imagesFromClipboard } from '../../lib/client/clipboard-images';
 import StatusDot from '../ui/StatusDot/StatusDot';
 import ProviderBadge, { PROV } from '../ui/ProviderBadge/ProviderBadge';
 import BranchLabel from '../ui/BranchLabel/BranchLabel';
 import MeterBar from '../ui/MeterBar/MeterBar';
 import CtxBadge from '../ui/CtxBadge/CtxBadge';
 import Button from '../ui/Button/Button';
+import Notice from '../ui/Notice/Notice';
 import BridgeMenu from '../BridgeMenu/BridgeMenu';
 import { registerTermSend } from '../../lib/client/term-send';
 import { PrChip, useSessionPrs } from '../PrLinks/PrLinks';
@@ -96,6 +98,19 @@ export type TerminalPaneProps = {
   visible?: boolean;
 };
 
+// How long a failed drop/paste upload notice stays over the terminal.
+const UPLOAD_ERROR_MS = 6000;
+
+// A short, human reason for a failed upload. api.ts's req() falls back to
+// "<full request path> -> <status>" when the server sent no {error} body —
+// a wall of URL-encoded query string that means nothing in a one-line notice.
+function uploadErrorText(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  const status = /^\/api\/\S* -> (\d+)$/.exec(msg);
+  if (status) return `server error (HTTP ${status[1]})`;
+  return msg || 'unknown error';
+}
+
 // Aperture terminal theme — values from tokens.scss --term-* / --accent.
 // (xterm needs a JS theme object; we mirror the token values here.)
 function readVar(name: string, fallback: string): string {
@@ -138,13 +153,26 @@ export default function TerminalPane({
   const pushSizeRef = useRef<(() => void) | null>(null);
   // Same escape hatch for writing INTO the PTY from outside the effect (the
   // file-drop handler below). Null while unmounted/reconnecting — drops no-op.
-  const sendRef = useRef<((data: string) => void) | null>(null);
+  // Returns false when the frame did not go out (socket mid-reconnect/closed).
+  const sendRef = useRef<((data: string) => boolean) | null>(null);
   // Cmd/Ctrl-V only reaches the PTY when xterm's hidden textarea holds focus.
   // Nothing focused it on mount/reveal, and a click landing on the wrap's
   // padding (not xterm's screen) never focused it either — so paste silently
   // did nothing "more times than not". Focus explicitly on both paths.
   const focusRef = useRef<(() => void) | null>(null);
   const [dropping, setDropping] = useState(false);
+  // Drop/paste feedback over the terminal. `at` makes each failure a distinct
+  // state value, so a repeat of the SAME message still restarts the
+  // auto-dismiss timer. `sticky` = the user has something to act on (a saved
+  // path that could not be typed): it stays, is selectable, and has a ×.
+  const [notice, setNotice] = useState<{ msg: string; at: number; sticky: boolean } | null>(null);
+  // A sticky notice is never replaced or cleared by a later action — new
+  // messages are appended to it — so its saved path can't be lost.
+  const showNotice = (msg: string, sticky = false) =>
+    setNotice((prev) =>
+      prev?.sticky ? { msg: `${prev.msg} · ${msg}`, at: Date.now(), sticky: true } : { msg, at: Date.now(), sticky },
+    );
+  const clearTransientNotice = () => setNotice((prev) => (prev?.sticky ? prev : null));
 
   // Drop a file on the terminal → its path is typed at the cursor.
   //   - our own Folder-panel rows and Finder drags in browsers that expose
@@ -157,7 +185,7 @@ export default function TerminalPane({
     setDropping(false);
     const paths = pathsFromDrop(e.dataTransfer);
     if (paths.length) {
-      sendRef.current?.(pasteText(paths));
+      if (!sendRef.current?.(pasteText(paths))) showNotice(`terminal is not connected — could not type ${paths.join(', ')}`, true);
       return;
     }
     await uploadAndType(Array.from(e.dataTransfer.files));
@@ -165,27 +193,72 @@ export default function TerminalPane({
 
   // Upload real Files to the repo's .seshmux/dropped/ and type their paths at
   // the cursor. Shared by the drop handler and the image-paste handler below.
+  // Every failure is shown over the terminal (notice): a drop or paste that
+  // quietly types nothing reads as "seshmux ignored me".
   async function uploadAndType(files: File[]) {
-    if (!files.length || !projectId) return;
-    try {
-      const saved: string[] = [];
-      for (const file of files) saved.push((await uploadFile(projectId, branch, '.seshmux/dropped', file)).path);
-      sendRef.current?.(pasteText(saved));
-    } catch {
-      /* the drop simply types nothing; no statusbar error surface here */
+    if (!files.length) return;
+    if (!projectId) {
+      showNotice('upload failed: this terminal has no project to save into');
+      return;
     }
+    // One at a time (each upload buffers the whole file, client- and
+    // server-side), and type whatever DID save even if some failed.
+    const saved: { path: string; relPath: string }[] = [];
+    const failed: string[] = [];
+    for (const file of files) {
+      try {
+        saved.push(await uploadFile(projectId, branch, '.seshmux/dropped', file));
+      } catch (e) {
+        failed.push(uploadErrorText(e));
+      }
+    }
+    // One combined message: upload failures AND a saved-but-untyped result
+    // can both happen in one drop.
+    const parts: string[] = [];
+    if (failed.length) {
+      const which = files.length > 1 ? `${failed.length} of ${files.length} files: ` : '';
+      parts.push(`upload failed: ${which}${failed[0]}`);
+    }
+    let sticky = false;
+    if (saved.length && !sendRef.current?.(pasteText(saved.map((s) => s.path)))) {
+      // Saved but could not be typed — say where it went so it isn't lost,
+      // and keep it up until dismissed so the path can be copied.
+      parts.push(`terminal is not connected — saved as ${saved.map((s) => s.relPath).join(', ')}`);
+      sticky = true;
+    }
+    if (parts.length) showNotice(parts.join(' · '), sticky);
+    else clearTransientNotice();
   }
 
-  // Pasting a screenshot (Cmd-V with an image on the clipboard) carries no
-  // text, so xterm has nothing to write and the paste silently did nothing.
+  // Auto-dismiss: a plain notice is feedback on one action, not a state.
+  useEffect(() => {
+    if (!notice || notice.sticky) return;
+    const t = setTimeout(() => setNotice(null), UPLOAD_ERROR_MS);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  // Pasting a screenshot (an image on the clipboard) carries no text, so
+  // xterm has nothing to write and the paste silently did nothing. Reached by
+  // a browser paste event only — right-click/Edit-menu paste, Cmd-V on macOS,
+  // Ctrl+Shift+V where the browser maps it. Plain Ctrl+V on Windows/Linux is
+  // turned into ^V by xterm and never fires a paste event (see
+  // clipboard-images.ts).
   // Same trick as a Chrome file drop: upload the bytes, type the path — which
   // is what an agent needs to read the image anyway. Text pastes fall through
-  // to xterm untouched.
-  async function handlePaste(e: React.ClipboardEvent) {
-    const images = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith('image/'));
+  // to xterm untouched. imagesFromClipboard also reads clipboardData.items: a
+  // screenshot is often there only, with .files empty.
+  //
+  // Wired as a CAPTURE listener on purpose: xterm's own paste handler on its
+  // hidden textarea calls stopPropagation(), so a bubble-phase React onPaste
+  // (delegated at the root) never sees a paste aimed at the terminal. Capture
+  // runs first; for an image we also stop the event so xterm doesn't write an
+  // empty (bracketed) paste into the PTY.
+  function handlePaste(e: React.ClipboardEvent) {
+    const images = imagesFromClipboard(e.clipboardData);
     if (!images.length) return;
     e.preventDefault();
-    await uploadAndType(images);
+    e.stopPropagation();
+    void uploadAndType(images);
   }
 
   // Reassert PTY size on EVERY tabs⇄grid⇄(future views) switch — panes that
@@ -457,7 +530,7 @@ export default function TerminalPane({
       });
 
       term.onData((data) => socket?.send(data));
-      sendRef.current = (data: string) => socket?.send(data);
+      sendRef.current = (data: string) => socket?.send(data) ?? false;
       // Publish the writer so the right pane can load memory into this session. Scoped
       // to the socket lifetime, so "a sender exists" means "this terminal is writable".
       unregisterSend = registerTermSend(ptyId, (data: string) => socket?.send(data) ?? false);
@@ -755,7 +828,7 @@ export default function TerminalPane({
       <div
         className={`${styles.termWrap} ${dropping ? styles.dropTarget : ''}`}
         onMouseDown={() => focusRef.current?.()}
-        onPaste={(e) => void handlePaste(e)}
+        onPasteCapture={handlePaste}
         onDragOver={(e) => {
           // Only intercept FILE/URI drags. text/plain is deliberately excluded:
           // a text selection dragged inside xterm carries only that, and
@@ -775,6 +848,30 @@ export default function TerminalPane({
           <div className={styles.loading} aria-live="polite">
             <StatusDot status="live" size={7} pulse />
             <span>connecting…</span>
+          </div>
+        ) : null}
+        {notice ? (
+          // mousedown must not bubble to termWrap's focus-xterm handler, or
+          // selecting the path in a sticky notice would be yanked away.
+          <div
+            className={`${styles.uploadError} ${notice.sticky ? styles.sticky : ''}`}
+            onMouseDown={notice.sticky ? (e) => e.stopPropagation() : undefined}
+          >
+            <Notice
+              tone="error"
+              onDismiss={
+                notice.sticky
+                  ? () => {
+                      setNotice(null);
+                      // The × held focus and is about to unmount — hand it
+                      // back to xterm so the next keystroke/paste lands.
+                      focusRef.current?.();
+                    }
+                  : undefined
+              }
+            >
+              {notice.msg}
+            </Notice>
           </div>
         ) : null}
       </div>
