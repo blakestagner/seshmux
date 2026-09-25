@@ -35,6 +35,18 @@
   color: var(--text-dim);
 }
 
+// Failed drop/paste upload notice (ui/Notice; auto-dismisses). Placement only.
+// Pinned to the TOP edge: agent TUIs keep their input box + status rows at the
+// bottom, which is exactly what the user is looking at after a paste.
+// Non-interactive, like the connecting overlay above.
+.uploadError {
+  position: absolute;
+  top: 10px;
+  left: 18px;
+  right: 18px;
+  pointer-events: none;
+}
+
 // xterm renders its own canvas/text; this is the terminal viewport container.
 .term {
   width: 100%;

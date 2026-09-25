@@ -1,0 +1,18 @@
+@use '../../../styles/typography' as *;
+
+// Notice — raised transient message. Tone sets the border + text color only.
+
+.notice {
+  @include t-mono-micro;
+  padding: 6px 10px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  color: var(--text-dim);
+}
+
+.error {
+  border-color: var(--hot);
+  color: var(--hot);
+}
