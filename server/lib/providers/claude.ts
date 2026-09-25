@@ -11,6 +11,7 @@ import {
   isSafeId,
   listSessions as scanListSessions,
   scanProjects as scan,
+  allSessionIdsInStore,
   sessionFilePath,
   storeBytes,
 } from '../store/scan';
@@ -129,6 +130,11 @@ export class ClaudeProvider implements AgentProvider {
 
   listSessions(projectId: string, opts: ListSessionOpts = {}): Promise<SessionMeta[]> {
     return scanListSessions(projectId, { root: this.root, provider: this.id, ...opts });
+  }
+
+  // Any dirent, not just one project's: see scan.ts allSessionIdsInStore (fails closed).
+  allSessionIds(): Promise<Set<string>> {
+    return allSessionIdsInStore(this.root);
   }
 
   // (projectId, sessionId) → owning jsonl. A folded worktree session lists under the

@@ -790,6 +790,24 @@ export async function sessionFilePath(
   return direct;
 }
 
+/**
+ * Every session id with a `<root>/<any dirent>/<id>.jsonl` transcript. Project-
+ * independent on purpose: a session can re-group under a different project (a
+ * worktree's own dirent after workspace finish), and that must still read as
+ * "exists". Fails CLOSED for the archive-pruning caller: an unreadable root or
+ * dirent THROWS rather than yielding a quietly short set.
+ */
+export async function allSessionIdsInStore(root: string): Promise<Set<string>> {
+  const ids = new Set<string>();
+  const entries = await readdir(root, { withFileTypes: true }); // throws → caller keeps
+  // Parallel, like computeRootScan (PERF-5); Promise.all still rejects on any failure.
+  const lists = await Promise.all(entries.filter((e) => e.isDirectory()).map((e) => readdir(join(root, e.name))));
+  for (const files of lists) {
+    for (const f of files) if (f.endsWith('.jsonl')) ids.add(f.slice(0, -'.jsonl'.length));
+  }
+  return ids;
+}
+
 export async function listSessions(projectId: string, opts: ListOpts): Promise<SessionMeta[]> {
   const { root, provider, before, limit, q } = opts;
   const dirs = await projectSessionDirs(projectId, root, provider);

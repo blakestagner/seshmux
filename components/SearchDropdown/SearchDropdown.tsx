@@ -1,7 +1,8 @@
 'use client';
 
-import { Fragment } from 'react';
+import { Fragment, useEffect } from 'react';
 import type { SearchHit } from '../../lib/client/api';
+import { archivedKey, loadArchived, useArchived } from '../../lib/client/archived-sessions';
 import styles from './SearchDropdown.module.scss';
 
 export type SearchDropdownProps = {
@@ -28,6 +29,12 @@ function highlight(text: string, query: string) {
 }
 
 export default function SearchDropdown({ open, query, hits, onPick }: SearchDropdownProps) {
+  // Search deliberately still finds archived sessions (archiving only tidies the
+  // rail) — but tags the hit, so a result never looks like it vanished.
+  const archived = useArchived();
+  useEffect(() => {
+    if (open) void loadArchived();
+  }, [open]);
   const byProject = new Map<string, SearchHit[]>();
   for (const h of hits) {
     const list = byProject.get(h.project) ?? [];
@@ -45,7 +52,12 @@ export default function SearchDropdown({ open, query, hits, onPick }: SearchDrop
             <div className={styles.group}>{project}</div>
             {items.map((h) => (
               <button key={h.sessionId} type="button" className={styles.item} onClick={() => onPick(h)}>
-                <div className={styles.title}>{highlight(h.title || 'untitled', query)}</div>
+                <div className={styles.title}>
+                  {highlight(h.title || 'untitled', query)}
+                  {archived.has(archivedKey(h.provider, h.sessionId)) ? (
+                    <span className={styles.archivedTag}>archived</span>
+                  ) : null}
+                </div>
                 <div className={styles.meta}>{h.snippet}</div>
               </button>
             ))}
