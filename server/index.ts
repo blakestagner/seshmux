@@ -310,6 +310,12 @@ export async function startServer({ port = 4700, host, dev = false }: { port?: n
     // snapshot while a harvest is appending to them.
     serialize: harvester ? <T,>(fn: () => Promise<T>) => harvester!.runExclusive(fn) : undefined,
   });
+  // Custom session names (issue #63): seshmux-owned metadata, never the transcript.
+  // A rename pings {event:'session-name'} so every open tab/rail/card relabels live.
+  await f.register((await import('./routes/session-names')).default, {
+    onChanged: (change: import('./routes/session-names').SessionNameChange) =>
+      hub.emit({ event: 'session-name', ...change }),
+  });
   // Read-only subagent-transcript viewer. onOpen starts the lazy per-session chokidar
   // watch → {event:'subagents'} pings drive live-refetch.
   await f.register((await import('./routes/subagents')).default, {

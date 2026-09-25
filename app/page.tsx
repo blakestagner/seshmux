@@ -6,6 +6,7 @@ import { getProjects, getConfig, getEnv, getLive, liveIsAuthoritative, notify, r
 import { pruneDismissed, readDismissed, removeDismissed } from '../lib/client/dismissed';
 import { readTabLayout, persistTabLayout, orderByLayout, minimizedFromLayout, type TabLayoutEntry } from '../lib/client/tab-layout';
 import { openEventsSocket } from '../lib/client/ws';
+import { applySessionName, displayName, loadSessionNames, sessionNamesSnapshot, useSessionNames } from '../lib/client/session-names';
 import type { EventMessage } from '../lib/client/ws';
 import TopNav from '../components/TopNav/TopNav';
 import CustomizationsModal from '../components/CustomizationsModal/CustomizationsModal';
@@ -115,10 +116,12 @@ function SetupGate({ onRescan }: { onRescan: () => void }) {
 
 function AppShell() {
   const { state, dispatch } = useAppState();
+  // Custom session names (issue #63) — applied at render, never written into tab.label.
+  const sessionNames = useSessionNames();
   const [jumpTo, setJumpTo] = useState<{ projectId: string; sessionId: string } | null>(null);
   // ALL currently-waiting sessions, oldest first — the toast aggregates them
   // ("2 sessions need input") and Jump walks the queue front-to-back.
-  const [waitingToasts, setWaitingToasts] = useState<{ ptyId: string; repo: string }[]>([]);
+  const [waitingToasts, setWaitingToasts] = useState<{ ptyId: string; repo: string; shown: string }[]>([]);
   const [custOpen, setCustOpen] = useState<{ projectId?: string; projectName?: string } | null>(null);
   const [approval, setApproval] = useState<Extract<EventMessage, { event: 'approval' }> | null>(null);
   // Right-pane panel model (scratch-terminal Stage 2): a per-tab {open, active}
@@ -590,7 +593,11 @@ function AppShell() {
           dispatch({ type: 'setTermStatus', ptyId: e.ptyId, status: WS_STATUS[e.status], ni: e.status, ts: Date.now() });
 
           const tab = tabsRef.current.find((t) => t.kind === 'term' && t.ptyId === e.ptyId);
+          // `repo` is the raw tab label (Jump reopens a tab with it — a custom name
+          // must never be baked into a label, or clearing it could not revert);
+          // `shown` is what the user reads: the custom session name when set.
           const repo = tab?.label ?? 'A session';
+          const shown = tab ? displayName(sessionNamesSnapshot(), tab.provider, tab.sessionId, repo) : repo;
           const prevNI = prevNIRef.current[e.ptyId];
           const isActiveTab = !!tab && tab.id === activeTabRef.current;
           // Spec 3: working → idle/waiting while not the focused tab = done-
@@ -598,7 +605,7 @@ function AppShell() {
           if (shouldMarkUnviewed(prevNI, e.status, isActiveTab, document.hidden)) {
             dispatch({ type: 'markUnviewed', ptyId: e.ptyId });
             if (e.status === 'idle' && document.hidden && notifyOnRef.current && notifyOnDoneRef.current) {
-              notify(`${repo} finished`, 'The session finished and is waiting for you.').catch(() => {});
+              notify(`${shown} finished`, 'The session finished and is waiting for you.').catch(() => {});
             }
           }
           prevNIRef.current[e.ptyId] = e.status;
@@ -610,12 +617,12 @@ function AppShell() {
           // oldest of those instead of the thing that just asked for you.
           if (e.status === 'waiting' && prevNI !== undefined && prevNI !== 'waiting' && !(isActiveTab && !document.hidden)) {
             setWaitingToasts((cur) =>
-              cur.some((w) => w.ptyId === e.ptyId) ? cur : [...cur, { ptyId: e.ptyId, repo }],
+              cur.some((w) => w.ptyId === e.ptyId) ? cur : [...cur, { ptyId: e.ptyId, repo, shown }],
             );
             // OS-level surface only when the tab is backgrounded; the server
             // decides delivery (darwin + config), so call unconditionally.
             if (document.hidden && notifyOnRef.current) {
-              notify(`${repo} needs input`, 'A session is waiting for your input.').catch(() => {});
+              notify(`${shown} needs input`, 'A session is waiting for your input.').catch(() => {});
             }
           } else if (e.status !== 'waiting' || (isActiveTab && !document.hidden)) {
             // drop the session from the toast once it's no longer waiting, or once
@@ -689,6 +696,10 @@ function AppShell() {
         case 'memory':
           setMemoryPings((n) => n + 1);
           break;
+        // A session was renamed (or its name cleared) — possibly in another browser tab.
+        case 'session-name':
+          applySessionName(e.provider, e.sessionId, e.name);
+          break;
         // server-restarting is handled above (top of this callback), before the switch.
         default:
           break;
@@ -696,7 +707,12 @@ function AppShell() {
       },
       // onOpen: with zero live PTYs a reconnect replays no events, so the
       // event-based reset above never fires and the banner stuck forever.
-      () => setRestarting(false),
+      () => {
+        setRestarting(false);
+        // Resync names on every (re)connect: a rename made while this socket was
+        // down (server restart) would otherwise never reach this page.
+        loadSessionNames().catch(() => {});
+      },
     );
 
     // A background BROWSER tab can mark the currently-active seshmux tab
@@ -884,7 +900,7 @@ function AppShell() {
           key={tab.id}
           projectId={tab.projectId}
           sessionId={tab.sessionId}
-          title={tab.label}
+          title={displayName(sessionNames, tab.provider, tab.sessionId, tab.label)}
           provider={tab.provider}
         />
       );
@@ -1307,14 +1323,14 @@ function AppShell() {
       <MobileNav value={mobileScreen} onChange={handleMobileNav} />
       <MobileActionSheet
         open={sheetOpen && isMobile && !!activeTab}
-        title={activeTab?.label}
+        title={activeTab ? displayName(sessionNames, activeTab.provider, activeTab.sessionId, activeTab.label) : undefined}
         subtitle={[activeTab?.branch, activeTab?.provider].filter(Boolean).join(' · ') || undefined}
         items={sheetItems}
         onClose={() => setSheetOpen(false)}
       />
       <Toast
         open={waitingToasts.length > 0}
-        repos={waitingToasts.map((w) => w.repo)}
+        repos={waitingToasts.map((w) => w.shown)}
         reason="permission prompt"
         onJump={jumpToWaiting}
         onClose={() => setWaitingToasts([])}

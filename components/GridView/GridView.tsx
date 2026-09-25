@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAppState, type Tab } from '../../lib/client/store';
 import { putConfig } from '../../lib/client/api';
+import { displayName, useSessionNames } from '../../lib/client/session-names';
 import {
   computeLayout, reconcile, cloneNode, seamFractions, hitZone, applyDrop, focusRects, preset, PAD,
   type LayoutNode, type Rect, type DropZone,
@@ -48,6 +49,8 @@ function parseTree(raw: unknown): LayoutNode | null {
 
 export default function GridView() {
   const { state, dispatch } = useAppState();
+  // Custom session names (issue #63) for the linked-tile source label.
+  const sessionNames = useSessionNames();
   const termTabs = state.tabs.filter((t) => t.kind === 'term' && t.ptyId && !t.minimized);
   const openIds = termTabs.map((t) => t.id);
 
@@ -606,7 +609,8 @@ export default function GridView() {
     const src = state.tabs.find((t) => t.sessionId === linkSrc);
     if (src) {
       const glyph = src.provider ? PROV[src.provider].glyph : '';
-      const title = src.label.length > 24 ? src.label.slice(0, 24) + '…' : src.label;
+      const label = displayName(sessionNames, src.provider, src.sessionId, src.label);
+      const title = label.length > 24 ? label.slice(0, 24) + '…' : label;
       return `${glyph} ${title}`.trim();
     }
     return linkSrc.slice(0, 8);

@@ -1078,3 +1078,17 @@ export function compactMemory(opts: { retentionDays?: number; maxRecords?: numbe
 }> {
   return req('/api/memory/compact', { method: 'POST', body: JSON.stringify(opts) });
 }
+
+// Custom session display names (issue #63). Keyed `${provider}:${sessionId}`;
+// see lib/client/session-names.ts for the client-side cache + hook.
+export function getSessionNames(): Promise<{ names: Record<string, string> }> {
+  return req('/api/session-names');
+}
+
+export function putSessionName(
+  provider: ProviderId,
+  sessionId: string,
+  name: string,
+): Promise<{ provider: ProviderId; sessionId: string; name: string | null }> {
+  return req('/api/session-names', { method: 'PUT', body: JSON.stringify({ provider, sessionId, name }) });
+}

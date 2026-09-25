@@ -11,6 +11,7 @@ import { useAppState } from '../../lib/client/store';
 import { rollup, type AgentBucket, type AgentCardData } from '../../lib/client/status-rollup';
 import { getSessions } from '../../lib/client/api';
 import type { SessionMeta } from '../../lib/client/types';
+import { customNameFor, useSessionNames } from '../../lib/client/session-names';
 import StatusDot from '../ui/StatusDot/StatusDot';
 import ProviderBadge from '../ui/ProviderBadge/ProviderBadge';
 import BranchLabel from '../ui/BranchLabel/BranchLabel';
@@ -80,6 +81,12 @@ export default function AgentsView() {
   }, [projectIds.join(',')]);
 
   const { counts, cards } = rollup(state.tabs, metaById);
+  // Custom session names (issue #63) override the card's auto title.
+  const sessionNames = useSessionNames();
+  const cardTitle = (card: (typeof cards)[number]) => {
+    const tab = state.tabs.find((t) => t.id === card.tabId);
+    return customNameFor(sessionNames, tab?.provider, tab?.sessionId) ?? card.title;
+  };
 
   if (cards.length === 0) {
     return (
@@ -111,7 +118,7 @@ export default function AgentsView() {
             >
               <span className={styles.cardTop}>
                 <StatusDot status={DOT[card.bucket]} size={7} />
-                <span className={styles.cardTitle}>{card.title}</span>
+                <span className={styles.cardTitle}>{cardTitle(card)}</span>
                 {card.provider ? <ProviderBadge provider={card.provider} /> : null}
               </span>
               <span className={styles.cardMeta}>

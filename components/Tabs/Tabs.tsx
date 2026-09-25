@@ -6,7 +6,9 @@ import StatusDot from '../ui/StatusDot/StatusDot';
 import ProviderBadge from '../ui/ProviderBadge/ProviderBadge';
 import IconButton from '../ui/IconButton/IconButton';
 import LinkChip from '../ui/LinkChip/LinkChip';
+import InlineRename from '../ui/InlineRename/InlineRename';
 import { useAppState } from '../../lib/client/store';
+import { SESSION_NAME_MAX, customNameFor, renameSession, useSessionNames } from '../../lib/client/session-names';
 import { endTermSession } from '../../lib/client/api';
 import type { Tab } from '../../lib/client/store';
 import styles from './Tabs.module.scss';
@@ -29,6 +31,18 @@ export default function Tabs() {
   const { state, dispatch } = useAppState();
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  // Session rename (issue #63): the tab being edited in place, if any.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const sessionNames = useSessionNames();
+  // Leave edit mode; after Enter/Escape put keyboard focus back on the tab (the
+  // field unmounts, so it would otherwise drop to <body>).
+  function endRename(tabId: string, refocus: boolean) {
+    setRenamingId(null);
+    if (!refocus) return;
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(tabId)}"]`)?.focus(),
+    );
+  }
 
   // Minimized tabs keep running (record + PTY alive) but leave the strip; the
   // rail's Sessions panel is where you get them back.
@@ -49,6 +63,12 @@ export default function Tabs() {
         const prev = tabs[i - 1];
         const isGroupStart = tabs[i + 1] && tabs[i + 1].linked && tabs[i + 1].linkSrc === t.sessionId;
         const isGroupEnd = t.linked && prev && prev.sessionId === t.linkSrc;
+        // Only a tab that IS a known session can be renamed — a fresh live tab
+        // has no sessionId until the agent writes its transcript.
+        const canRename = !!t.sessionId && !!t.provider && (t.kind === 'term' || t.kind === 'transcript');
+        const custom = customNameFor(sessionNames, t.provider, t.sessionId);
+        const label = custom ?? t.label;
+        const renaming = renamingId === t.id && canRename;
         return (
           // role="button" (not <button>) so the close IconButton can nest
           // without producing invalid button-in-button HTML (hydration error).
@@ -56,7 +76,8 @@ export default function Tabs() {
             key={t.id}
             role="button"
             tabIndex={0}
-            draggable
+            draggable={!renaming}
+            title={canRename ? `${label} — double-click to rename` : undefined}
             className={[
               styles.tab,
               t.id === state.activeTab ? styles.active : '',
@@ -68,10 +89,15 @@ export default function Tabs() {
               .filter(Boolean)
               .join(' ')}
             onClick={() => dispatch({ type: 'activateTab', id: t.id })}
+            data-tab-id={t.id}
+            onDoubleClick={canRename ? () => setRenamingId(t.id) : undefined}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
                 dispatch({ type: 'activateTab', id: t.id });
+              } else if (e.key === 'F2' && canRename) {
+                e.preventDefault();
+                setRenamingId(t.id);
               }
             }}
             onDragStart={() => setDragId(t.id)}
@@ -94,7 +120,28 @@ export default function Tabs() {
               <LinkChip kind="planoff" />
             ) : null}
             {t.provider ? <ProviderBadge provider={t.provider} /> : null}
-            <span className={styles.label}>{t.label}</span>
+            <span className={styles.label}>
+              {renaming ? (
+                <InlineRename
+                  initial={label}
+                  placeholder={t.label}
+                  maxLength={SESSION_NAME_MAX}
+                  ariaLabel="Rename session"
+                  onCancel={() => endRename(t.id, true)}
+                  onCommit={(value, viaKeyboard) => {
+                    endRename(t.id, viaKeyboard);
+                    // Only a transcript tab's label IS the session's auto title; a term
+                    // tab is labelled with the project name, which must not count as
+                    // "typed the auto title back" (that would clear a deliberate name).
+                    renameSession(t.provider!, t.sessionId!, value, t.kind === 'transcript' ? t.label : undefined).catch(
+                      (err) => console.error('[seshmux] rename failed:', err),
+                    );
+                  }}
+                />
+              ) : (
+                label
+              )}
+            </span>
             <span className={styles.closeWrap}>
               <IconButton
                 label="Minimize tab"

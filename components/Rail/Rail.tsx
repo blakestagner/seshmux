@@ -7,6 +7,15 @@ import { useDragResize } from '../../lib/client/use-drag-resize';
 import { clampSize, readPersistedSize } from '../../lib/client/drag-resize';
 import { persistDebounced } from '../../lib/client/persist';
 import TextInput from '../ui/TextInput/TextInput';
+import InlineRename from '../ui/InlineRename/InlineRename';
+import {
+  SESSION_NAME_MAX,
+  customNameFor,
+  displayName,
+  renameSession,
+  sessionNameKey,
+  useSessionNames,
+} from '../../lib/client/session-names';
 import StatusDot from '../ui/StatusDot/StatusDot';
 import IconButton from '../ui/IconButton/IconButton';
 import {
@@ -171,6 +180,19 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
   // Sidebar-wide filter: narrows sessions across ALL projects by title/branch.
   // Local state only (no persistence) — the per-project filter above still works.
   const [railFilter, setRailFilter] = useState('');
+  // Session rename (issue #63): custom names override the auto title everywhere
+  // the rail shows a session; `renaming` is the `${provider}:${id}` row being edited.
+  const sessionNames = useSessionNames();
+  const [renaming, setRenaming] = useState<string | null>(null);
+  // Leave edit mode; after Enter/Escape put keyboard focus back on the row (it is
+  // remounted as a <button> again, so focus would otherwise drop to <body>).
+  function endRename(rowKey: string, refocus: boolean) {
+    setRenaming(null);
+    if (!refocus) return;
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLElement>(`[data-rename-key="${CSS.escape(rowKey)}"]`)?.focus(),
+    );
+  }
   // "+" opens NewSessionModal for one project; null = closed.
   const [modalProject, setModalProject] = useState<Project | null>(null);
   // Rail footer "+ New project": create a folder anywhere, then start in it.
@@ -448,7 +470,12 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
   }
 
   function matchQuery(s: SessionMeta, q: string): boolean {
-    return (s.title || '').toLowerCase().includes(q) || (s.branch || '').toLowerCase().includes(q);
+    const custom = customNameFor(sessionNames, s.provider, s.id) ?? '';
+    return (
+      custom.toLowerCase().includes(q) ||
+      (s.title || '').toLowerCase().includes(q) ||
+      (s.branch || '').toLowerCase().includes(q)
+    );
   }
 
   function visibleSessions(p: Project & { filter?: string; loaded?: number }) {
@@ -596,17 +623,19 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
         <span className={styles.scan}>{openTabs.length}</span>
       </div>
       <div className={styles.sessionsList}>
-        {openTabs.map((t) => (
+        {openTabs.map((t) => {
+          const label = displayName(sessionNames, t.provider, t.sessionId, t.label);
+          return (
           <div key={t.id}>
             <button
               type="button"
               className={`${styles.openTab} ${t.id === state.activeTab ? styles.selected : ''}`}
-              title={t.branch ? `${t.label} · ${t.branch}` : t.label}
+              title={t.branch ? `${label} · ${t.branch}` : label}
               onClick={() => handleOpenTab(t)}
             >
               <StatusDot status={tabDotStatus(t)} size={7} />
               <span className={styles.openTabInfo}>
-                <span className={styles.openTabLabel}>{t.label}</span>
+                <span className={styles.openTabLabel}>{label}</span>
                 {t.branch ? <span className={styles.openTabBranch}>⎇ {t.branch}</span> : null}
                 <span className={`${styles.openTabStatus} ${styles['st_' + tabStatusWord(t)]}`}>
                   {tabStatusWord(t)}
@@ -621,7 +650,8 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                 can't nest in the row <button>, so they render as a sibling below it. */}
             {t.projectId && t.sessionId ? <PrList projectId={t.projectId} sessionId={t.sessionId} /> : null}
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   ) : null;
@@ -840,27 +870,17 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                       ))}
                     </div>
                   ) : null}
-                  {shown.map((s) => (
-                    <div key={s.id}>
-                    <button
-                      type="button"
-                      className={`${styles.sess} ${s.id === activeSessionId ? styles.selected : ''}`}
-                      onClick={() =>
-                        dispatch({
-                          type: 'openSession',
-                          sessionId: s.id,
-                          projectId: s.projectId,
-                          label: s.title || s.branch || 'untitled',
-                          // Open the read-only transcript. A live session that seshmux
-                          // itself spawned is rehydrated as a term tab via getLive() on
-                          // load; clicking a rail row (which has no PTY handle) always
-                          // opens the transcript rather than a PTY-less blank term.
-                          kind: 'transcript',
-                          provider: s.provider,
-                          status: s.live ? 'live' : 'done',
-                        })
-                      }
-                    >
+                  {shown.map((s) => {
+                    // The auto-derived title is what a tab is opened with (tab.label)
+                    // and what "clear" reverts to; a custom name only overrides display.
+                    const autoTitle = s.title || s.branch || 'untitled';
+                    const custom = customNameFor(sessionNames, s.provider, s.id);
+                    const rowKey = sessionNameKey(s.provider, s.id);
+                    const isRenaming = renaming === rowKey;
+                    const startRename = () => setRenaming(rowKey);
+                    const rowClass = `${styles.sess} ${s.id === activeSessionId ? styles.selected : ''}`;
+                    const rowBody = (
+                      <>
                       <span className={styles.sessDot}>
                         <StatusDot status={sessDotStatus(s, projTabs)} size={7} />
                       </span>
@@ -872,7 +892,25 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                           {s.branch?.startsWith('agent/') ? (
                             <span className={styles.workspaceMark} title="Workspace session">⑃</span>
                           ) : null}
-                          <span className={styles.sessTitle}>{s.title || s.branch || 'untitled'}</span>
+                          <span className={styles.sessTitle}>
+                            {isRenaming ? (
+                              <InlineRename
+                                initial={custom ?? autoTitle}
+                                placeholder={autoTitle}
+                                maxLength={SESSION_NAME_MAX}
+                                ariaLabel="Rename session"
+                                onCancel={() => endRename(rowKey, true)}
+                                onCommit={(value, viaKeyboard) => {
+                                  endRename(rowKey, viaKeyboard);
+                                  renameSession(s.provider, s.id, value, autoTitle).catch((err) =>
+                                    console.error('[seshmux] rename failed:', err),
+                                  );
+                                }}
+                              />
+                            ) : (
+                              custom ?? autoTitle
+                            )}
+                          </span>
                           {showProvider ? (
                             <span className={`${styles.sessAgent} ${styles[s.provider]}`}>{s.provider}</span>
                           ) : null}
@@ -883,12 +921,57 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                           {!s.live && s.durationMs ? ` · ${formatDuration(s.durationMs)}` : ''}
                         </div>
                       </span>
+                      </>
+                    );
+                    return (
+                    <div key={s.id}>
+                    {/* While renaming, the row is a plain div: an <input> nested in a
+                        <button> is invalid HTML and its Space/Enter would click the row. */}
+                    {isRenaming ? (
+                      <div className={rowClass}>{rowBody}</div>
+                    ) : (
+                    <button
+                      type="button"
+                      className={rowClass}
+                      data-rename-key={rowKey}
+                      title={custom ? `${custom}\n(auto: ${autoTitle}) — double-click to rename` : 'Double-click to rename'}
+                      onClick={(e) => {
+                        // The 2nd click of a double-click (rename) must not re-dispatch.
+                        // The 1st still opens the session — accepted: renaming what you
+                        // are looking at is the common case, and a click-delay would
+                        // make every plain open feel laggy.
+                        if (e.detail > 1) return;
+                        dispatch({
+                          type: 'openSession',
+                          sessionId: s.id,
+                          projectId: s.projectId,
+                          label: autoTitle,
+                          // Open the read-only transcript. A live session that seshmux
+                          // itself spawned is rehydrated as a term tab via getLive() on
+                          // load; clicking a rail row (which has no PTY handle) always
+                          // opens the transcript rather than a PTY-less blank term.
+                          kind: 'transcript',
+                          provider: s.provider,
+                          status: s.live ? 'live' : 'done',
+                        });
+                      }}
+                      onDoubleClick={startRename}
+                      onKeyDown={(e) => {
+                        if (e.key === 'F2') {
+                          e.preventDefault();
+                          startRename();
+                        }
+                      }}
+                    >
+                      {rowBody}
                     </button>
+                    )}
                     {/* PRs created in this session — fetch only while the
                         project is expanded (rows stay mounted when collapsed). */}
                     {open ? <PrList projectId={s.projectId} sessionId={s.id} /> : null}
                     </div>
-                  ))}
+                    );
+                  })}
                   {filtered && !shown.length ? <div className={styles.noMatch}>no matching sessions</div> : null}
                   {!filtered && hasMore ? (
                     <Button variant="link" className={styles.loadMore} onClick={() => loadMore(p.id)}>
