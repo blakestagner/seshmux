@@ -75,10 +75,13 @@ export async function readSessionNames(): Promise<SessionNames> {
 export async function setSessionName(provider: string, sessionId: string, name: unknown): Promise<string | null> {
   const key = sessionNameKey(provider, sessionId);
   const clean = normalizeSessionName(name);
-  // A clear of a name that was never set changes nothing — skip the write (every
-  // json-store update is a temp+rename, the EPERM/EBUSY-prone path on win32).
-  // Racing a concurrent set is harmless: that set is serialized and lands anyway.
-  if (!clean && !(key in (await readSessionNames()))) return null;
+  // Every decision happens INSIDE the serialized update — no read-then-decide
+  // fast-path outside it. A clear that checked existence outside the queue could
+  // see "absent" while a set of the same key was still queued, return (and so
+  // broadcast) null, and then the set would land: the server ends up holding the
+  // name while every client was told it was cleared. A no-op (clear of an absent
+  // key, same name again) leaves the content unchanged, and json-store skips
+  // unchanged writes.
   // ponytail: entries for sessions later deleted from the agent store are never
   // pruned. Each is ~100 bytes; prune against the provider listings if it matters.
   await getStore().update((cur) => {
@@ -89,6 +92,7 @@ export async function setSessionName(provider: string, sessionId: string, name: 
       delete next[key];
       return next;
     }
+    if (base[key] === clean) return base; // unchanged → no write
     return { ...base, [key]: clean };
   });
   return clean || null;

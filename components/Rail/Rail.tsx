@@ -12,6 +12,7 @@ import {
   SESSION_NAME_MAX,
   customNameFor,
   displayName,
+  normalizeSessionName,
   renameSession,
   sessionNameKey,
   useSessionNames,
@@ -898,8 +899,9 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                                 initial={custom ?? autoTitle}
                                 placeholder={autoTitle}
                                 maxLength={SESSION_NAME_MAX}
+                                normalize={normalizeSessionName}
                                 ariaLabel="Rename session"
-                                onCancel={() => endRename(rowKey, true)}
+                                onCancel={(viaKeyboard) => endRename(rowKey, viaKeyboard)}
                                 onCommit={(value, viaKeyboard) => {
                                   endRename(rowKey, viaKeyboard);
                                   renameSession(s.provider, s.id, value, autoTitle).catch((err) =>
@@ -934,7 +936,7 @@ export default function Rail({ jumpTo, onJumped, onOpenCustomizations, onOpenGlo
                       type="button"
                       className={rowClass}
                       data-rename-key={rowKey}
-                      title={custom ? `${custom}\n(auto: ${autoTitle}) — double-click to rename` : 'Double-click to rename'}
+                      title={custom ? `${custom}\n(auto: ${autoTitle}) — double-click or F2 to rename` : 'Double-click or F2 to rename'}
                       onClick={(e) => {
                         // The 2nd click of a double-click (rename) must not re-dispatch.
                         // The 1st still opens the session — accepted: renaming what you

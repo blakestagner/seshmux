@@ -6,7 +6,14 @@ import { getProjects, getConfig, getEnv, getLive, liveIsAuthoritative, notify, r
 import { pruneDismissed, readDismissed, removeDismissed } from '../lib/client/dismissed';
 import { readTabLayout, persistTabLayout, orderByLayout, minimizedFromLayout, type TabLayoutEntry } from '../lib/client/tab-layout';
 import { openEventsSocket } from '../lib/client/ws';
-import { applySessionName, displayName, loadSessionNames, sessionNamesSnapshot, useSessionNames } from '../lib/client/session-names';
+import {
+  applySessionName,
+  displayName,
+  loadSessionNamesWithRetry,
+  resyncSessionNames,
+  sessionNamesSnapshot,
+  useSessionNames,
+} from '../lib/client/session-names';
 import type { EventMessage } from '../lib/client/ws';
 import TopNav from '../components/TopNav/TopNav';
 import CustomizationsModal from '../components/CustomizationsModal/CustomizationsModal';
@@ -118,6 +125,11 @@ function AppShell() {
   const { state, dispatch } = useAppState();
   // Custom session names (issue #63) — applied at render, never written into tab.label.
   const sessionNames = useSessionNames();
+  // Load names on mount too, not only on events-WS connect: if the socket is slow
+  // (or never connects) names must not stay empty. Retries with backoff.
+  useEffect(() => {
+    void loadSessionNamesWithRetry();
+  }, []);
   const [jumpTo, setJumpTo] = useState<{ projectId: string; sessionId: string } | null>(null);
   // ALL currently-waiting sessions, oldest first — the toast aggregates them
   // ("2 sessions need input") and Jump walks the queue front-to-back.
@@ -595,7 +607,8 @@ function AppShell() {
           const tab = tabsRef.current.find((t) => t.kind === 'term' && t.ptyId === e.ptyId);
           // `repo` is the raw tab label (Jump reopens a tab with it — a custom name
           // must never be baked into a label, or clearing it could not revert);
-          // `shown` is what the user reads: the custom session name when set.
+          // `shown` is the OS-notification text: the custom session name when set.
+          // (The in-app toast derives its text at render, so it follows renames.)
           const repo = tab?.label ?? 'A session';
           const shown = tab ? displayName(sessionNamesSnapshot(), tab.provider, tab.sessionId, repo) : repo;
           const prevNI = prevNIRef.current[e.ptyId];
@@ -711,7 +724,7 @@ function AppShell() {
         setRestarting(false);
         // Resync names on every (re)connect: a rename made while this socket was
         // down (server restart) would otherwise never reach this page.
-        loadSessionNames().catch(() => {});
+        void resyncSessionNames();
       },
     );
 
@@ -1330,7 +1343,11 @@ function AppShell() {
       />
       <Toast
         open={waitingToasts.length > 0}
-        repos={waitingToasts.map((w) => w.shown)}
+        // Derived at render so a rename while the toast is up relabels it too.
+        repos={waitingToasts.map((w) => {
+          const t = state.tabs.find((x) => x.kind === 'term' && x.ptyId === w.ptyId);
+          return t ? displayName(sessionNames, t.provider, t.sessionId, w.repo) : w.shown;
+        })}
         reason="permission prompt"
         onJump={jumpToWaiting}
         onClose={() => setWaitingToasts([])}

@@ -59,19 +59,35 @@ describe('isValidSessionId', () => {
     expect(isValidSessionId('')).toBe(false);
     expect(isValidSessionId(undefined)).toBe(false);
   });
-
-  it('clearing a name that was never set does not write the file', async () => {
-    const m = await mod();
-    expect(await m.setSessionName('claude', 'ghost', '')).toBeNull();
-    const { existsSync } = await import('node:fs');
-    expect(existsSync(join(dir, 'session-names.json'))).toBe(false);
-  });
 });
 
 describe('session-names store', () => {
   it('reads empty when no file exists', async () => {
     const { readSessionNames } = await mod();
     expect(await readSessionNames()).toEqual({});
+  });
+
+  it('a clear issued right after a set is serialized behind it (final state: cleared)', async () => {
+    const m = await mod();
+    // Not awaited in between: the clear is queued while the set is still pending.
+    // An existence check outside the write queue would see "absent", return null
+    // early, and then the set would land — leaving 'A' on disk after a clear.
+    const [setRes, clearRes] = await Promise.all([
+      m.setSessionName('claude', 'race', 'A'),
+      m.setSessionName('claude', 'race', ''),
+    ]);
+    expect(setRes).toBe('A');
+    expect(clearRes).toBeNull();
+    expect(await m.readSessionNames()).toEqual({});
+    m._resetSessionNamesForTest();
+    expect(await m.readSessionNames()).toEqual({}); // and on disk
+  });
+
+  it('clearing a name that was never set is a no-op that does not write the file', async () => {
+    const m = await mod();
+    expect(await m.setSessionName('claude', 'ghost', '')).toBeNull();
+    const { existsSync } = await import('node:fs');
+    expect(existsSync(join(dir, 'session-names.json'))).toBe(false);
   });
 
   it('sets a name keyed by provider:sessionId and persists it to the config dir', async () => {

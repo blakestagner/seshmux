@@ -37,9 +37,11 @@ describe('renameSession', () => {
     putSessionName.mockResolvedValue({ provider: 'claude', sessionId: 's1', name: 'Fix login' });
     expect(await m.renameSession('claude', 's1', '  Fix   login ', 'first prompt')).toBe('Fix login');
     expect(putSessionName).toHaveBeenCalledWith('claude', 's1', 'Fix login');
+    expect(m.sessionNamesSnapshot()).toEqual({ 'claude:s1': 'Fix login' });
+    // A reconnect reload agreeing with the server keeps it.
     getSessionNames.mockResolvedValue({ names: { 'claude:s1': 'Fix login' } });
     await m.loadSessionNames();
-    expect(m.customNameFor({ 'claude:s1': 'Fix login' }, 'claude', 's1')).toBe('Fix login');
+    expect(m.customNameFor(m.sessionNamesSnapshot(), 'claude', 's1')).toBe('Fix login');
   });
 
   it('committing the untouched auto title (or blank) with no custom name is a no-op', async () => {
@@ -93,6 +95,71 @@ describe('ordering', () => {
     resolveGet({ names: { 'claude:s1': 'stale', 'claude:s2': 'other' } });
     await load;
     expect(m.sessionNamesSnapshot()).toEqual({ 'claude:s1': 'from WS', 'claude:s2': 'other' });
+  });
+});
+
+describe('loadSessionNamesWithRetry', () => {
+  it('retries a transient failure, then applies the names', async () => {
+    const m = await fresh();
+    getSessionNames
+      .mockRejectedValueOnce(Object.assign(new Error('down'), { status: 503 }))
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValueOnce({ names: { 'claude:s1': 'N' } });
+    await m.loadSessionNamesWithRetry(5, 1);
+    expect(getSessionNames).toHaveBeenCalledTimes(3);
+    expect(m.sessionNamesSnapshot()).toEqual({ 'claude:s1': 'N' });
+  });
+
+  it('does not retry a permanent 4xx, and gives up (logged, never rejects) after N attempts', async () => {
+    const m = await fresh();
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    getSessionNames.mockRejectedValue(Object.assign(new Error('bad token'), { status: 401 }));
+    await m.loadSessionNamesWithRetry(5, 1);
+    expect(getSessionNames).toHaveBeenCalledTimes(1);
+    getSessionNames.mockReset();
+    getSessionNames.mockRejectedValue(new Error('network'));
+    await m.loadSessionNamesWithRetry(3, 1);
+    expect(getSessionNames).toHaveBeenCalledTimes(3);
+    expect(err).toHaveBeenCalledTimes(2);
+    err.mockRestore();
+  });
+
+  it('retries 408 and 429 (transient 4xx)', async () => {
+    const m = await fresh();
+    getSessionNames
+      .mockRejectedValueOnce(Object.assign(new Error('slow'), { status: 408 }))
+      .mockRejectedValueOnce(Object.assign(new Error('busy'), { status: 429 }))
+      .mockResolvedValueOnce({ names: {} });
+    await m.loadSessionNamesWithRetry(5, 1);
+    expect(getSessionNames).toHaveBeenCalledTimes(3);
+  });
+
+  it('resyncSessionNames (WS onOpen) always sends its own GET, even while a chain is in flight', async () => {
+    const m = await fresh();
+    let resolveBoot!: (v: unknown) => void;
+    getSessionNames
+      .mockImplementationOnce(() => new Promise((r) => (resolveBoot = r))) // boot chain, pre-subscribe
+      .mockResolvedValueOnce({ names: { 'claude:s1': 'post-subscribe' } });
+    const boot = m.loadSessionNamesWithRetry(5, 1);
+    await m.resyncSessionNames();
+    expect(getSessionNames).toHaveBeenCalledTimes(2); // did not just join the boot GET
+    expect(m.sessionNamesSnapshot()).toEqual({ 'claude:s1': 'post-subscribe' });
+    // The older boot GET resolving late must not overwrite the newer snapshot.
+    resolveBoot({ names: {} });
+    await boot;
+    expect(m.sessionNamesSnapshot()).toEqual({ 'claude:s1': 'post-subscribe' });
+  });
+
+  it('concurrent callers share one in-flight chain', async () => {
+    const m = await fresh();
+    let resolve!: (v: unknown) => void;
+    getSessionNames.mockImplementationOnce(() => new Promise((r) => (resolve = r)));
+    const a = m.loadSessionNamesWithRetry(5, 1);
+    const b = m.loadSessionNamesWithRetry(5, 1);
+    expect(a).toBe(b);
+    resolve({ names: {} });
+    await Promise.all([a, b]);
+    expect(getSessionNames).toHaveBeenCalledTimes(1);
   });
 });
 

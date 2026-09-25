@@ -33,6 +33,10 @@ const changedAt = new Map<string, number>();
 // Latest renameSession request per key: an older request's response/rollback
 // must never overwrite a newer rename's value.
 const latestReq = new Map<string, number>();
+// Load ordering: each GET is numbered; a response older than the newest applied
+// one is dropped (a slow boot GET must not overwrite a later reconnect resync).
+let loadSeq = 0;
+let appliedLoadSeq = 0;
 
 function setNames(next: SessionNames): void {
   names = next;
@@ -88,7 +92,11 @@ export function useSessionNames(): SessionNames {
 /** (Re)load every name from the server — on boot and on every events-WS reconnect. */
 export async function loadSessionNames(): Promise<void> {
   const startedAt = gen;
+  const seq = ++loadSeq;
   const res = await getSessionNames();
+  // An older GET that resolves after a newer one already applied is stale.
+  if (seq < appliedLoadSeq) return;
+  appliedLoadSeq = seq;
   const snapshot: SessionNames = res && typeof res.names === 'object' && res.names ? { ...res.names } : {};
   // A key changed locally after this GET was sent is newer than the snapshot — keep it.
   for (const [key, at] of changedAt) {
@@ -97,6 +105,58 @@ export async function loadSessionNames(): Promise<void> {
     else delete snapshot[key];
   }
   setNames(snapshot);
+}
+
+// The one retry chain currently running, shared by every concurrent caller (mount
+// + WS onOpen fire together at boot; a flapping socket calls onOpen repeatedly).
+let inflight: Promise<void> | null = null;
+
+/**
+ * loadSessionNames() with retry: a failed load (server mid-restart, a 5xx, a network
+ * error) would otherwise leave every custom name missing until the next WS
+ * reconnect. Backs off delayMs × 1, 2, 4, 8, then gives up and logs (the next
+ * reconnect tries again). A 4xx is permanent — no retry — except 408/429, which
+ * are transient. Concurrent calls share one chain. Never rejects.
+ *
+ * This is the BOOT/fallback loader. The events-WS onOpen must not use it directly:
+ * joining an in-flight chain could reuse a GET sent before the socket subscribed
+ * and miss a rename broadcast in that gap — see resyncSessionNames().
+ */
+export function loadSessionNamesWithRetry(attempts = 5, delayMs = 1000): Promise<void> {
+  if (inflight) return inflight;
+  inflight = (async () => {
+    for (let i = 0; ; i++) {
+      try {
+        await loadSessionNames();
+        return;
+      } catch (e) {
+        const status = (e as { status?: number }).status;
+        const permanent =
+          typeof status === 'number' && status >= 400 && status < 500 && status !== 408 && status !== 429;
+        if (permanent || i >= attempts - 1) {
+          console.error('[seshmux] loading session names failed:', e);
+          return;
+        }
+        await new Promise((r) => setTimeout(r, delayMs * 2 ** i));
+      }
+    }
+  })().finally(() => {
+    inflight = null;
+  });
+  return inflight;
+}
+
+/**
+ * Events-WS (re)connect resync: ALWAYS issues its own fresh GET — sent after the
+ * socket subscribed, so no rename can fall in the gap between snapshot and live
+ * events — and only on failure falls back to the retry chain. Never rejects.
+ */
+export async function resyncSessionNames(): Promise<void> {
+  try {
+    await loadSessionNames();
+  } catch {
+    await loadSessionNamesWithRetry();
+  }
 }
 
 /** Apply one change locally (from the events WS or our own PUT's response). */

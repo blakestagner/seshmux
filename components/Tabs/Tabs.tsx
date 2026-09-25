@@ -8,7 +8,13 @@ import IconButton from '../ui/IconButton/IconButton';
 import LinkChip from '../ui/LinkChip/LinkChip';
 import InlineRename from '../ui/InlineRename/InlineRename';
 import { useAppState } from '../../lib/client/store';
-import { SESSION_NAME_MAX, customNameFor, renameSession, useSessionNames } from '../../lib/client/session-names';
+import {
+  SESSION_NAME_MAX,
+  customNameFor,
+  normalizeSessionName,
+  renameSession,
+  useSessionNames,
+} from '../../lib/client/session-names';
 import { endTermSession } from '../../lib/client/api';
 import type { Tab } from '../../lib/client/store';
 import styles from './Tabs.module.scss';
@@ -77,7 +83,7 @@ export default function Tabs() {
             role="button"
             tabIndex={0}
             draggable={!renaming}
-            title={canRename ? `${label} — double-click to rename` : undefined}
+            title={canRename ? `${label} — double-click or F2 to rename` : undefined}
             className={[
               styles.tab,
               t.id === state.activeTab ? styles.active : '',
@@ -126,8 +132,9 @@ export default function Tabs() {
                   initial={label}
                   placeholder={t.label}
                   maxLength={SESSION_NAME_MAX}
+                  normalize={normalizeSessionName}
                   ariaLabel="Rename session"
-                  onCancel={() => endRename(t.id, true)}
+                  onCancel={(viaKeyboard) => endRename(t.id, viaKeyboard)}
                   onCommit={(value, viaKeyboard) => {
                     endRename(t.id, viaKeyboard);
                     // Only a transcript tab's label IS the session's auto title; a term

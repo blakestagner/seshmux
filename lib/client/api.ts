@@ -59,7 +59,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     // Surface the server's {error} message when present — callers show it to the user.
     const body = await res.json().catch(() => null);
     const msg = body && typeof body.error === 'string' ? body.error : `${path} -> ${res.status}`;
-    throw new Error(msg);
+    // `status` lets a caller tell a permanent 4xx from a retryable failure.
+    throw Object.assign(new Error(msg), { status: res.status });
   }
   // Only when actually set — this runs on every poll, and sessionStorage
   // writes are synchronous.
