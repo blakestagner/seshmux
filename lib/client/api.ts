@@ -59,7 +59,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     // Surface the server's {error} message when present — callers show it to the user.
     const body = await res.json().catch(() => null);
     const msg = body && typeof body.error === 'string' ? body.error : `${path} -> ${res.status}`;
-    throw new Error(msg);
+    // `status` lets a caller tell a permanent 4xx from a retryable failure.
+    throw Object.assign(new Error(msg), { status: res.status });
   }
   // Only when actually set — this runs on every poll, and sessionStorage
   // writes are synchronous.
@@ -1077,4 +1078,18 @@ export function compactMemory(opts: { retentionDays?: number; maxRecords?: numbe
   kept: number;
 }> {
   return req('/api/memory/compact', { method: 'POST', body: JSON.stringify(opts) });
+}
+
+// Custom session display names (issue #63). Keyed `${provider}:${sessionId}`;
+// see lib/client/session-names.ts for the client-side cache + hook.
+export function getSessionNames(): Promise<{ names: Record<string, string> }> {
+  return req('/api/session-names');
+}
+
+export function putSessionName(
+  provider: ProviderId,
+  sessionId: string,
+  name: string,
+): Promise<{ provider: ProviderId; sessionId: string; name: string | null }> {
+  return req('/api/session-names', { method: 'PUT', body: JSON.stringify({ provider, sessionId, name }) });
 }

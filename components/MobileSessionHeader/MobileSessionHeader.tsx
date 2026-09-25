@@ -3,6 +3,7 @@
 import StatusDot from '../ui/StatusDot/StatusDot';
 import ProviderBadge from '../ui/ProviderBadge/ProviderBadge';
 import type { Tab } from '../../lib/client/store';
+import { displayName, useSessionNames } from '../../lib/client/session-names';
 import styles from './MobileSessionHeader.module.scss';
 
 // Mobile-only session header (mockup screen 02): replaces the desktop tab strip
@@ -26,7 +27,7 @@ export default function MobileSessionHeader({
   onBack: () => void;
   onMenu: () => void;
 }) {
-  const sub = [tab.projectId ? tab.label : null, tab.branch].filter(Boolean);
+  const label = displayName(useSessionNames(), tab.provider, tab.sessionId, tab.label);
   return (
     <div className={styles.header}>
       <button type="button" className={styles.back} onClick={onBack} aria-label="Back to sessions">
@@ -37,7 +38,7 @@ export default function MobileSessionHeader({
       <div className={styles.meta}>
         <div className={styles.titleRow}>
           <StatusDot status={dotStatus(tab)} size={7} pulse={false} />
-          <span className={styles.title}>{tab.label}</span>
+          <span className={styles.title}>{label}</span>
         </div>
         {tab.branch ? <span className={styles.sub}>{tab.branch}</span> : null}
       </div>

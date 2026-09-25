@@ -2,7 +2,7 @@
 // update queue, parse-failure-tolerant read. Each case runs against a fresh tmp
 // dir so the on-disk atomicity/torn-file mechanics are exercised for real.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createJsonStore } from '../../server/lib/json-store';
@@ -35,6 +35,45 @@ describe('createJsonStore', () => {
     expect(persisted).toEqual({ items: ['a'] });
     expect(await store.read()).toEqual({ items: ['a'] });
     expect(() => JSON.parse(readFileSync(file, 'utf8'))).not.toThrow();
+  });
+
+  it('a no-op update() does not write (no file, or content unchanged), and stays serialized', async () => {
+    const store = createJsonStore<Bag>(file, empty);
+    await store.update((cur) => cur);
+    expect(readdirSync(dir)).toEqual([]); // nothing created for an empty() result
+    await store.update((cur) => ({ items: [...cur.items, 'a'] }));
+    const { mtimeMs } = statSync(file);
+    await new Promise((r) => setTimeout(r, 30));
+    await store.update((cur) => ({ items: [...cur.items] })); // new object, same content
+    expect(statSync(file).mtimeMs).toBe(mtimeMs); // not rewritten
+    const [, noop] = await Promise.all([
+      store.update((cur) => ({ items: [...cur.items, 'b'] })),
+      store.update((cur) => cur), // queued behind the write above — sees 'b'
+    ]);
+    expect(noop).toEqual({ items: ['a', 'b'] });
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ items: ['a', 'b'] });
+  });
+
+  it('a callback that mutates cur in place and returns it still persists', async () => {
+    const store = createJsonStore<Bag>(file, empty);
+    await store.update((cur) => {
+      cur.items.push('mutated');
+      return cur;
+    });
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ items: ['mutated'] });
+  });
+
+  it('a corrupt file heals even on a no-op update', async () => {
+    writeFileSync(file, '{"items": [tor');
+    const store = createJsonStore<Bag>(file, empty);
+    const err = console.error;
+    console.error = () => {};
+    try {
+      await store.update((cur) => cur);
+    } finally {
+      console.error = err;
+    }
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ items: [] });
   });
 
   it('A1: garbage bytes → read() returns empty() and does not throw; update() recovers', async () => {

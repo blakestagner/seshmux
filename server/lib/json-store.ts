@@ -10,7 +10,10 @@ import path from 'node:path';
 export interface JsonStore<T> {
   path: string;
   read(): Promise<T>;
-  /** Serialized read-modify-write; the returned value is what was persisted. */
+  /**
+   * Serialized read-modify-write; the returned value is what is on disk afterwards.
+   * A result identical to what is already stored skips the write (no file churn).
+   */
   update(fn: (cur: T) => T | Promise<T>): Promise<T>;
 }
 
@@ -23,21 +26,28 @@ export function createJsonStore<T>(filePath: string, empty: () => T): JsonStore<
   // keeps flowing via the .catch below so one bad callback can't wedge the queue.
   let tail: Promise<unknown> = Promise.resolve();
 
-  async function read(): Promise<T> {
+  // The parsed value plus the exact file text it came from (null when there is no
+  // readable file) — update() compares against the text to skip no-op writes.
+  async function readWithRaw(): Promise<{ value: T; raw: string | null }> {
     let raw: string;
     try {
       raw = await readFile(filePath, 'utf8');
     } catch {
-      return empty(); // ENOENT (and any read error): startup path never throws.
+      return { value: empty(), raw: null }; // ENOENT (and any read error): startup path never throws.
     }
     try {
-      return JSON.parse(raw) as T;
+      return { value: JSON.parse(raw) as T, raw };
     } catch (e) {
       // Torn/corrupt file (A1): log and behave as empty so a bad file self-heals
-      // on the next update() rather than crashing the startup path.
+      // on the next update() rather than crashing the startup path. (Self-heals even
+      // on a no-op update: empty() serializes differently from the corrupt text.)
       console.error('[seshmux] json-store: corrupt file, treating as empty:', filePath, e);
-      return empty();
+      return { value: empty(), raw };
     }
+  }
+
+  async function read(): Promise<T> {
+    return (await readWithRaw()).value;
   }
 
   // win32 fails rename() with EPERM/EBUSY when the destination is momentarily
@@ -60,11 +70,15 @@ export function createJsonStore<T>(filePath: string, empty: () => T): JsonStore<
     }
   }
 
-  async function writeAtomic(value: T): Promise<void> {
+  function serialize(value: T): string {
+    return JSON.stringify(value, null, 2);
+  }
+
+  async function writeAtomic(text: string): Promise<void> {
     await mkdir(path.dirname(filePath), { recursive: true });
     const tmp = `${filePath}.${randomBytes(6).toString('hex')}.tmp`;
     try {
-      await writeFile(tmp, JSON.stringify(value, null, 2));
+      await writeFile(tmp, text);
       await renameWithRetry(tmp);
     } catch (e) {
       // Never leave the temp behind: an abandoned write used to orphan its file
@@ -77,9 +91,16 @@ export function createJsonStore<T>(filePath: string, empty: () => T): JsonStore<
 
   function update(fn: (cur: T) => T | Promise<T>): Promise<T> {
     const run = tail.then(async () => {
-      const cur = await read();
+      const { value: cur, raw } = await readWithRaw();
       const next = await fn(cur);
-      await writeAtomic(next);
+      // Skip the temp+rename (the EPERM/EBUSY-prone path on win32) when the write
+      // would reproduce the file byte-for-byte — or, with no file, when the result
+      // is just empty(). Decided by CONTENT, not object identity, so a callback
+      // that mutates `cur` in place still persists, and a corrupt file still heals.
+      // Still inside the serialized queue, so the decision can't race a write.
+      const text = serialize(next);
+      const unchanged = raw !== null ? text === raw : text === serialize(empty());
+      if (!unchanged) await writeAtomic(text);
       return next;
     });
     // The tail must survive a rejected run so the next update still executes.
