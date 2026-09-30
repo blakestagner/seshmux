@@ -255,6 +255,54 @@
   margin-top: 5px;
 }
 
+// Row + its archive/restore action (a sibling button — buttons can't nest).
+// The action sits on the sub line's right edge; its hidden state is IconButton's
+// own revealOnHover, and the row's hover/focus reveals it (two-class selectors,
+// so they outrank the primitive's .reveal regardless of CSS chunk order). The
+// sub line yields that space while it shows so the two never overlap.
+.sessRow {
+  position: relative;
+}
+
+.sessAction {
+  position: absolute;
+  right: 6px;
+  bottom: 5px;
+}
+
+// Keep the row's hover fill while the pointer is on the action itself.
+.sessRow:hover .sess:not(.selected) {
+  background: var(--bg-hover);
+}
+
+.sessRow:hover .sessAction,
+.sessRow .sessAction:focus-visible {
+  opacity: 1;
+}
+
+// No hover on touch: an invisible-but-tappable button would archive by accident,
+// so there it is simply always shown.
+@media (hover: none) {
+  .sessRow .sessAction {
+    opacity: 1;
+  }
+
+  .sessRow .sessSub {
+    padding-right: 26px;
+  }
+}
+
+.sessRow:hover .sessSub,
+.sessRow.archived .sessSub {
+  padding-right: 26px;
+}
+
+// Archived row (inside the project's archived group): dimmed like a hidden
+// project; restore is always shown (not revealOnHover) — always one click.
+.sessRow.archived .sess {
+  opacity: 0.6;
+}
+
 .sessInfo {
   flex: 1;
   min-width: 0;

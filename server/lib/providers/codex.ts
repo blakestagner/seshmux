@@ -102,14 +102,17 @@ interface RolloutSummary {
   startedAt: number | null;
 }
 
-// Walk YYYY/MM/DD/rollout-*.jsonl under root.
-async function findRolloutFiles(root: string): Promise<string[]> {
+// Walk YYYY/MM/DD/rollout-*.jsonl under root. Lenient by default (an unreadable dir is
+// skipped — right for listing). `strict` fails CLOSED instead: any unreadable dir throws,
+// for the archive-pruning existence check, where "skipped" would read as "session gone".
+async function findRolloutFiles(root: string, strict = false): Promise<string[]> {
   const out: string[] = [];
   async function walk(dir: string, depth: number): Promise<void> {
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
-    } catch {
+    } catch (e) {
+      if (strict) throw e;
       return;
     }
     for (const e of entries) {
@@ -420,6 +423,21 @@ export class CodexProvider implements AgentProvider {
       results.push({ file, mtime, touchedAt, s });
     }
     return results;
+  }
+
+  // Project-independent and fail-CLOSED (see AgentProvider.allSessionIds): a strict walk
+  // (throws on an unreadable dir). Each rollout contributes its filename id AND the
+  // session_meta `payload.id` readSummary resolves (the id listSessions reports); a
+  // rollout that can't be read throws rather than silently dropping out of the set.
+  // readSummary is memoized by (file, mtime), so a warm store costs one stat per file.
+  async allSessionIds(): Promise<Set<string>> {
+    const ids = new Set<string>();
+    for (const file of await findRolloutFiles(this.root, true)) {
+      ids.add(sessionIdFromFile(file));
+      const st = await stat(file);
+      ids.add((await readSummary(file, Math.floor(st.mtimeMs))).sessionId);
+    }
+    return ids;
   }
 
   private async fileForSession(projectId: string, sessionId: string): Promise<string | null> {

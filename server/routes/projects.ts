@@ -1,6 +1,7 @@
 // GET /api/projects            -> Project[] merged across ALL providers (same repo path in
 //                                 two stores = ONE entry, sessionCount summed).
-// GET /api/projects/:id/sessions?before&limit&q -> SessionMeta[] merged then sorted+sliced.
+// GET /api/projects/:id/sessions?before&limit&q&archived=exclude|only -> SessionMeta[]
+//                                 merged, archive-filtered, then sorted+sliced.
 //
 // No provider specifics here: everything flows through getProviders() (hard rule 3).
 
@@ -9,6 +10,7 @@ import { mkdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pickFolder, pickerAvailable } from '../lib/folder-picker';
+import { filterArchived } from '../lib/archived-sessions';
 import { readEntries } from '../lib/live-ledger';
 import { getProviders } from '../lib/providers/types';
 import type { Project, SessionMeta } from '../lib/providers/types';
@@ -225,16 +227,62 @@ export default async function projectsRoutes(f: FastifyInstance) {
 
   f.get<{
     Params: { id: string };
-    Querystring: { before?: string; limit?: string; q?: string };
+    Querystring: { before?: string; limit?: string; q?: string; archived?: string };
   }>('/api/projects/:id/sessions', async (req) => {
     const providers = await getProviders();
     const q = req.query.q;
+    const listedAt = Date.now(); // archive records newer than this are never judged by this listing
+    const failed = new Set<string>();
     const lists = await Promise.all(
-      providers.map((p) => p.listSessions(req.params.id, { q }).catch(() => [] as SessionMeta[])),
+      providers.map((p) =>
+        p.listSessions(req.params.id, { q }).catch(() => {
+          failed.add(p.id);
+          return [] as SessionMeta[];
+        }),
+      ),
     );
 
     // Merge, then sort by mtime desc, THEN apply before/limit on the merged list.
     let sessions = lists.flat().sort((a, b) => b.mtime - a.mtime);
+    // Per-request memo: one store walk per provider however many records are judged.
+    const memo = <T,>(fn: (k: string) => Promise<T>) => {
+      const m = new Map<string, Promise<T>>();
+      return (k: string) => {
+        if (!m.has(k)) m.set(k, fn(k));
+        return m.get(k)!;
+      };
+    };
+    // sessionId → the project it lists under NOW, for one provider. Only built when a
+    // record's session is still in the store yet missing from this project (it
+    // re-grouped, e.g. after workspace finish) — rare, so the full sweep is fine.
+    const sessionHomes = memo(async (provider) => {
+      const p = providers.find((x) => x.id === provider);
+      const homes = new Map<string, string>();
+      if (!p) return homes;
+      for (const proj of await p.scanProjects()) {
+        if (proj.id === req.params.id || isTmpProject(proj.path)) continue;
+        for (const s of await p.listSessions(proj.id).catch(() => [] as SessionMeta[])) homes.set(s.id, proj.id);
+      }
+      return homes;
+    });
+    // Archived sessions (archived-sessions.ts): filtered BEFORE paging, so a page
+    // of `limit` is never silently short. Absent param = include (old callers).
+    const mode = req.query.archived;
+    if (mode === 'exclude' || mode === 'only') {
+      sessions = await filterArchived(sessions, mode, {
+        projectId: req.params.id,
+        listedAt,
+        // Only an unfiltered listing that actually succeeded may even nominate a
+        // record as stale — and the provider must then confirm the transcript is
+        // gone (see filterArchived's guards).
+        completeProviders: q ? [] : providers.map((p) => p.id).filter((id) => !failed.has(id)),
+        existingIds: memo((provider) => {
+          const p = providers.find((x) => x.id === provider);
+          return p?.allSessionIds ? p.allSessionIds() : Promise.resolve(null); // can't tell → keep
+        }),
+        locate: async (provider, sessionId) => (await sessionHomes(provider)).get(sessionId) ?? null,
+      });
+    }
     const before = req.query.before != null ? Number(req.query.before) : undefined;
     if (before != null && !Number.isNaN(before)) sessions = sessions.filter((s) => s.mtime < before);
     const limit = req.query.limit != null ? Number(req.query.limit) : undefined;

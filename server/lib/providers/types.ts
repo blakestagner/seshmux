@@ -118,6 +118,12 @@ export interface AgentProvider {
   detect(): Promise<DetectResult>;
   scanProjects(): Promise<Project[]>;
   listSessions(projectId: string, opts?: ListSessionOpts): Promise<SessionMeta[]>;
+  // Every session id whose transcript exists ANYWHERE in the store (any project). One
+  // walk answers "does X still exist" for any number of ids. Used to decide whether a
+  // seshmux archive record may be dropped, so it must fail CLOSED: THROW when any part
+  // of the store can't be read (never a quietly short set for an unreadable dir).
+  // Optional — a provider without it simply never has its archive records pruned.
+  allSessionIds?(): Promise<Set<string>>;
   // `truncated` = the oldest history was dropped by a byte cap (huge session); the client
   // surfaces it so a partial transcript never looks complete.
   parseTranscript(
