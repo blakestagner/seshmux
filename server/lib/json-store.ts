@@ -15,6 +15,9 @@ export interface JsonStore<T> {
    * A result identical to what is already stored skips the write (no file churn).
    */
   update(fn: (cur: T) => T | Promise<T>): Promise<T>;
+  /** Serialized atomic write of a value the caller already computed (no read) —
+   *  for a caller that does its own, stricter read (archived-sessions.ts). */
+  write(value: T): Promise<T>;
 }
 
 // How many times writeAtomic() re-attempts a rename that failed EPERM/EBUSY.
@@ -108,5 +111,14 @@ export function createJsonStore<T>(filePath: string, empty: () => T): JsonStore<
     return run;
   }
 
-  return { path: filePath, read, update };
+  function write(value: T): Promise<T> {
+    const run = tail.then(async () => {
+      await writeAtomic(serialize(value));
+      return value;
+    });
+    tail = run.catch(() => {});
+    return run;
+  }
+
+  return { path: filePath, read, update, write };
 }

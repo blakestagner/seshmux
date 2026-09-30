@@ -130,7 +130,7 @@ function AppShell() {
   useEffect(() => {
     void loadSessionNamesWithRetry();
   }, []);
-  const [jumpTo, setJumpTo] = useState<{ projectId: string; sessionId: string } | null>(null);
+  const [jumpTo, setJumpTo] = useState<{ projectId: string; sessionId: string; provider?: ProviderId } | null>(null);
   // ALL currently-waiting sessions, oldest first — the toast aggregates them
   // ("2 sessions need input") and Jump walks the queue front-to-back.
   const [waitingToasts, setWaitingToasts] = useState<{ ptyId: string; repo: string; shown: string }[]>([]);
@@ -976,7 +976,7 @@ function AppShell() {
   }
 
   function handlePickHit(hit: SearchHit) {
-    setJumpTo({ projectId: hit.project, sessionId: hit.sessionId });
+    setJumpTo({ projectId: hit.project, sessionId: hit.sessionId, provider: hit.provider });
     dispatch({
       type: 'openSession',
       sessionId: hit.sessionId,
