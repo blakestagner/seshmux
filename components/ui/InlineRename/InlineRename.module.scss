@@ -1,0 +1,23 @@
+@use '../../../styles/typography' as *;
+
+// InlineRename — a label turned into a field in place. Same footprint as the text
+// it replaces (no height jump in a rail row or a pill tab); the accent border is the
+// only chrome, matching TextInput's focus state.
+
+.input {
+  @include t-inline-edit;
+  width: 100%;
+  min-width: 0;
+  // No negative margin: hosts clip overflow (ellipsis labels), which would shave
+  // the top/bottom border off.
+  margin: 0;
+  padding: 0 4px;
+  background: var(--bg-raised);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-xs);
+  outline: none;
+}
+
+.input::placeholder {
+  color: var(--text-faint);
+}

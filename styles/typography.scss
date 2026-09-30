@@ -29,6 +29,11 @@
 
 @mixin t-row { font-size: 12px; color: var(--text); } // session titles, tab labels
 
+// In-place edit field (InlineRename): takes the host label's text styling verbatim —
+// it sits inside the rail title / tab label span, which already carries t-row / t-tab,
+// so the text does not jump size or face when a label flips into edit mode.
+@mixin t-inline-edit { font: inherit; color: var(--text); }
+
 @mixin t-sub { font-size: 11px; color: var(--text-faint); } // settings sublabels
 
 @mixin t-meta {

@@ -34,6 +34,9 @@ export type EventMessage =
   // Ping-only — the client refetches GET /api/subagents. Lazily watched once a
   // viewer opens the session (spec: docs/todo/2026-07-10-subagent-viewer.md).
   | { event: 'subagents'; projectId: string; sessionId: string }
+  // A session's custom display name was set (name) or cleared (null → auto title)
+  // via PUT /api/session-names (issue #63). Carries the value, so no refetch.
+  | { event: 'session-name'; provider: ProviderId; sessionId: string; name: string | null }
   // A team's config.json changed (member joined / isActive flipped) or the team
   // ended (lead exited, config.json removed) — summary only, the client
   // refetches GET /api/teams/members (Task 4). Lazily watched once a client
