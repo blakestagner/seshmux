@@ -530,6 +530,14 @@ export default function TerminalPane({
       });
 
       term.onData((data) => socket?.send(data));
+      // Shift+Enter → newline. xterm sends a bare \r for it (same as Enter), which
+      // submits. \n (Ctrl+J) is the newline key both Claude Code and Codex accept,
+      // and a plain shell treats it as Enter, so nothing else breaks.
+      term.attachCustomKeyEventHandler((ev) => {
+        if (ev.key !== 'Enter' || !ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey) return true;
+        if (ev.type === 'keydown') socket?.send('\n');
+        return false;
+      });
       sendRef.current = (data: string) => socket?.send(data) ?? false;
       // Publish the writer so the right pane can load memory into this session. Scoped
       // to the socket lifetime, so "a sender exists" means "this terminal is writable".
