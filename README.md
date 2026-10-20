@@ -348,6 +348,8 @@ npm run build        # Next.js standalone bundle via scripts/build-standalone.sh
 
 **A status dot looks wrong.** `GET /api/term/<ptyId>/status-explain` shows exactly which pattern or hook produced it. If an agent update changed its TUI, drop a manifest override (see [Detection manifests](#detection-manifests-add-or-fix-an-agent-without-a-rebuild)).
 
+**Live sessions end the instant they start (Windows/macOS), or the launcher prints "live terminals cannot start".** npm 12+ skips install-time scripts for global and `npx` installs unless they are allowed — and still exits 0, so the install looks fine. node-pty's install script is what fetches its native binary on those platforms, so without it every PTY dies at spawn (`seshmuxd.log` shows `Cannot find module '../build/Release/conpty.node'`). Reinstall with `npm i -g seshmux --allow-scripts=seshmux,@homebridge/node-pty-prebuilt-multiarch`. The in-app updater and `seshmux update` pass that flag themselves and refuse to report success without the binary.
+
 **Windows: "running scripts is disabled on this system" when running `seshmux`.** PowerShell picked up npm's `seshmux.ps1` shim, which the default Restricted execution policy blocks. Recent versions remove that shim at install time (`npm i -g seshmux` again to pick that up). Immediate workarounds: run `seshmux.cmd`, or allow local scripts with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
 **MCP approval/wait stopped responding after a crash.** Fixed in current versions — the server now detects and reclaims stale `approval.sock`/`wait.sock` files on boot. If you're on an older version, delete the two `.sock` files in the config dir and restart.

@@ -227,3 +227,52 @@ describe('isDaemonStale', () => {
     expect(isDaemonStale(undefined, undefined)).toBe(false);
   });
 });
+
+// npm >=12 blocks a dependency's install scripts for global installs unless the package is named
+// in allow-scripts — and reports that as a WARNING with exit 0. node-pty's install script is what
+// fetches its native binary on win32/darwin, so the 2026-10-20 self-update to 0.9.0 "succeeded"
+// and then every session died at pty.spawn. applyUpdate must both ask for the scripts and refuse
+// to call that outcome ok. The parser itself is covered in test/bin/install-scripts.test.ts.
+describe('applyUpdate — install scripts (npm >=12 allow-scripts policy)', () => {
+  const blockedStderr = [
+    'npm warn install-scripts 1 package had install scripts blocked because they are not covered by allowScripts:',
+    'npm warn install-scripts   @homebridge/node-pty-prebuilt-multiarch@0.13.1 (install: node scripts/check-prebuild.js || prebuild-install --verbose || node scripts/install.js; postinstall: node scripts/post-install.js)',
+  ].join('\n');
+
+  it('passes --allow-scripts naming seshmux and node-pty', async () => {
+    const calls: string[][] = [];
+    await applyUpdate({
+      installMethod: 'global',
+      current: '0.9.0',
+      target: '0.9.1',
+      exec: async (cmd, args) => { calls.push([cmd, ...args]); return { stdout: 'ok' }; },
+    });
+    expect(calls[0]).toContain('--allow-scripts=seshmux,@homebridge/node-pty-prebuilt-multiarch');
+  });
+
+  it("reports ok:false, with the fix, when npm blocked node-pty's install script despite exit 0", async () => {
+    const res = await applyUpdate({
+      installMethod: 'global',
+      current: '0.8.0',
+      target: '0.9.0',
+      exec: async () => ({ stdout: 'changed 209 packages in 2m', stderr: blockedStderr }),
+    });
+    expect(res.ok).toBe(false);
+    expect(res.log).toContain('changed 209 packages'); // npm's own output is kept
+    expect(res.log).toContain('npm i -g seshmux@0.9.0 --allow-scripts=seshmux,@homebridge/node-pty-prebuilt-multiarch');
+    expect(res.previous).toBe('0.8.0');
+  });
+
+  it('still reports ok when npm only warned about something unrelated', async () => {
+    const res = await applyUpdate({
+      installMethod: 'global',
+      current: '0.8.0',
+      target: '0.9.0',
+      exec: async () => ({
+        stdout: 'changed 209 packages in 2m',
+        stderr: 'npm warn deprecated prebuild-install@7.1.3: No longer maintained. Please contact the author of the relevant native addon; alternatives are available.',
+      }),
+    });
+    expect(res.ok).toBe(true);
+  });
+});
