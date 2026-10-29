@@ -9,6 +9,7 @@
 import { execFile } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { cmdInvocation } from './win-args';
+import { npmGlobalInstallArgs, nativePtyProblem, nativePtyWarning } from '../../bin/lib/install-scripts.js';
 
 export type InstallMethod = 'global' | 'npx' | 'local';
 
@@ -226,11 +227,20 @@ export async function applyUpdate(deps: ApplyUpdateDeps): Promise<ApplyUpdateRes
   const spec = `seshmux@${version ?? 'latest'}`;
 
   try {
-    const { stdout, stderr } = await exec('npm', ['i', '-g', spec, '--prefer-online']);
+    // argv shared with `seshmux update` (bin/seshmux.js) via bin/lib/install-scripts.js.
+    const { stdout, stderr } = await exec('npm', npmGlobalInstallArgs(spec));
+    const log = [stdout, stderr].filter(Boolean).join('\n');
+    // npm >=12 exits 0 after BLOCKING a dependency's install script (its allow-scripts policy).
+    // For node-pty that script is what fetches the native binary on win32/darwin, so an `ok`
+    // here would hand the relaunch loop a version that ends every session at spawn. Fail instead.
+    const ptyProblem = nativePtyProblem(null, log);
+    if (ptyProblem) {
+      return { ok: false, log: `${log}\n${nativePtyWarning(ptyProblem, version ?? 'latest')}`, previous };
+    }
     // TODO(wire): after ok, the server must broadcast {event:'server-restarting'} on the
     // events ws and exit 75 so bin/seshmux.js's relaunch loop starts the new version. That
     // choreography lives in the server/bin layer, not here — this fn only ran the install.
-    return { ok: true, log: [stdout, stderr].filter(Boolean).join('\n'), previous };
+    return { ok: true, log, previous };
   } catch (e) {
     const err = e as { message?: string; stdout?: string; stderr?: string };
     const log = [err.stdout, err.stderr, err.message].filter(Boolean).join('\n');

@@ -19,6 +19,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { ensureDaemon, pidAlive, paths, configDir, daemonInfo, canSafelyRestartDaemon } = require('../daemon/ensure');
 const { cmdInvocation } = require('../daemon/win-args');
+const { npmGlobalInstallArgs, nativePtyProblem, nativePtyWarning } = require('./lib/install-scripts');
 const { parseHostPort, validateBindHost, isLoopback, displayHost } = require('./lib/host');
 
 // The daemon's pid, from the pidfile it writes in the config dir. null when it isn't running.
@@ -128,15 +129,32 @@ async function runUpdate(checkOnly) {
   const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   // spawnOpts carries windowsVerbatimArguments on the .cmd path: cmdInvocation has
   // already escaped the line and node must not re-escape it. Still not shell:true.
-  const [file, spawnArgs, spawnOpts] = cmdInvocation(npmBin, ['i', '-g', `seshmux@${latest}`, '--prefer-online']);
+  // The argv (exact pin, --prefer-online, --allow-scripts) is shared with server/lib/update.ts
+  // through bin/lib/install-scripts.js — change it there.
+  const [file, spawnArgs, spawnOpts] = cmdInvocation(npmBin, npmGlobalInstallArgs(`seshmux@${latest}`));
+  // stderr is piped AND echoed: npm >=12 reports a BLOCKED install script there as a warning and
+  // still exits 0, so the exit code alone cannot tell a working install from a terminal-less one.
+  let npmStderr = '';
   const code = await new Promise((resolve) => {
-    const child = spawn(file, spawnArgs, { stdio: 'inherit', ...spawnOpts });
+    const child = spawn(file, spawnArgs, { stdio: ['inherit', 'inherit', 'pipe'], ...spawnOpts });
+    child.stderr.on('data', (chunk) => {
+      npmStderr += chunk;
+      process.stderr.write(chunk);
+    });
     child.on('exit', (c) => resolve(c ?? 1));
     child.on('error', () => resolve(1));
   });
   if (code !== 0) {
     console.error(`[seshmux] install failed (npm exited ${code}) — still on v${current}`);
     process.exit(code);
+  }
+  // npm said ok — but did node-pty get its native binary? Without it the new version boots and
+  // then ends every session the instant its holder calls pty.spawn (shipped 2026-10-20). Say so
+  // now, with the fix, rather than announce a version that cannot open a terminal.
+  const ptyProblem = nativePtyProblem(path.resolve(__dirname, '..'), npmStderr);
+  if (ptyProblem) {
+    console.error(nativePtyWarning(ptyProblem, latest));
+    process.exit(1);
   }
 
   // The package on disk is new; the daemon still runs the old code. Upgrade it too, but only
@@ -599,6 +617,13 @@ async function main() {
     if (!args.noOpen) openBrowser(reuseUrl);
     return;
   }
+
+  // A seshmux whose node-pty has no native binary boots fine and then ends every session the
+  // instant it spawns (npm >=12 blocked the install script that fetches it — see
+  // bin/lib/install-scripts.js). The daemon only logs that to seshmuxd.log; say it here, with the
+  // fix, where the person launching the app can see it. Non-fatal: browsing still works.
+  const ptyProblem = nativePtyProblem(root, '');
+  if (ptyProblem) console.error(nativePtyWarning(ptyProblem, currentVersion()));
 
   // Ask about tmux BEFORE the daemon starts, so a yes takes effect for the very first session
   // (session-start.ts picks the tmux tier only if tmux is on PATH at spawn time). Only reached
