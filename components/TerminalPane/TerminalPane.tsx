@@ -313,6 +313,9 @@ export default function TerminalPane({
         },
         cursorBlink: true,
         scrollback: 5000,
+        // Without tmux (Windows) the TUI repaints with ESC[2J; keep the erased
+        // screen in scrollback instead of discarding it.
+        scrollOnEraseInDisplay: true,
       });
       fit = new FitAddon();
       term.loadAddon(fit);
@@ -533,7 +536,21 @@ export default function TerminalPane({
       // Shift+Enter → newline. xterm sends a bare \r for it (same as Enter), which
       // submits. \n (Ctrl+J) is the newline key both Claude Code and Codex accept,
       // and a plain shell treats it as Enter, so nothing else breaks.
+      // Windows convention: Ctrl+C copies when text is selected (else it stays ^C /
+      // interrupt) and Ctrl+V pastes. Left alone xterm sends both as raw control
+      // bytes, so neither copy nor paste ever worked. Returning false for Ctrl+V
+      // lets the browser fire a paste event, which xterm (text) and handlePaste
+      // (images) both consume.
+      const isWin = /Win/i.test(navigator.platform);
       term.attachCustomKeyEventHandler((ev) => {
+        if (isWin && ev.ctrlKey && !ev.altKey && !ev.metaKey && ev.type === 'keydown') {
+          const k = ev.key.toLowerCase();
+          if (k === 'c' && term?.hasSelection()) {
+            void navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+            return false;
+          }
+          if (k === 'v') return false;
+        }
         if (ev.key !== 'Enter' || !ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey) return true;
         if (ev.type === 'keydown') socket?.send('\n');
         return false;
